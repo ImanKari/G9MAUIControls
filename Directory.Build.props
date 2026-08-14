@@ -71,12 +71,13 @@
     <NeutralLanguage>en</NeutralLanguage>
 
     <!--
-      ONE version for the whole family, and it is PRERELEASE on purpose (ADR-0010): the suite compiles,
-      packs, and has now been rendered and driven on Android, but not yet on iOS, Mac Catalyst or
-      Windows. A 1.0.0 would make a stability promise that cannot be withdrawn once consumers pin to it.
+      ONE version for the whole family, and it is STABLE as of 1.0.0 (ADR-0010). The prerelease gate was
+      "not until it has been rendered and exercised on at least one platform", and that condition is met:
+      this code has been running in production inside the application it was extracted from for a long
+      time, and the extracted packages have now been driven on Android by that same application.
 
-      Note the mechanical consequence: a stable package cannot depend on a prerelease one, so the family
-      moves to stable together, after verification — never one package at a time.
+      A stable package cannot depend on a prerelease one, which is why the family crossed together rather
+      than one package at a time.
 
       BUMP THIS ON EVERY CONTENT CHANGE, including prerelease-to-prerelease. A NuGet version is an
       immutable identity: once a consumer has restored 1.0.0-preview.1, the extracted copy in
@@ -91,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.0-preview.3</G9FamilyVersion>
+    <G9FamilyVersion>1.0.0</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -100,15 +101,19 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
-      1.0.0-preview.3 — first published build, and the first that has been RUN rather than only compiled.
-      Driving a real consuming app on-device found 21 library defects; the RTL ones are the reason this
-      version exists. G9IconView now pins both of its children to LeftToRight, because an RTL parent made
-      the platform mirror the glyph canvas ON TOP of a control's already-correct directional choice — a
-      double flip that reversed every chevron and arrow in the suite and silently mirrored the
-      non-directional glyphs too. G9Glyph gains ArrowBack / ArrowForward (shaft + head) with overridable
-      G9Glyphs slots, and the bottom-sheet header uses them: a bare chevron in a header reads as an
-      expander, not as "go back". Prerelease still: rendered and verified on Android, not yet on iOS,
-      Mac Catalyst or Windows. See AiGuides/09-Progress.md and LES-0034 / LES-0035 in AiGuides/11.
+      1.0.0 — first stable release. The controls themselves are not new: they have been carrying a
+      production application for a long time, and this version is the point at which the extracted
+      PACKAGES have been driven by that same application end to end rather than merely compiling.
+
+      That pass found 21 defects in the library, all fixed here. The most significant were directional:
+      G9IconView now pins both of its children to LeftToRight, because an RTL parent made the platform
+      mirror the glyph canvas ON TOP of a control's already-correct directional choice — a double flip
+      that reversed every chevron and arrow in the suite and silently mirrored the non-directional glyphs
+      too. G9Glyph gains ArrowBack / ArrowForward (shaft + head) with overridable G9Glyphs slots, and the
+      bottom-sheet header uses them: a bare chevron in a header reads as an expander, not as "go back".
+
+      Verified on Android. iOS, Mac Catalyst and Windows build and pack but have not been rendered — see
+      AiGuides/09-Progress.md, which tracks that gap honestly.
     </PackageReleaseNotes>
 
     <PackageProjectUrl>https://github.com/ImanKari/G9MAUIControls</PackageProjectUrl>

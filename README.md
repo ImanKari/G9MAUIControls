@@ -6,7 +6,8 @@
 
 **A dependency-light .NET MAUI control suite built entirely on public MAUI primitives.**
 
-[![NuGet](https://img.shields.io/nuget/vpre/G9MAUIControls?logo=nuget&label=G9MAUIControls)](https://www.nuget.org/packages/G9MAUIControls)
+[![NuGet](https://img.shields.io/nuget/v/G9MAUIControls?logo=nuget&label=G9MAUIControls)](https://www.nuget.org/packages/G9MAUIControls)
+[![Downloads](https://img.shields.io/nuget/dt/G9MAUIControls?logo=nuget)](https://www.nuget.org/packages/G9MAUIControls)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)](https://dotnet.microsoft.com/)
 [![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20MacCatalyst%20%7C%20Windows-informational)](#)
@@ -31,20 +32,22 @@ Trim-analyzer clean. Bring your own icon font; no icon package is required.
 | <img src="G9MAUIControls.Persistence.Sqlite/icon.png" width="34"> | [**.Persistence.Sqlite**](https://www.nuget.org/packages/G9MAUIControls.Persistence.Sqlite) | SQLite persistence with audit columns and migrations | Pulls in SQLite; a UI suite must not impose a database |
 
 ```pwsh
-dotnet add package G9MAUIControls --prerelease
+dotnet add package G9MAUIControls
 ```
 
 The five ship as **one version** and move together (`AiGuides/10-Decisions.md`, ADR-0010) — a stable
-package cannot depend on a prerelease one, so the family goes stable as a set or not at all.
+package cannot depend on a prerelease one, so the family crosses as a set.
 
 ## Status
 
-**Prerelease, honestly.** The suite builds on four TFMs, packs, and survives a full Android trim with
-zero IL warnings. It has been **rendered and driven on Android** inside a real consuming application —
-that pass found 21 library defects, six of which nothing but running the app could have found, and all
-of them are fixed. It has **not** yet been rendered on iOS, Mac Catalyst or Windows.
+**1.0.0 — stable.** These controls are not new code: they have been carrying a production application
+for a long time. What is new is the package boundary, and it has now been driven end to end by that same
+application on Android — ~51,000 lines of consumer code across every seam, on a device. That pass found
+21 defects, six of which nothing but running the app could have found; all are fixed in this release.
 
-That is what the `-preview` suffix is for. `AiGuides/09-Progress.md` keeps the gap list current.
+Verified on **Android**. iOS, Mac Catalyst and Windows build, pack and pass the trim analyzer, but have
+not been rendered and looked at. `AiGuides/09-Progress.md` keeps that gap list current and honest —
+it is a gap in verification breadth, not a known defect.
 
 ## Repository layout
 

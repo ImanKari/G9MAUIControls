@@ -105,7 +105,8 @@ and a shared one would document features the consumer did not install.
 - The whole family shares one version and ships together. Independent cadence is a v2 problem; today the
   packages are being extracted in lockstep and skew would only create untested combinations.
 - Everything is `1.0.0-preview.N` until the suite has been rendered and exercised. **A stable package
-  cannot depend on a prerelease one**, so the family goes stable together or not at all.
+  cannot depend on a prerelease one**, so the family went stable together, at 1.0.0, rather than one
+  package at a time.
 - A satellite depends on the core with a plain minimum version — no exact pins, no upper bounds.
 
 ## Dependencies

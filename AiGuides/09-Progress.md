@@ -68,7 +68,7 @@ and it now covers a real app rather than a gallery.
 
 | Package | Builds (4 TFMs) | Packs Release | Notes |
 |---|---|---|---|
-| `G9MAUIControls` (core) | ✅ 0 warn / 0 err | ✅ `1.0.0-preview.2` | ~51,000 LOC, 184 files. 3 dependencies |
+| `G9MAUIControls` (core) | ✅ 0 warn / 0 err | ✅ `1.0.0` | ~51,000 LOC, 184 files. 3 dependencies |
 | `G9MAUIControls.Barcode` | ✅ | ✅ | camera dependency on android/ios only |
 | `G9MAUIControls.IntroCarousel` | ✅ | ✅ | consumer must call `.UseMauiCommunityToolkitMediaElement(...)` — see below |
 | `G9MAUIControls.ProgressOverlay` | ✅ | ✅ | core + `CommunityToolkit.Mvvm` |
@@ -118,7 +118,7 @@ answers a different question, not a better one.
 | `G9MAUIControls.slnx` — 5 packages + the gallery | ✅ |
 | Shared package metadata in `Directory.Build.props` (ADR-0012) | ✅ SourceLink, `.snupkg`, icon, copyright, license expression |
 | `G9MauiLibrary.props` — the shared MAUI-library shape | ✅ (LES-0007 explains why it is a separate file) |
-| Family version `1.0.0-preview.3` (ADR-0010) | ✅ every prerelease-to-prerelease bump is content-driven; LES-0025 records what an unchanged version silently costs |
+| Family version `1.0.0` (ADR-0010) | ✅ stable: the prerelease gate was "rendered on at least one platform", now met. Every bump is content-driven; LES-0025 records what an unchanged version silently costs |
 | Transitive pinning OFF for the library subtree (LES-0006) | ✅ measured: Barcode 7 deps → 3 |
 | Consumer migration guide | Written, executed against a real application (Step 3), then **removed from this repository** — it documented one specific application’s migration, which is not library documentation. Executing it exposed six wrong instructions in it; the durable lesson is LES-0028. |
 | Package icons | ✅ five 128×128 icons, one per package: shared tile and geometry, one accent colour and one glyph each, so the family is recognisable in a NuGet result list |

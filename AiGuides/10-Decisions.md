@@ -215,19 +215,27 @@ it.
 
 ---
 
-## ADR-0010 — Ship `1.0.0-preview.1`, not `1.0.0`
+## ADR-0010 — Prerelease until something has actually been rendered — *condition met at 1.0.0*
 
-**Decision.** Every package in the family ships prerelease until the suite has been rendered and
-exercised on at least one platform.
+**Decision.** Every package in the family shipped prerelease until the suite had been rendered and
+exercised on at least one platform. **That condition was met, and the family released `1.0.0`.**
 
-**Why.** The guidance is unambiguous — *"DO publish a package as a pre-release package if it is
-non-stable or a preview"* — and the honest status is in `09-Progress.md`: the code compiles on four
-target frameworks and packs, and nothing has been run. A `1.0.0` makes a stability promise the project
-has not earned, and it cannot be withdrawn: consumers pin to it, and SemVer then forbids the breaking
-fixes a first real render will almost certainly demand.
+**Why the gate existed.** The guidance is unambiguous — *"DO publish a package as a pre-release package
+if it is non-stable or a preview"* — and at the time the honest status was: compiles on four target
+frameworks, packs, and nothing has been run. A `1.0.0` would have made a stability promise the project
+had not earned, and it cannot be withdrawn: consumers pin to it, and SemVer then forbids the breaking
+fixes a first real render will almost certainly demand. That was the right call — the first real render
+found 21 defects, six of which no build could have caught.
 
-One mechanical consequence to know: **a stable package cannot depend on a prerelease package.** So the
-family moves to stable together, after verification — not one package at a time.
+**Why the gate is now satisfied.** The controls are not new code. They have been carrying a production
+application for a long time; what was unproven was the *package boundary*, and that boundary has now
+been exercised end to end by that same application on Android — ~51,000 lines of consumer code, every
+seam, on a device. The remaining unknowns are per-platform rendering (iOS, Mac Catalyst, Windows), which
+`09-Progress.md` states plainly. Those are gaps in verification breadth, not signs of an unstable API,
+and SemVer has a mechanism for what they might produce: a minor or patch release.
+
+One mechanical consequence, which is why the family crossed together: **a stable package cannot depend
+on a prerelease package.** Moving one at a time is not possible.
 
 ---
 
