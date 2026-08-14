@@ -119,6 +119,7 @@ steps:
   inputs:
     targetType: 'inline'
     script: |
+      $ErrorActionPreference = 'Continue'   # dotnet writes progress to stderr; see the note below
       dotnet workload install maui --skip-sign-check
       if ($LASTEXITCODE -ne 0) { throw "Workload install failed ($LASTEXITCODE)" }
       dotnet workload list
@@ -132,9 +133,23 @@ steps:
     targetType: 'inline'
     workingDirectory: '$(Build.SourcesDirectory)'
     script: |
+      # Continue, not Stop: the task sets ErrorActionPreference=Stop, and under Windows PowerShell
+      # ANY native command writing to stderr becomes a TERMINATING error. git writes routine
+      # progress there, so Stop turns "remote does not exist yet" into a failed build. Correctness
+      # comes from checking $LASTEXITCODE explicitly, which is what actually reports git failure.
+      $ErrorActionPreference = 'Continue'
+
       $url = "https://github.com/${{ parameters.githubOwner }}/${{ parameters.repositoryName }}.git"
-      git remote remove github 2>$null
-      git remote add github $url
+
+      # `git remote` lists and exits 0 whether or not anything matches — unlike `remote remove`,
+      # which errors when there is nothing to remove, which is the normal case on a fresh clone.
+      if ((git remote) -contains 'github') {
+          git remote set-url github $url
+      } else {
+          git remote add github $url
+      }
+      if ($LASTEXITCODE -ne 0) { throw "could not configure the github remote ($LASTEXITCODE)" }
+
       git remote -v
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -148,6 +163,10 @@ steps:
       targetType: 'inline'
       workingDirectory: '$(Build.SourcesDirectory)'
       script: |
+        # See "Add github remote" for why this is Continue rather than Stop. Every dotnet verb
+        # below writes to stderr in normal operation; $LASTEXITCODE is the real success signal.
+        $ErrorActionPreference = 'Continue'
+
         dotnet restore "${{ lib }}"
         if ($LASTEXITCODE -ne 0) { throw "restore failed" }
 
@@ -183,6 +202,8 @@ steps:
   inputs:
     targetType: 'inline'
     script: |
+      # Stop for the REST calls (their failures are real and must halt), relaxed to Continue around
+      # the git invocations further down, which report progress on stderr.
       $ErrorActionPreference = 'Stop'
       $owner = '${{ parameters.githubOwner }}'
       $repo  = '${{ parameters.repositoryName }}'
@@ -218,6 +239,7 @@ steps:
       $source = "https://$env:AZDO_PAT@g9tm.visualstudio.com/$repo/_git/$repo"
       $dest   = "https://$($owner):$env:GITHUB_PAT@github.com/$owner/$repo.git"
 
+      $ErrorActionPreference = 'Continue'
       git clone --mirror $source "$work/$repo.git"
       if ($LASTEXITCODE -ne 0) { throw "mirror clone failed" }
 
@@ -241,7 +263,7 @@ steps:
   inputs:
     targetType: 'inline'
     script: |
-      $ErrorActionPreference = 'Stop'
+      $ErrorActionPreference = 'Continue'   # dotnet nuget push reports on stderr
       $failures = @()
 
       # .snupkg is pushed by nuget alongside its .nupkg automatically, so only glob .nupkg —
