@@ -1,0 +1,47 @@
+# ── Build output ────────────────────────────────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+artifacts/
+*.binlog
+
+# ── Visual Studio / Rider / VS Code ─────────────────────────────────────────────
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+.vscode/*
+!.vscode/extensions.json
+
+# ── .NET / MAUI intermediates ───────────────────────────────────────────────────
+# No blanket *.dll / *.pdb / *.ttf rule here: bin/ and obj/ already cover build output, and a
+# blanket binary rule silently drops committed assets — the Gallery's OpenSans fonts, for one.
+*.apk
+*.aab
+*.ipa
+*.app/
+*.appx
+*.appxbundle
+*.msix
+*.nupkg
+*.snupkg
+project.lock.json
+project.assets.json
+*.nuget.dgspec.json
+
+# The generated Android/iOS resource designers are build output, not source.
+**/Resources/Resource.designer.cs
+
+# ── OS noise ────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local-only ──────────────────────────────────────────────────────────────────
+# Never commit a real key. The pipeline reads its three secrets from Azure DevOps
+# pipeline variables (Github.PAT, AzureDevOps.PAT, NuGetApiKey), not from a file.
+*.snk
+*.pfx
+secrets.json
+appsettings.Local.json

@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<ContentView
+    x:Class="G9MAUIControls.ProgressOverlay.Views.G9ProgressOverlayView"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:g9icons="clr-namespace:G9MAUIControls.Icons;assembly=G9MAUIControls"
+    xmlns:customizedControls="clr-namespace:G9MAUIControls.Controls;assembly=G9MAUIControls"
+    xmlns:views="clr-namespace:G9MAUIControls.ProgressOverlay.Views"
+    xmlns:themeManager="clr-namespace:G9MAUIControls.Theming;assembly=G9MAUIControls"
+    x:Name="SyncProgressRoot"
+    x:DataType="views:G9ProgressOverlayView">
+
+    <!--  NO drop shadow here, deliberately. The card's width is set by G9ToastHelper's positioning
+          (HorizontalOptions=Fill + a 16dp horizontal margin) so that the sync overlay lines up
+          EXACTLY with the message toasts and the bottom tab bar. A Skia shadow layer has to be
+          LARGER than the card to be visible, which forces either a negative margin (Android clips
+          that overflow — see Menu/TabBarMenuShadowView) or an inner margin on the card. The inner
+          margin was tried on 2026-07-28 and shrank the card off the shared width, so the shadow was
+          removed: matching geometry beats elevation, and the app is shadow-free anyway
+          (G9Controls.md §0). Separation comes from Stroke + the card fill.  -->
+    <Grid x:Name="RootGrid">
+        <Border
+            x:Name="ExpandedContainer"
+            Padding="0"
+            BackgroundColor="{themeManager:G9Color SurfaceContainerHigh, Alpha=0.98}"
+            MinimumHeightRequest="72"
+            Stroke="{themeManager:G9Color OutlineVariant, Alpha=0.52}"
+            StrokeShape="RoundRectangle 18"
+            StrokeThickness="1">
+            <Border.GestureRecognizers>
+                <!-- Tap the card body (anywhere except the Cancel button, which consumes its own
+                     tap) to MINIMIZE while a sync is running. No-op in canceling / terminal states. -->
+                <TapGestureRecognizer Tapped="OnBodyTapped" />
+            </Border.GestureRecognizers>
+            <Grid>
+                <Border
+                    x:Name="ExpandedFillLayer"
+                    AnchorX="0"
+                    BackgroundColor="{themeManager:G9Color Primary, Alpha=0.34}"
+                    HorizontalOptions="Fill"
+                    ScaleX="0"
+                    StrokeShape="RoundRectangle 18"
+                    StrokeThickness="0" />
+
+                <Grid
+                    x:Name="ProgressContent"
+                    Padding="14,12"
+                    ColumnDefinitions="Auto,*,Auto,Auto"
+                    ColumnSpacing="10">
+                    <customizedControls:G9ActivityIndicator
+                        x:Name="ProgressSpinner"
+                        HeightRequest="18"
+                        WidthRequest="18"
+                        Color="{themeManager:G9Color Primary}"
+                        IsRunning="True"
+                        VerticalOptions="Center" />
+
+                    <VerticalStackLayout
+                        Grid.Column="1"
+                        Spacing="2"
+                        VerticalOptions="Center">
+                        <Label
+                            x:Name="ContextLabel"
+                            FontAttributes="Bold"
+                            FontSize="13"
+                            LineBreakMode="TailTruncation"
+                            MaxLines="1"
+                            TextColor="{themeManager:G9Color OnSurface}" />
+                        <Label
+                            x:Name="StageLabel"
+                            FontSize="11"
+                            LineBreakMode="TailTruncation"
+                            MaxLines="1"
+                            TextColor="{themeManager:G9Color OnSurfaceVariant}" />
+                    </VerticalStackLayout>
+
+                    <Border
+                        x:Name="ExpandedPercentPill"
+                        Grid.Column="2"
+                        Padding="10,4"
+                        MinimumHeightRequest="44"
+                        MinimumWidthRequest="48"
+                        BackgroundColor="{themeManager:G9Color Primary, Alpha=0.98}"
+                        StrokeShape="RoundRectangle 12"
+                        StrokeThickness="0"
+                        VerticalOptions="Center">
+                        <Label
+                            x:Name="ExpandedPercentLabel"
+                            FontAttributes="Bold"
+                            FontSize="14"
+                            HorizontalOptions="Center"
+                            HorizontalTextAlignment="Center"
+                            VerticalOptions="Center"
+                            VerticalTextAlignment="Center"
+                            TextColor="{themeManager:G9Color OnPrimary}" />
+                    </Border>
+
+                    <!-- Cancel the in-flight sync (Error-tinted X). Large 44x44 hit target so the tap
+                         is reliable on mobile. On tap the overlay switches to the "Canceling…" state
+                         and this button hides. Tapping the card BODY (not this button) minimizes. -->
+                    <Border
+                        x:Name="CancelButton"
+                        Grid.Column="3"
+                        Padding="8"
+                        MinimumHeightRequest="44"
+                        MinimumWidthRequest="44"
+                        BackgroundColor="{themeManager:G9Color Error, Alpha=0.14}"
+                        Stroke="{themeManager:G9Color Error, Alpha=0.45}"
+                        StrokeShape="RoundRectangle 11"
+                        StrokeThickness="1"
+                        VerticalOptions="Center">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnCancelTapped" />
+                        </Border.GestureRecognizers>
+
+                        <g9icons:G9IconView
+                            HorizontalOptions="Center"
+                            Icon="Close"
+                            Color="{themeManager:G9Color Error}"
+                            Size="22"
+                            VerticalOptions="Center" />
+                    </Border>
+                </Grid>
+
+                <Grid
+                    x:Name="TerminalContent"
+                    Padding="14,12"
+                    ColumnDefinitions="Auto,*,Auto,Auto"
+                    ColumnSpacing="10"
+                    IsVisible="False"
+                    Opacity="0">
+
+                    <g9icons:G9IconView
+                        x:Name="TerminalIcon"
+                        HorizontalOptions="Center"
+                        Icon="Refresh"
+                        Size="24"
+                        VerticalOptions="Center" />
+
+                    <VerticalStackLayout
+                        x:Name="TerminalTextHost"
+                        Grid.Column="1"
+                        HorizontalOptions="Fill"
+                        Spacing="2"
+                        VerticalOptions="Center">
+                        <Label
+                            x:Name="TerminalTitleLabel"
+                            FontAttributes="Bold"
+                            FontSize="13"
+                            HorizontalTextAlignment="Center"
+                            LineBreakMode="TailTruncation"
+                            MaxLines="1" />
+                        <Label
+                            x:Name="TerminalSubtitleLabel"
+                            FontSize="11"
+                            HorizontalTextAlignment="Center"
+                            LineBreakMode="TailTruncation"
+                            MaxLines="1" />
+                    </VerticalStackLayout>
+
+                    <Border
+                        x:Name="TerminalRetryButton"
+                        Grid.Column="2"
+                        Padding="6"
+                        BackgroundColor="{themeManager:G9Color SurfaceContainer, Alpha=0.20}"
+                        IsVisible="False"
+                        Stroke="{themeManager:G9Color OutlineVariant, Alpha=0.30}"
+                        StrokeShape="RoundRectangle 9"
+                        StrokeThickness="1"
+                        VerticalOptions="Center">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTerminalRetryTapped" />
+                        </Border.GestureRecognizers>
+                        <g9icons:G9IconView
+                            x:Name="TerminalRetryIcon"
+                            HorizontalOptions="Center"
+                            Icon="Refresh"
+                            Size="18"
+                            VerticalOptions="Center" />
+                    </Border>
+
+                    <Border
+                        x:Name="TerminalCloseButton"
+                        Grid.Column="3"
+                        Padding="6"
+                        BackgroundColor="{themeManager:G9Color SurfaceContainer, Alpha=0.20}"
+                        IsVisible="False"
+                        Stroke="{themeManager:G9Color OutlineVariant, Alpha=0.30}"
+                        StrokeShape="RoundRectangle 9"
+                        StrokeThickness="1"
+                        VerticalOptions="Center">
+                        <Border.GestureRecognizers>
+                            <TapGestureRecognizer Tapped="OnTerminalCloseTapped" />
+                        </Border.GestureRecognizers>
+                        <g9icons:G9IconView
+                            x:Name="TerminalCloseIcon"
+                            HorizontalOptions="Center"
+                            Icon="Close"
+                            Size="18"
+                            VerticalOptions="Center" />
+                    </Border>
+                </Grid>
+
+                <!-- Queued-sync badge: shown on the RUNNING sync's overlay when other syncs are
+                     waiting behind it on the agent gate, instead of mounting a second overlay. -->
+                <Border
+                    x:Name="QueuedBadge"
+                    Margin="0,-7,-5,0"
+                    Padding="7,2"
+                    BackgroundColor="{themeManager:G9Color Secondary, Alpha=0.98}"
+                    HorizontalOptions="End"
+                    IsVisible="False"
+                    StrokeShape="RoundRectangle 9"
+                    StrokeThickness="0"
+                    VerticalOptions="Start">
+                    <HorizontalStackLayout Spacing="3">
+                        <g9icons:G9IconView
+                            Icon="Clock"
+                            Color="{themeManager:G9Color OnSecondary}"
+                            Size="12"
+                            VerticalOptions="Center" />
+                        <Label
+                            x:Name="QueuedBadgeLabel"
+                            FontAttributes="Bold"
+                            FontSize="11"
+                            TextColor="{themeManager:G9Color OnSecondary}"
+                            VerticalOptions="Center" />
+                    </HorizontalStackLayout>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Border
+            x:Name="CompactContainer"
+            WidthRequest="72"
+            HeightRequest="72"
+            BackgroundColor="{themeManager:G9Color SurfaceContainerHigh, Alpha=0.98}"
+            HorizontalOptions="End"
+            IsVisible="False"
+            Opacity="0"
+            Scale="0.84"
+            Stroke="{themeManager:G9Color OutlineVariant, Alpha=0.52}"
+            StrokeShape="RoundRectangle 36"
+            StrokeThickness="1"
+            VerticalOptions="Center">
+            <Border.GestureRecognizers>
+                <!-- Tap restores the full card; drag moves the bubble anywhere on screen. -->
+                <TapGestureRecognizer Tapped="OnBubbleTapped" />
+                <PanGestureRecognizer PanUpdated="OnBubblePanUpdated" />
+            </Border.GestureRecognizers>
+
+            <Grid>
+                <Border
+                    x:Name="CompactFillLayer"
+                    AnchorX="0"
+                    BackgroundColor="{themeManager:G9Color Primary, Alpha=0.42}"
+                    HorizontalOptions="Fill"
+                    ScaleX="0"
+                    StrokeShape="RoundRectangle 36"
+                    StrokeThickness="0" />
+
+                <Grid>
+                    <Label
+                        x:Name="CompactPercentLabel"
+                        FontAttributes="Bold"
+                        FontSize="17"
+                        HorizontalOptions="Center"
+                        HorizontalTextAlignment="Center"
+                        TextColor="{themeManager:G9Color OnSurface}"
+                        VerticalOptions="Center"
+                        VerticalTextAlignment="Center" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</ContentView>

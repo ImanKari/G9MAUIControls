@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static frame of the G9Shimmer highlight band: a slanted translucent-white gradient
+     parallelogram inside a square viewport. The `shimmerBand` group's translateX is animated by
+     animator/g9_shimmer_translate.xml (wired in drawable/g9_shimmer_band.xml). As an
+     AnimatedVectorDrawable target it runs on the RenderThread (API 25+), so the sweep keeps
+     moving while the UI thread is busy building the content the shimmer masks. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="240dp"
+    android:height="240dp"
+    android:viewportWidth="240"
+    android:viewportHeight="240">
+    <group
+        android:name="shimmerBand"
+        android:translateX="-240">
+        <path android:pathData="M40,0 L200,0 L160,240 L0,240 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="0"
+                    android:endX="200"
+                    android:endY="0">
+                    <item
+                        android:offset="0.0"
+                        android:color="#00FFFFFF" />
+                    <item
+                        android:offset="0.5"
+                        android:color="#59FFFFFF" />
+                    <item
+                        android:offset="1.0"
+                        android:color="#00FFFFFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

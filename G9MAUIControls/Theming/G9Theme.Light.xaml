@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<?xaml-comp compile="true" ?>
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    x:Class="G9MAUIControls.Theming.G9ThemeLight">
+
+    <!--
+        G9 Design System — LIGHT
+        Palette mirrors !TempData/G9DesignSystem.html (the design source of truth).
+        Neutral green-gray system: Background is a warm light gray (#F7F8F7) while
+        Surface / CardBackground are pure white so cards lift cleanly off the page.
+    -->
+
+    <!-- ================= PRIMARY ================= -->
+    <Color x:Key="Primary">#349D57</Color>
+    <Color x:Key="OnPrimary">#FFFFFF</Color>
+    <Color x:Key="PrimaryContainer">#D6F0DF</Color>
+    <Color x:Key="OnPrimaryContainer">#0E3B1E</Color>
+    <Color x:Key="PrimaryBorder">#2D8A4C</Color>
+    <Color x:Key="PrimaryHover">#2D8A4C</Color>
+    <Color x:Key="PrimaryPressed">#267A42</Color>
+
+    <!-- ================= SECONDARY (leaf accent) ================= -->
+    <Color x:Key="Secondary">#4A7C3F</Color>
+    <Color x:Key="OnSecondary">#FFFFFF</Color>
+    <Color x:Key="SecondaryContainer">#E3F0DF</Color>
+    <Color x:Key="OnSecondaryContainer">#16310F</Color>
+    <Color x:Key="SecondaryBorder">#3C6633</Color>
+
+    <!-- ================= TERTIARY (sky accent) ================= -->
+    <Color x:Key="Tertiary">#3A7DB5</Color>
+    <Color x:Key="OnTertiary">#FFFFFF</Color>
+    <Color x:Key="TertiaryContainer">#D8EAF7</Color>
+    <Color x:Key="OnTertiaryContainer">#0A2A44</Color>
+    <Color x:Key="TertiaryBorder">#316596</Color>
+
+    <!-- ================= QUATERNARY (violet accent) ================= -->
+    <Color x:Key="Quaternary">#7B5EA7</Color>
+    <Color x:Key="OnQuaternary">#FFFFFF</Color>
+    <Color x:Key="QuaternaryContainer">#EAE1F5</Color>
+    <Color x:Key="OnQuaternaryContainer">#2E1F45</Color>
+    <Color x:Key="QuaternaryBorder">#6B4F92</Color>
+
+    <!-- ================= ERROR ================= -->
+    <Color x:Key="Error">#C8364B</Color>
+    <Color x:Key="OnError">#FFFFFF</Color>
+    <Color x:Key="ErrorContainer">#FADCE0</Color>
+    <Color x:Key="OnErrorContainer">#5A0814</Color>
+    <Color x:Key="ErrorBorder">#A82A3D</Color>
+
+    <!-- ================= WARNING ================= -->
+    <Color x:Key="Warning">#C77A14</Color>
+    <Color x:Key="OnWarning">#FFFFFF</Color>
+    <Color x:Key="WarningContainer">#FBEED5</Color>
+    <Color x:Key="OnWarningContainer">#4A2E05</Color>
+    <Color x:Key="WarningBorder">#A8650F</Color>
+
+    <!-- ================= SUCCESS ================= -->
+    <Color x:Key="Success">#2F8B4A</Color>
+    <Color x:Key="OnSuccess">#FFFFFF</Color>
+    <Color x:Key="SuccessContainer">#E2F3E8</Color>
+    <Color x:Key="OnSuccessContainer">#0C3019</Color>
+    <Color x:Key="SuccessBorder">#267A3E</Color>
+
+    <!-- ================= INFO ================= -->
+    <Color x:Key="Info">#2B6FB3</Color>
+    <Color x:Key="OnInfo">#FFFFFF</Color>
+    <Color x:Key="InfoContainer">#DCE9F7</Color>
+    <Color x:Key="OnInfoContainer">#0B2D4D</Color>
+    <Color x:Key="InfoBorder">#245E99</Color>
+
+    <!-- ================= OUTLINE ================= -->
+    <Color x:Key="Outline">#C3C7C3</Color>
+    <Color x:Key="OutlineVariant">#DDE0DD</Color>
+    <Color x:Key="OutlineBorder">#989E98</Color>
+
+    <!-- ================= BACKGROUND ================= -->
+    <Color x:Key="Background">#F7F8F7</Color>
+    <Color x:Key="OnBackground">#181A18</Color>
+    <Color x:Key="BackgroundSecondary">#EEEFEE</Color>
+
+    <!-- ================= SURFACE ================= -->
+    <Color x:Key="Surface">#FFFFFF</Color>
+    <Color x:Key="OnSurface">#181A18</Color>
+    <Color x:Key="SurfaceVariant">#EFF1EF</Color>
+    <Color x:Key="OnSurfaceVariant">#525852</Color>
+    <Color x:Key="SurfaceBorder">#DDE0DD</Color>
+
+    <!-- ================= INVERSE ================= -->
+    <Color x:Key="InverseSurface">#14181A</Color>
+    <Color x:Key="InverseOnSurface">#F4F6F4</Color>
+    <Color x:Key="InversePrimary">#7BD88F</Color>
+
+    <!-- No SHADOW tokens — the app is shadow-free by policy (G9Controls.md → "No shadows"). -->
+
+    <!-- ================= SURFACE CONTAINERS ================= -->
+    <Color x:Key="SurfaceContainerHighest">#E6E8E6</Color>
+    <Color x:Key="SurfaceContainerHigh">#ECEEEC</Color>
+    <Color x:Key="SurfaceContainer">#F1F2F1</Color>
+    <Color x:Key="SurfaceContainerLow">#F7F8F7</Color>
+    <Color x:Key="SurfaceContainerLowest">#FFFFFF</Color>
+    <Color x:Key="SurfaceBright">#FFFFFF</Color>
+    <Color x:Key="SurfaceDim">#E4E6E4</Color>
+
+    <!-- ================= SCRIM & OVERLAY ================= -->
+    <Color x:Key="Scrim">#99000000</Color>
+    <Color x:Key="ScrimLight">#66000000</Color>
+    <Color x:Key="Overlay">#14000000</Color>
+    <Color x:Key="OverlayLight">#0A000000</Color>
+
+    <!-- ================= TEXT COLORS ================= -->
+    <Color x:Key="TextPrimary">#181A18</Color>
+    <Color x:Key="TextSecondary">#525852</Color>
+    <Color x:Key="TextTertiary">#6E756E</Color>
+    <Color x:Key="TextDisabled">#C3C7C3</Color>
+
+    <!-- ================= STANDARD COLORS ================= -->
+    <Color x:Key="White">#FFFFFF</Color>
+    <Color x:Key="Black">#000000</Color>
+    <Color x:Key="Light">#EEEEEE</Color>
+    <Color x:Key="Dark">#222222</Color>
+
+    <!-- ================= DIVIDER ================= -->
+    <Color x:Key="Divider">#EEEFEE</Color>
+    <Color x:Key="DividerStrong">#DDE0DD</Color>
+
+    <!-- ================= FOCUS & STATES ================= -->
+    <Color x:Key="Focus">#349D57</Color>
+    <Color x:Key="FocusVisible">#59349D57</Color>
+    <Color x:Key="Disabled">#C3C7C3</Color>
+    <Color x:Key="DisabledContainer">#EEEFEE</Color>
+
+    <!-- ================= CARD ================= -->
+    <Color x:Key="CardBackground">#FFFFFF</Color>
+    <Color x:Key="CardBorder">#DDE0DD</Color>
+    <Color x:Key="CardElevated">#FFFFFF</Color>
+
+    <!-- ================= DEFAULT (Things locates on Background/CardBackground) ================= -->
+    <Color x:Key="Default">#EEEFEE</Color>
+    <Color x:Key="OnDefault">#181A18</Color>
+    <Color x:Key="DefaultContainer">#DDE0DD</Color>
+    <Color x:Key="OnDefaultContainer">#181A18</Color>
+    <Color x:Key="DefaultBorder">#C3C7C3</Color>
+    <Color x:Key="DefaultHover">#DDE0DD</Color>
+    <Color x:Key="DefaultPressed">#C3C7C3</Color>
+
+    <!-- ================= INPUT ================= -->
+    <Color x:Key="InputBackground">#FFFFFF</Color>
+    <Color x:Key="InputBorder">#C3C7C3</Color>
+    <Color x:Key="InputBorderFocused">#349D57</Color>
+    <Color x:Key="InputPlaceholder">#989E98</Color>
+
+</ResourceDictionary>

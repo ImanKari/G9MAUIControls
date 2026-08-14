@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<Grid
+    x:Class="G9MAUIControls.BottomSheet.G9BottomSheetListPickerModal"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:g9="clr-namespace:G9MAUIControls.Controls"
+    xmlns:theme="clr-namespace:G9MAUIControls.Theming"
+    xmlns:views="clr-namespace:G9MAUIControls.BottomSheet"
+    x:Name="PickerModal"
+    x:DataType="views:G9BottomSheetListPickerModal"
+    RowDefinitions="Auto,*,Auto"
+    HorizontalOptions="Fill"
+    VerticalOptions="Fill">
+
+    <!--
+        Optional search row. Hidden unless the caller passed a placeholder, so a two-item sort
+        picker never grows an empty search box. Uses the shared G9SearchEntry rather than a
+        hand-rolled box. ReserveFloatingLabelClearance stays at its default (on for
+        G9SearchEntry) because this sits directly under the sheet header — exactly the
+        hard-top-edge case that option exists for.
+    -->
+    <g9:G9SearchEntry
+        x:Name="PickerSearchEntry"
+        Grid.Row="0"
+        Margin="{DynamicResource EdgeHorizontalThickness}"
+        IsVisible="{Binding ShowSearch, Source={x:Reference PickerModal}}"
+        Placeholder="{Binding SearchPlaceholder, Source={x:Reference PickerModal}}" />
+
+    <!--
+        Title + close come from the SHARED bottom-sheet header (the sheet is opened with
+        ShowToolbar/Title/ShowCloseButton by ShowListBottomSheetAsync), so this modal draws no
+        header of its own. The list simply fills the * row below it.
+    -->
+    <CollectionView
+        x:Name="PickerList"
+        Grid.Row="1"
+        Margin="{DynamicResource ModalBaseBodyMargin}"
+        BackgroundColor="Transparent"
+        HorizontalOptions="Fill"
+        VerticalOptions="Fill" />
+
+    <g9:G9Button
+        Grid.Row="2"
+        Margin="{DynamicResource ModalBaseBodyMargin}"
+        Command="{Binding ApplyCommand, Source={x:Reference PickerModal}}"
+        FontAttributes="Bold"
+        IsVisible="{Binding ShowApplyButton, Source={x:Reference PickerModal}}"
+        Text="{Binding ApplyButtonText, Source={x:Reference PickerModal}}"
+        Variant="Primary" />
+
+</Grid>

@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Shared target frameworks, MAUI switches and documented suppressions. -->
+    <Import Project="..\G9MauiLibrary.props" />
+
+    <!--
+        SATELLITE: onboarding carousel with video slides.
+
+        It exists as its own package for exactly one reason (ADR-0006 / ADR-0009): MediaElement pulls a
+        platform media stack — ExoPlayer on Android, AVPlayer on Apple — and a consumer who wants a text
+        entry must not acquire it. Everything shared lives in Directory.Build.props.
+    -->
+
+    <PropertyGroup>
+        <RootNamespace>G9MAUIControls.IntroCarousel</RootNamespace>
+        <AssemblyName>G9MAUIControls.IntroCarousel</AssemblyName>
+
+        <!--
+          CS0436 - "type conflicts with the imported type", for AutoBindableAttribute.
+          The [AutoBindable] source generator emits its own attribute into EVERY project it runs in, and
+          the core's emitted copy is public — so a satellite that references the core AND uses the
+          generator legitimately sees two identical declarations. The compiler already resolves to the
+          local one (the message says so). Not a real conflict, and not fixable here: the generator
+          controls the emitted visibility.
+        -->
+        <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+        <!-- Trim/AOT: the carousel itself is clean, but CommunityToolkit.Maui.MediaElement's platform
+             players are not annotated. Analyzer on, no compatibility claim (ADR-0011) — a false claim is
+             worse than none, because NativeAOT trims regardless and the failure moves to runtime. -->
+        <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <PackageId>G9MAUIControls.IntroCarousel</PackageId>
+        <Title>G9MAUIControls.IntroCarousel — onboarding slides with video</Title>
+        <Description>Adds G9IntroCarousel to G9MAUIControls: a swipeable onboarding / intro carousel whose slides can be images or video, with page indicators, a skip affordance, and correct RTL paging. Ships separately because video playback requires CommunityToolkit.Maui.MediaElement and a platform media stack, which the core deliberately does not depend on.</Description>
+        <PackageTags>maui;controls;onboarding;carousel;intro;video;walkthrough</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\G9MAUIControls\G9MAUIControls.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Controls" />
+        <PackageReference Include="CommunityToolkit.Maui.MediaElement" />
+        <PackageReference Include="CommunityToolkit.Maui.Core" />
+        <PackageReference Include="M.BindableProperty.Generator" PrivateAssets="all" />
+    </ItemGroup>
+
+</Project>

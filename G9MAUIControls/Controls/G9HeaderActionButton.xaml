@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8" ?>
+
+<ContentView
+    x:Class="G9MAUIControls.Controls.G9HeaderActionButton"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:g9icons="clr-namespace:G9MAUIControls.Icons"
+    xmlns:customizedControls="clr-namespace:G9MAUIControls.Controls"
+    xmlns:minimalComponents="clr-namespace:G9MAUIControls.Controls"
+    xmlns:theme="clr-namespace:G9MAUIControls.Theming"
+    x:Name="ButtonRoot"
+    x:DataType="minimalComponents:G9HeaderActionButton">
+
+    <!--
+        The square size is applied in code-behind (ApplyButtonSize), NOT here: with ButtonSize
+        unset the border keeps a DynamicResource on ToolbarButtonSize (the sheet-toolbar size,
+        still live-tunable from the Developer Tools metric editor); a host that lines the button
+        up with other controls — e.g. SearchSortFilterHeader, where it shares a lane with a search
+        field — sets ButtonSize to that lane's height and the border switches to it.
+    -->
+    <Border
+        x:Name="ButtonBorder"
+        BackgroundColor="{theme:G9Color SurfaceContainerLowest}"
+        Stroke="{theme:G9Color CardBorder}"
+        StrokeThickness="1"
+        VerticalOptions="Center">
+
+        <Border.StrokeShape>
+            <RoundRectangle CornerRadius="{DynamicResource ControlCornerRadiusValue}" />
+        </Border.StrokeShape>
+
+        <Border.Triggers>
+            <DataTrigger
+                Binding="{Binding IsActive, Source={x:Reference ButtonRoot}}"
+                TargetType="Border"
+                Value="True">
+                <Setter Property="BackgroundColor" Value="{theme:G9Color Primary, Alpha=0.12}" />
+                <Setter Property="Stroke" Value="{theme:G9Color Primary, Alpha=0.38}" />
+            </DataTrigger>
+
+            <DataTrigger
+                Binding="{Binding IsBusy, Source={x:Reference ButtonRoot}}"
+                TargetType="Border"
+                Value="True">
+                <Setter Property="InputTransparent" Value="True" />
+                <Setter Property="Opacity" Value="0.5" />
+            </DataTrigger>
+
+            <DataTrigger
+                Binding="{Binding IsEnabled, Source={x:Reference ButtonRoot}}"
+                TargetType="Border"
+                Value="False">
+                <Setter Property="InputTransparent" Value="True" />
+                <Setter Property="Opacity" Value="0.5" />
+            </DataTrigger>
+        </Border.Triggers>
+
+        <Border.GestureRecognizers>
+            <TapGestureRecognizer Tapped="OnTapped" />
+        </Border.GestureRecognizers>
+
+        <Grid>
+            <g9icons:G9IconView
+                x:Name="GlyphIconView"
+                HorizontalOptions="Center"
+                Icon="{Binding Icon, Source={x:Reference ButtonRoot}}"
+                Color="{theme:G9Color OnSurfaceVariant}"
+                Size="{Binding IconSize, Source={x:Reference ButtonRoot}}"
+                VerticalOptions="Center" />
+
+            <Image
+                x:Name="ImageIconView"
+                HeightRequest="{Binding IconSize, Source={x:Reference ButtonRoot}}"
+                HorizontalOptions="Center"
+                IsVisible="False"
+                Source="{Binding IconImageSource, Source={x:Reference ButtonRoot}}"
+                VerticalOptions="Center"
+                WidthRequest="{Binding IconSize, Source={x:Reference ButtonRoot}}" />
+
+            <Label
+                x:Name="TextIconView"
+                FontAttributes="Bold"
+                FontSize="13"
+                HorizontalOptions="Center"
+                HorizontalTextAlignment="Center"
+                IsVisible="False"
+                Text="{Binding ButtonText, Source={x:Reference ButtonRoot}}"
+                TextColor="{theme:G9Color OnSurfaceVariant}"
+                VerticalOptions="Center"
+                VerticalTextAlignment="Center" />
+
+            <customizedControls:G9ActivityIndicator
+                x:Name="BusyIndicator"
+                HeightRequest="20"
+                HorizontalOptions="Center"
+                IsRunning="False"
+                IsVisible="False"
+                VerticalOptions="Center"
+                WidthRequest="20"
+                Color="{theme:G9Color OnSurfaceVariant}" />
+
+            <Border
+                x:Name="ActiveBadge"
+                Margin="0,6,6,0"
+                BackgroundColor="{theme:G9Color Primary}"
+                HeightRequest="8"
+                HorizontalOptions="End"
+                IsVisible="False"
+                StrokeThickness="0"
+                VerticalOptions="Start"
+                WidthRequest="8">
+                <Border.Triggers>
+                    <MultiTrigger TargetType="Border">
+                        <MultiTrigger.Conditions>
+                            <BindingCondition Binding="{Binding ShowActiveBadge, Source={x:Reference ButtonRoot}}" Value="True" />
+                            <BindingCondition Binding="{Binding IsActive, Source={x:Reference ButtonRoot}}" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter Property="IsVisible" Value="True" />
+                    </MultiTrigger>
+                </Border.Triggers>
+                <Border.StrokeShape>
+                    <RoundRectangle CornerRadius="4" />
+                </Border.StrokeShape>
+            </Border>
+        </Grid>
+    </Border>
+
+</ContentView>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark-theme G9Shimmer sweep. It shares the RenderThread animator with the light band. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/g9_shimmer_vector_dark">
+    <target
+        android:name="shimmerBand"
+        android:animation="@animator/g9_shimmer_translate" />
+</animated-vector>

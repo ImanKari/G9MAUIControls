@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<?xaml-comp compile="true" ?>
+<!--
+    x:Class is REQUIRED here, not stylistic.
+
+    A consumer lives in a different assembly, and MAUI has no cross-assembly URI form for
+    `<ResourceDictionary Source="..." />` — a path like "/Hosting/G9PageTemplate.xaml" resolves only
+    against the assembly whose XAML contains it, so a consumer's App.xaml fails at XAML-compile time with
+    XC0124 ("Resource not found"). Since this dictionary is MANDATORY for every consumer (G9PageBase
+    throws without it), a dictionary that cannot be merged from outside makes the whole suite unusable.
+
+    Carrying x:Class compiles this file into a public type, which is mergeable BY TYPE from anywhere:
+
+        xmlns:g9="clr-namespace:G9MAUIControls.Hosting;assembly=G9MAUIControls"
+        ...
+        <ResourceDictionary.MergedDictionaries>
+            <g9:G9PageTemplate />
+        </ResourceDictionary.MergedDictionaries>
+
+    See LES-0013. The same applies to G9Theme.Light/Dark, which already carry x:Class.
+-->
+<ResourceDictionary
+    x:Class="G9MAUIControls.Hosting.G9PageTemplate"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:hosting="clr-namespace:G9MAUIControls.Hosting"
+    xmlns:bottomSheet="clr-namespace:G9MAUIControls.BottomSheet"
+    xmlns:popup="clr-namespace:G9MAUIControls.Popup"
+    xmlns:pageOverlay="clr-namespace:G9MAUIControls.Controls.PageLoadingOverlay">
+    <ControlTemplate x:Key="G9PageTemplate">
+        <!--
+            App-wide z-stack contract — strictly bottom → top by document order:
+
+              1. BackdropHost   — paints behind page content during sheet recede.
+              2. ContentHost    — page content + tab bar + InitializeOverlaySlot
+                                  (mounted by MainPage.xaml inside ContentPresenter).
+              3. OverlayHost    — bottom sheets ONLY. G9BottomSheetHelper adds primary
+                                  + stacked sheets and per-sheet modal scrims as
+                                  dynamic children. The static G9SheetView here is
+                                  the idle template instance carried by ModalHost.
+              4. G9PopupHost      — G9PopupView ONLY. Dedicated Grid so the popup paints
+                                  ABOVE every dynamic child of OverlayHost without
+                                  needing ZIndex math. Nothing else mounts here.
+              5. ToastHost      — non-blocking notifications (above EVERYTHING in
+                                  G9PopupHost + OverlayHost).
+              6. DevHost        — in-app Developer Debug overlay (draggable button +
+                                  tools panel). Topmost PERSISTENT layer so it paints
+                                  above popups/toasts AND reliably receives touch.
+                                  Only the transient PageLoadingHost (startup) sits
+                                  above it.
+
+            Sibling order in this Grid IS the z-order. ZIndex is only meaningful
+            within the same parent. G9PopupHost / ToastHost are siblings of
+            OverlayHost — that is what guarantees the popup layer is never
+            covered by a sheet or scrim that G9BottomSheetHelper appends to
+            OverlayHost.Children at runtime, and the toast layer is never
+            covered by a popup. Adding any new dynamic-child host here means
+            choosing the right sibling slot, NOT relying on ZIndex.
+        -->
+        <Grid x:Name="RootHost">
+
+            <!--
+                Painted behind ContentHost so the area exposed by the bottom-sheet "backdrop
+                card recede" effect (G9BottomSheetHelper scales/translates ContentHost when a
+                primary sheet crosses 75% of the screen) stays dark instead of revealing the
+                light theme page color. The color is wired through G9BottomSheetSettings.BackdropCardColor
+                from G9BottomSheetHelper.Configure(...). ContentHost is opaque over the entire
+                screen during normal navigation, so this BoxView is effectively invisible
+                whenever no sheet is open.
+            -->
+            <BoxView
+                x:Name="BackdropHost"
+                Color="Black"
+                InputTransparent="True" />
+
+            <Grid x:Name="ContentHost">
+                <ContentPresenter />
+            </Grid>
+
+            <!--
+                Bottom-sheet layer. The static G9SheetView child below is the idle
+                template instance held by ModalHost; G9BottomSheetHelper opens primary
+                and stacked sheets by appending more children to this same grid. Every
+                child here paints BELOW G9PopupHost and ToastHost by document order.
+            -->
+            <Grid
+                x:Name="OverlayHost"
+                CascadeInputTransparent="False"
+                InputTransparent="True">
+
+                <bottomSheet:G9SheetView
+                    x:Name="G9SheetView"
+                    CornerRadius="12"
+                    EnableSwiping="True"
+                    FlowDirection="{x:DynamicResource CurrentFlowDirection}"
+                    IsModal="True"
+                    IsOpen="False"
+                    IsVisible="True"
+                    ShowGrabber="True" />
+
+            </Grid>
+
+            <!--
+                G9Popup layer — owns G9PopupView ONLY. Dedicated Grid so the popup is a later
+                sibling of OverlayHost and always paints above any dynamic sheet/scrim that
+                G9BottomSheetHelper adds. Input is transparent by default so taps fall through
+                to the sheet/page underneath; G9PopupView flips its own InputTransparent on
+                Open(). Do NOT add any other element here — bottom sheets belong in
+                OverlayHost, toasts in ToastHost.
+
+                Defensive ZIndex: document order already places G9PopupHost above OverlayHost,
+                but the explicit ZIndex (2 for popup, 3 for toast) provides defense in depth
+                if a future template edit accidentally reorders the layers. Together they
+                make sure popups always paint above sheets and toasts always paint above
+                popups.
+            -->
+            <Grid
+                x:Name="G9PopupHost"
+                CascadeInputTransparent="False"
+                InputTransparent="True"
+                ZIndex="2">
+
+                <popup:G9PopupView x:Name="G9PopupView" />
+
+            </Grid>
+
+            <!--
+                Toast layer — every G9ToastHelper / SyncProgressOverlayHelper visual mounts
+                here. Sits above G9PopupHost and OverlayHost in document order so toasts paint
+                above any open popup, sheet, or scrim (and stay visible when those close).
+                Input is transparent by default so taps fall through to the popup / sheet /
+                page underneath; individual toast views opt into hit-testing via their own
+                InputTransparent = false. CascadeInputTransparent = false keeps that
+                child-level opt-in working. ZIndex = 3 mirrors the document order as defense
+                in depth (see G9PopupHost comment).
+            -->
+            <Grid
+                x:Name="ToastHost"
+                CascadeInputTransparent="False"
+                InputTransparent="True"
+                ZIndex="3" />
+
+            <!--
+                Developer Debug layer — hosts the in-app DeveloperDebugOverlay (a draggable
+                helper button + tabbed tools panel) shown only when Developer Debug Mode is on
+                (Admin Diagnostics → Debug card). Placed AFTER ToastHost so it is the topmost
+                PERSISTENT sibling: its button/panel paint above popups, sheets AND toasts, and
+                — crucially — it reliably RECEIVES touch instead of letting taps fall through to
+                the content behind (the bug when it was hosted inside MainPage/ContentHost, the
+                bottom layer). Input is transparent at the host level so empty areas pass touches
+                through to the app; the overlay itself flips InputTransparent=false on its FAB and
+                panel. CascadeInputTransparent=false keeps that child-level opt-in working. The
+                overlay self-hides (IsVisible=false) whenever Developer Debug Mode is off, so it
+                costs nothing visually/interactively until enabled. Only the transient
+                PageLoadingHost (startup, int.MaxValue) sits above it. ZIndex=4 mirrors document
+                order as defense in depth (see G9PopupHost comment).
+            -->
+            <Grid
+                x:Name="DevHost"
+                CascadeInputTransparent="False"
+                InputTransparent="True"
+                ZIndex="4">
+
+
+                <!--  QA capture panel — same host, same reasons (topmost persistent layer + reliable touch).  -->
+
+            </Grid>
+
+            <!--
+                Page-loading overlay — renders at XAML inflation time, before any page-specific
+                code runs, covering all other layers. G9PageBase captures it via
+                GetTemplateChild and removes it from the visual tree (with a scale+fade
+                animation) once OnAppearingAfterParentAsync completes or the 5-second safety
+                timeout fires. ZIndex = int.MaxValue (2147483647) guarantees it is always
+                the absolute topmost sibling regardless of any future layers added above.
+            -->
+            <hosting:G9PageLoadingOverlay
+                x:Name="PageLoadingHost"
+                ZIndex="2147483647" />
+
+        </Grid>
+    </ControlTemplate>
+</ResourceDictionary>

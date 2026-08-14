@@ -1,0 +1,262 @@
+# ==============================================================================================
+#  G9MAUIControls — build, pack, mirror to GitHub, publish to nuget.org
+# ==============================================================================================
+#
+#  Requires three SECRET pipeline variables (Pipeline → Edit → Variables, "Keep this value secret"):
+#
+#      AzureDevOps.PAT   Code (Read) on g9tm      — clones this repo for the GitHub mirror
+#      Github.PAT        repo scope               — creates/pushes github.com/ImanKari/G9MAUIControls
+#      NuGetApiKey       Push scope on nuget.org  — publishes the five packages
+#
+#  Two things differ from the G9 house pipeline, both deliberate:
+#
+#  1. `dotnet` replaces VSBuild/NuGetCommand. These are multi-targeted .NET MAUI libraries
+#     (net10.0-android/ios/maccatalyst/windows) using Central Package Management. VSBuild has no
+#     way to install the MAUI workloads the restore needs, and NuGetCommand@2 predates CPM.
+#
+#  2. The GitHub mirror runs BEFORE the NuGet push, not after. The packages carry SourceLink
+#     pointing at github.com at a specific commit; publishing first would put packages on
+#     nuget.org whose source links 404 until the mirror step happens to succeed.
+#
+#  The pipeline deliberately does NOT compute a version. G9FamilyVersion in Directory.Build.props
+#  is the single source of truth (ADR-0010) and is bumped by hand with release notes. A re-run
+#  without a bump republishes nothing — --skip-duplicate makes that a no-op rather than a failure.
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none   # never publish from a pull-request build
+
+pool:
+  vmImage: 'windows-latest'   # net10.0-windows can only be built on Windows
+
+parameters:
+  - name: libraries
+    type: object
+    default:
+      - 'G9MAUIControls/G9MAUIControls.csproj'
+      - 'G9MAUIControls.Barcode/G9MAUIControls.Barcode.csproj'
+      - 'G9MAUIControls.IntroCarousel/G9MAUIControls.IntroCarousel.csproj'
+      - 'G9MAUIControls.ProgressOverlay/G9MAUIControls.ProgressOverlay.csproj'
+      - 'G9MAUIControls.Persistence.Sqlite/G9MAUIControls.Persistence.Sqlite.csproj'
+  - name: repositoryName
+    type: string
+    default: 'G9MAUIControls'
+  - name: githubOwner
+    type: string
+    default: 'ImanKari'
+
+variables:
+  buildConfiguration: 'Release'
+  packageOutput: '$(Build.ArtifactStagingDirectory)/nuget'
+  CI: 'true'   # switches on ContinuousIntegrationBuild and the SourceLink github remote
+
+steps:
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+- task: PowerShell@2
+  displayName: 'Validate credentials'
+  env:
+    GITHUB_PAT: $(Github.PAT)
+    AZDO_PAT: $(AzureDevOps.PAT)
+    NUGET_KEY: $(NuGetApiKey)
+  inputs:
+    targetType: 'inline'
+    script: |
+      $ErrorActionPreference = 'Continue'
+      $failed = @()
+
+      # GitHub: /user round-trips the token and proves the scope is live.
+      try {
+          $u = Invoke-RestMethod -Uri 'https://api.github.com/user' -Method Get -Headers @{
+              Authorization = "token $env:GITHUB_PAT"
+              Accept        = 'application/vnd.github.v3+json'
+              'User-Agent'  = 'g9-pipeline'
+          }
+          Write-Host "[ok]   GitHub PAT valid (authenticated as $($u.login))"
+      } catch {
+          $failed += "GitHub PAT rejected: $($_.Exception.Response.StatusCode.value__)"
+      }
+
+      # Azure DevOps: listing projects proves Code(Read) will work for the mirror clone.
+      try {
+          $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$env:AZDO_PAT"))
+          Invoke-RestMethod -Uri 'https://dev.azure.com/g9tm/_apis/projects?api-version=7.1' `
+              -Method Get -Headers @{ Authorization = "Basic $basic" } | Out-Null
+          Write-Host "[ok]   Azure DevOps PAT valid"
+      } catch {
+          $failed += "Azure DevOps PAT rejected: $($_.Exception.Response.StatusCode.value__)"
+      }
+
+      # NuGet: there is NO endpoint that validates a push key without pushing. Anything that
+      # claims otherwise is checking a public URL and always passes. Report honestly: presence
+      # and shape only. A bad key surfaces at the push step, which is where it can be believed.
+      if ([string]::IsNullOrWhiteSpace($env:NUGET_KEY)) {
+          $failed += "NuGetApiKey is not set"
+      } elseif ($env:NUGET_KEY.Length -lt 32) {
+          $failed += "NuGetApiKey is present but implausibly short ($($env:NUGET_KEY.Length) chars)"
+      } else {
+          Write-Host "[note] NuGetApiKey present ($($env:NUGET_KEY.Length) chars). NOT verified —"
+          Write-Host "       nuget.org offers no key-validation endpoint. Verified at push time."
+      }
+
+      if ($failed.Count) {
+          $failed | ForEach-Object { Write-Host "##vso[task.logissue type=error]$_" }
+          throw "Credential validation failed."
+      }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+- task: UseDotNet@2
+  displayName: 'Install .NET SDK 10'
+  inputs:
+    packageType: 'sdk'
+    version: '10.0.x'
+
+- task: PowerShell@2
+  displayName: 'Install MAUI workloads'
+  inputs:
+    targetType: 'inline'
+    script: |
+      dotnet workload install maui --skip-sign-check
+      if ($LASTEXITCODE -ne 0) { throw "Workload install failed ($LASTEXITCODE)" }
+      dotnet workload list
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# SourceLink reads the `github` remote (see GitRepositoryRemoteName in Directory.Build.props).
+# It only has to exist and be correct — nothing is pushed here, and the URL carries no token.
+- task: PowerShell@2
+  displayName: 'Add github remote for SourceLink'
+  inputs:
+    targetType: 'inline'
+    workingDirectory: '$(Build.SourcesDirectory)'
+    script: |
+      $url = "https://github.com/${{ parameters.githubOwner }}/${{ parameters.repositoryName }}.git"
+      git remote remove github 2>$null
+      git remote add github $url
+      git remote -v
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# The five libraries only. The Gallery is deliberately not built here: it is an application, and
+# a net10.0-ios APP bundle cannot be produced on a Windows agent. It stays a local verification
+# tool. Restoring/building/packing per project keeps a failure attributable to one package.
+- ${{ each lib in parameters.libraries }}:
+  - task: PowerShell@2
+    displayName: 'Pack ${{ lib }}'
+    inputs:
+      targetType: 'inline'
+      workingDirectory: '$(Build.SourcesDirectory)'
+      script: |
+        dotnet restore "${{ lib }}"
+        if ($LASTEXITCODE -ne 0) { throw "restore failed" }
+
+        dotnet build "${{ lib }}" -c $(buildConfiguration) --no-restore
+        if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+        dotnet pack "${{ lib }}" -c $(buildConfiguration) --no-build -o "$(packageOutput)"
+        if ($LASTEXITCODE -ne 0) { throw "pack failed" }
+
+- task: PowerShell@2
+  displayName: 'List produced packages'
+  inputs:
+    targetType: 'inline'
+    script: |
+      $pkgs = Get-ChildItem "$(packageOutput)" -Filter *.nupkg -ErrorAction SilentlyContinue
+      if (-not $pkgs) { throw "No .nupkg produced — nothing to publish." }
+      $pkgs | ForEach-Object { Write-Host ("  {0}  ({1:N0} KB)" -f $_.Name, ($_.Length / 1KB)) }
+      Write-Host "$($pkgs.Count) package(s), $((Get-ChildItem "$(packageOutput)" -Filter *.snupkg).Count) symbol package(s)"
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish packages as build artifact'
+  inputs:
+    PathtoPublish: '$(packageOutput)'
+    ArtifactName: 'nuget'
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# Mirror BEFORE publishing, so the commit the packages' SourceLink points at is already public.
+- task: PowerShell@2
+  displayName: 'Mirror Azure DevOps repo to GitHub'
+  env:
+    GITHUB_PAT: $(Github.PAT)
+    AZDO_PAT: $(AzureDevOps.PAT)
+  inputs:
+    targetType: 'inline'
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $owner = '${{ parameters.githubOwner }}'
+      $repo  = '${{ parameters.repositoryName }}'
+      $headers = @{
+          Authorization = "token $env:GITHUB_PAT"
+          Accept        = 'application/vnd.github.v3+json'
+          'User-Agent'  = 'g9-pipeline'
+      }
+
+      # Create the GitHub repo on first run. PUBLIC: these are MIT packages whose SourceLink and
+      # PackageProjectUrl point here, and both are dead links against a private repo.
+      try {
+          Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo" -Headers $headers | Out-Null
+          Write-Host "GitHub repo $owner/$repo exists"
+      } catch {
+          if ($_.Exception.Response.StatusCode.value__ -ne 404) { throw }
+          Write-Host "Creating $owner/$repo ..."
+          $body = @{
+              name        = $repo
+              private     = $false
+              auto_init   = $false
+              description = 'A dependency-light .NET MAUI control suite built on public MAUI primitives.'
+              homepage    = "https://www.nuget.org/packages/$repo"
+          } | ConvertTo-Json
+          Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -Headers $headers `
+              -Method Post -Body $body -ContentType 'application/json' | Out-Null
+      }
+
+      $work = Join-Path $env:AGENT_TEMPDIRECTORY 'mirror'
+      if (Test-Path $work) { Remove-Item $work -Recurse -Force }
+      New-Item -ItemType Directory -Path $work | Out-Null
+
+      $source = "https://$env:AZDO_PAT@g9tm.visualstudio.com/$repo/_git/$repo"
+      $dest   = "https://$($owner):$env:GITHUB_PAT@github.com/$owner/$repo.git"
+
+      git clone --mirror $source "$work/$repo.git"
+      if ($LASTEXITCODE -ne 0) { throw "mirror clone failed" }
+
+      Push-Location "$work/$repo.git"
+      try {
+          # --mirror makes GitHub match Azure exactly, which is what "mirror" has to mean:
+          # a branch deleted here must not linger there. Azure stays the source of truth.
+          git push --mirror $dest
+          if ($LASTEXITCODE -ne 0) { throw "mirror push failed" }
+      } finally {
+          Pop-Location
+          Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "Mirrored to https://github.com/$owner/$repo"
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+- task: PowerShell@2
+  displayName: 'Publish packages to nuget.org'
+  env:
+    NUGET_KEY: $(NuGetApiKey)
+  inputs:
+    targetType: 'inline'
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $failures = @()
+
+      # .snupkg is pushed by nuget alongside its .nupkg automatically, so only glob .nupkg —
+      # pushing symbols explicitly double-pushes and reports a spurious conflict.
+      foreach ($pkg in Get-ChildItem "$(packageOutput)" -Filter *.nupkg) {
+          Write-Host "── $($pkg.Name)"
+          dotnet nuget push $pkg.FullName `
+              --api-key $env:NUGET_KEY `
+              --source https://api.nuget.org/v3/index.json `
+              --skip-duplicate
+          if ($LASTEXITCODE -ne 0) { $failures += $pkg.Name }
+      }
+
+      if ($failures.Count) {
+          $failures | ForEach-Object { Write-Host "##vso[task.logissue type=error]Push failed: $_" }
+          throw "$($failures.Count) package(s) failed to publish."
+      }
+      Write-Host "All packages published (or already present — --skip-duplicate)."

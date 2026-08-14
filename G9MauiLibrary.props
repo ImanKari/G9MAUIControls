@@ -1,0 +1,50 @@
+<Project>
+
+  <!--
+    The shared MAUI-library shape for every package in the family. A satellite imports this at the TOP of
+    its project body:
+
+        <Import Project="..\G9MauiLibrary.props" />
+
+    Why an explicit import rather than a flag read in Directory.Build.props: that file is evaluated BEFORE
+    the project body, so a condition on a project-set flag can never see it — TargetFrameworks comes out
+    empty and restore fails with NETSDK1013. Imported here, ordering is correct and obvious at the call
+    site.
+
+    Keeping it in one file is what stops the satellites drifting apart, and keeps a new satellite's csproj
+    down to its own identity: PackageId, Title, Description, PackageTags, references.
+
+    The CORE sets these properties itself instead of importing, because it also carries a long
+    per-suppression NoWarn block whose comments would be misleading if inherited wholesale.
+  -->
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0-android;net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+
+    <UseMaui>true</UseMaui>
+    <UseMaterial3>false</UseMaterial3>
+    <SingleProject>true</SingleProject>
+    <OutputType>Library</OutputType>
+    <EnableDefaultXamlItems>true</EnableDefaultXamlItems>
+
+    <MauiEnableXamlCBindingWithSourceCompilation>true</MauiEnableXamlCBindingWithSourceCompilation>
+    <MauiStrictXamlCompilation>true</MauiStrictXamlCompilation>
+
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">26.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+    <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+
+    <!--
+      Satellites inherit the same documented suppressions the core needs, because they hold the same kind
+      of ported control code. The per-rule reasoning is on the equivalent block in G9MAUIControls.csproj —
+      read it there before adding to this list.
+    -->
+    <NoWarn>$(NoWarn);CS0169;IDE0044;CS0414;CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CA1859;CA1822;CA1305;CA1873;CA1001;CA1510;CA1826;CA2201;CA1852;CA1720;CA1010</NoWarn>
+    <NoWarn>$(NoWarn);MVVMTK0045</NoWarn>
+  </PropertyGroup>
+
+</Project>

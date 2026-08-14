@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The G9Shimmer highlight sweep: g9_shimmer_vector's `shimmerBand` group translated by
+     animator/g9_shimmer_translate.xml. Consumed by ShimmerBandViewHandler (Android). -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/g9_shimmer_vector">
+    <target
+        android:name="shimmerBand"
+        android:animation="@animator/g9_shimmer_translate" />
+</animated-vector>

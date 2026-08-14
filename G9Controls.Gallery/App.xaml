@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Application
+    x:Class="G9Controls.Gallery.App"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:g9Hosting="clr-namespace:G9MAUIControls.Hosting;assembly=G9MAUIControls"
+    xmlns:g9Theming="clr-namespace:G9MAUIControls.Theming;assembly=G9MAUIControls">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!--
+                    Merged BY TYPE, not by Source path. A `Source="/Hosting/G9PageTemplate.xaml"` resolves
+                    only within the assembly that declares it, so from a consumer it fails the Release
+                    build with XC0124 — Debug never notices, because Debug does not compile XAML
+                    (LES-0002 / LES-0013).
+
+                    G9PageTemplate is REQUIRED, not optional: G9PageBase looks the template up by key in
+                    its constructor and throws if it is missing, because the six-layer overlay z-stack it
+                    declares is what popup / sheet / toast resolve their host through.
+                -->
+                <g9Hosting:G9PageTemplate />
+                <g9Theming:G9ThemeLight />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

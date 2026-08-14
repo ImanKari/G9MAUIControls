@@ -1,0 +1,60 @@
+<ContentView
+    x:Class="G9MAUIControls.Controls.G9PlusButton"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:g9icons="clr-namespace:G9MAUIControls.Icons"
+    xmlns:buttons="clr-namespace:G9MAUIControls.Controls"
+    xmlns:theme="clr-namespace:G9MAUIControls.Theming"
+    IsClippedToBounds="False">
+
+    <Grid
+        x:Name="HitAreaLayout"
+        HeightRequest="69"
+        WidthRequest="69"
+        IsClippedToBounds="False">
+
+        <!--  Menu items container  -->
+        <Grid
+            x:Name="ItemsContainer"
+            Opacity="0"
+            IsClippedToBounds="False"
+            HorizontalOptions="Start"
+            VerticalOptions="End">
+            <BindableLayout.ItemTemplate>
+                <DataTemplate x:DataType="buttons:G9PlusButtonItem">
+                    <buttons:G9G9PlusButtonItemView />
+                </DataTemplate>
+            </BindableLayout.ItemTemplate>
+        </Grid>
+
+        <!--  Main button (Add / Close)  -->
+        <Grid
+            x:Name="RootLayout"
+            HeightRequest="69"
+            WidthRequest="69"
+            IsClippedToBounds="False"
+            HorizontalOptions="Start"
+            VerticalOptions="End">
+            <Grid.GestureRecognizers>
+                <TapGestureRecognizer Tapped="OnMainTapped" />
+            </Grid.GestureRecognizers>
+
+            <Border
+                Padding="0"
+                BackgroundColor="{theme:G9Color Primary}"
+                Stroke="{theme:G9Color PrimaryBorder}"
+                StrokeThickness="6.9">
+
+                <Border.StrokeShape>
+                    <RoundRectangle CornerRadius="99" />
+                </Border.StrokeShape>
+
+                <g9icons:G9IconView
+                    x:Name="MainIcon"
+                    Size="{OnPlatform Default=40, WinUI=32}"
+                    Icon="Plus" />
+
+            </Border>
+        </Grid>
+    </Grid>
+</ContentView>

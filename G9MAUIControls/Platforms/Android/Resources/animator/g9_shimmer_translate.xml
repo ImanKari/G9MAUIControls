@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sweeps the G9Shimmer band group across (and past) the 240-unit viewport, forever.
+     Runs on the RenderThread as part of the g9_shimmer_band AnimatedVectorDrawable. -->
+<objectAnimator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="1100"
+    android:interpolator="@android:interpolator/linear"
+    android:propertyName="translateX"
+    android:repeatCount="infinite"
+    android:valueFrom="-240"
+    android:valueTo="260"
+    android:valueType="floatType" />

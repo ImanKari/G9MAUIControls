@@ -1,0 +1,129 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+        The VERIFICATION app. Not a sample and not shipped — its job is to put every control on screen so
+        the suite can be looked at, which `09-Progress.md` records as the project's largest gap.
+
+        It carries three jobs beyond "does it run":
+          1. Visual verification of all 25 controls in BOTH themes and BOTH reading directions.
+          2. Visual verification of the ~15 hand-authored vector glyphs, which have never been seen.
+          3. The trim/AOT verification consumer (ADR-0011): a library build cannot see its dependencies'
+             implementations, so the only real check is publishing an app with full linking. That is what
+             TrimmerRootAssembly below is for.
+
+        It references all four UI packages by PROJECT, deliberately: a project reference surfaces a broken
+        public API immediately, whereas a package reference would test whatever was last packed.
+    -->
+
+    <PropertyGroup>
+        <TargetFrameworks>net10.0-android;net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+        <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+
+        <OutputType>Exe</OutputType>
+        <UseMaui>true</UseMaui>
+        <UseMaterial3>false</UseMaterial3>
+        <SingleProject>true</SingleProject>
+        <RootNamespace>G9Controls.Gallery</RootNamespace>
+
+        <!-- Never packed. -->
+        <IsPackable>false</IsPackable>
+
+        <ApplicationTitle>G9 Controls Gallery</ApplicationTitle>
+        <ApplicationId>com.byteorbit.g9controls.gallery</ApplicationId>
+        <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+        <ApplicationVersion>1</ApplicationVersion>
+        <WindowsPackageType>None</WindowsPackageType>
+
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">26.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+        <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+
+        <!-- An APP may pin transitively — unlike a library, nothing consumes its dependency list, so
+             inflating it costs nothing (LES-0006). -->
+        <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#2E7D32" />
+        <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#2E7D32" BaseSize="128,128" />
+        <MauiFont Include="Resources\Fonts\*" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Debug" Condition="'$(Configuration)' == 'Debug'" />
+    </ItemGroup>
+
+    <!--
+        The two ways to consume the suite, switchable, because they verify DIFFERENT things — and this app
+        is now the only place either is verified, since G9NodeControl.App moved out of this subtree.
+
+        PROJECT references (the default, and what you want while developing): a broken public API fails
+        immediately, and the satellite builds double as API-boundary tests. A project reference fails
+        precisely where a package reference fails vaguely.
+
+        PACKAGE references are what a real consumer has, and they are the only way to catch a PACKAGING
+        defect — a type left `internal`, a missing `.targets`, XAML that resolves through the project graph
+        but not across an assembly boundary, or a dependency present in the graph and absent from the
+        `.nuspec`. Neither mode substitutes for the other:
+
+            dotnet pack  G9MAUIControls.slnx -c Release -o artifacts/pack
+            Remove-Item -Recurse -Force ~/.nuget/packages/g9mauicontrols*   # NuGet versions are immutable
+            dotnet build G9Controls.Gallery -p:UseG9Packages=true
+
+        Then read obj/project.assets.json and confirm the entries are "type": "package", on the version you
+        just packed. A green build proves nothing about WHICH artifact it compiled against — see
+        AiGuides/11-EngineeringLog.md LES-0025.
+    -->
+    <PropertyGroup>
+        <UseG9Packages Condition="'$(UseG9Packages)' == ''">false</UseG9Packages>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(UseG9Packages)' != 'true'">
+        <ProjectReference Include="..\G9MAUIControls\G9MAUIControls.csproj" />
+        <ProjectReference Include="..\G9MAUIControls.Barcode\G9MAUIControls.Barcode.csproj" />
+        <ProjectReference Include="..\G9MAUIControls.IntroCarousel\G9MAUIControls.IntroCarousel.csproj" />
+        <ProjectReference Include="..\G9MAUIControls.ProgressOverlay\G9MAUIControls.ProgressOverlay.csproj" />
+    </ItemGroup>
+
+    <PropertyGroup Condition="'$(UseG9Packages)' == 'true'">
+        <!--
+            The pack output as a source, declared HERE rather than in nuget.config, and only on this path.
+            In nuget.config it broke the default build: artifacts/pack is created by `dotnet pack`, so
+            declaring it globally made every restore fail with NU1301 until a pack had run — including the
+            restore that pack itself needs.
+        -->
+        <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\artifacts\pack</RestoreAdditionalProjectSources>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(UseG9Packages)' == 'true'">
+        <PackageReference Include="G9MAUIControls" />
+        <PackageReference Include="G9MAUIControls.Barcode" />
+        <PackageReference Include="G9MAUIControls.IntroCarousel" />
+        <PackageReference Include="G9MAUIControls.ProgressOverlay" />
+    </ItemGroup>
+
+    <!--
+        Trim verification (ADR-0011). Rooting the libraries makes the trimmer analyse every code path in
+        them rather than only what this app happens to call, which is what turns a Release publish into a
+        real trim check:
+
+            dotnet publish -c Release -f net10.0-android -p:AndroidLinkMode=Full
+    -->
+    <ItemGroup Condition="'$(Configuration)' == 'Release'">
+        <TrimmerRootAssembly Include="G9MAUIControls" />
+        <TrimmerRootAssembly Include="G9MAUIControls.Barcode" />
+        <TrimmerRootAssembly Include="G9MAUIControls.IntroCarousel" />
+        <TrimmerRootAssembly Include="G9MAUIControls.ProgressOverlay" />
+    </ItemGroup>
+
+    <PropertyGroup>
+        <MauiEnableXamlCBindingWithSourceCompilation>true</MauiEnableXamlCBindingWithSourceCompilation>
+        <MauiStrictXamlCompilation>true</MauiStrictXamlCompilation>
+        <!-- This is a verification harness, not shipped API: per-member docs would be noise. -->
+        <!--
+            CA1711 ("type name ends in 'Delegate'") is not negotiable away: `AppDelegate` is the name
+            UIKit's [Register("AppDelegate")] binds to, so renaming it breaks launch on iOS/Mac Catalyst.
+        -->
+        <NoWarn>$(NoWarn);CS1591;CA1001;CA1031;CA1822;CA1859;CA1305;CA1711</NoWarn>
+    </PropertyGroup>
+
+</Project>

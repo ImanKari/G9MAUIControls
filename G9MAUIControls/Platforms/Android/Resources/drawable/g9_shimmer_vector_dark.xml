@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark-theme G9Shimmer frame. The light-theme vector intentionally remains unchanged.
+     In dark mode the sweep is a translucent-BLACK "lowlight", NOT a white highlight: the band
+     overlays the whole placeholder (bars AND the near-black host background #0C0D0C between them),
+     and anything lighter than near-black reads as a bright slab over those gaps — which is what a
+     dimmed/narrowed white band still did. Black is invisible over that background and only darkens
+     the raised skeleton bars (#22262A) as it passes, so the shimmer shows up ONLY over the bars as a
+     soft shadow sweep. Geometry mirrors the light band; only the gradient colour (white -> black)
+     differs. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="240dp"
+    android:height="240dp"
+    android:viewportWidth="240"
+    android:viewportHeight="240">
+    <group
+        android:name="shimmerBand"
+        android:translateX="-240">
+        <path android:pathData="M40,0 L200,0 L160,240 L0,240 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0"
+                    android:startY="0"
+                    android:endX="200"
+                    android:endY="0">
+                    <item
+                        android:offset="0.0"
+                        android:color="#00000000" />
+                    <item
+                        android:offset="0.5"
+                        android:color="#20000000" />
+                    <item
+                        android:offset="1.0"
+                        android:color="#00000000" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

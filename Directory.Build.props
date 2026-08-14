@@ -1,0 +1,184 @@
+<Project>
+
+  <!--
+    The root of this repository's property chain, and the SEAM that must stay a seam.
+
+    MSBuild stops walking upward at the first Directory.Build.props it finds, and nothing here imports a
+    parent — on purpose. In a standalone clone that costs nothing. It matters when this tree is vendored
+    inside a larger repository, which is a supported way to work on it: a host repository's own root
+    props will commonly pin a single <TargetFramework>, which breaks a multi-targeted MAUI restore
+    outright, and will set AnalysisLevel / NoWarn to that host's coding standards — which are the wrong
+    standards for a redistributable package, whose warning policy has to be stricter, because a package
+    must not ship warnings its consumers then inherit.
+
+    Do not add an <Import> of a parent file here. See AiGuides/10-Decisions.md ADR-0005.
+  -->
+
+  <!-- ############### Compiler + analysis, shared by every project ############### -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+
+    <!--
+      Documented suppressions for this subtree. Every entry is a rule that is WRONG here, not one being
+      dodged; each reason is in G9MAUIControls.csproj or AiGuides/10-Decisions.md ADR-0008.
+        CA1848 - LoggerMessage delegates for every log call.
+        CA1031 - "do not catch general Exception": three deliberate seams, each commented at the site.
+        CA1724 - type name colliding with a namespace name (G9Popup / G9BottomSheet / G9Toast).
+
+      NU1507 - "N package sources defined; map them or specify a single source", raised because this
+        subtree uses Central Package Management (below) and TreatWarningsAsErrors turns it into a
+        build BREAK.
+
+        nuget.config already answers it — `<clear/>` then nuget.org, exactly one source — and that
+        is what the CLI resolves when these projects are built or packed from here. But NuGet settings
+        are resolved from the directory that DRIVES the restore, and when a consuming solution drives
+        it — an IDE restoring an application's .sln from ITS repository root, with these projects
+        referenced from there — that file is not in the chain: the projects then see the consumer's
+        sources instead, and every one of the five fails to restore. Reported from a real deploy,
+        2026-08-14; see LES-0030.
+
+        Suppressed rather than answered with package source mapping because the warning describes a
+        hazard this subtree does not have. NU1507 exists because with several feeds a package can be
+        served by an unexpected one — but the sources a consumer restores through are the consumer's
+        own, already used for every other project in its repository, and no G9 package is being
+        resolved on that path at all (a consumer on project references is compiling these from source;
+        a consumer on package references gets them from wherever it gets its packages, which is its
+        decision to make). Adding source mapping HERE could not bind that restore anyway, and adding it
+        to a consumer's root config would change how every unrelated project in that repository
+        resolves packages — a large behaviour change to silence an advisory.
+    -->
+    <NoWarn>$(NoWarn);CA1848;CA1031;CA1724;NU1507</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    ############### Shared package metadata (ADR-0012) ###############
+
+    Everything identical across the family lives here so a new satellite inherits a complete, compliant
+    package with only four properties of its own: PackageId, Title, Description, PackageTags.
+
+    Set IsPackable=false in a project that must not ship (the scratch/verification app).
+  -->
+  <PropertyGroup>
+    <Authors>Iman Kari</Authors>
+    <Company>ByteOrbit</Company>
+    <Copyright>Copyright (c) Iman Kari 2026</Copyright>
+    <NeutralLanguage>en</NeutralLanguage>
+
+    <!--
+      ONE version for the whole family, and it is PRERELEASE on purpose (ADR-0010): the suite compiles,
+      packs, and has now been rendered and driven on Android, but not yet on iOS, Mac Catalyst or
+      Windows. A 1.0.0 would make a stability promise that cannot be withdrawn once consumers pin to it.
+
+      Note the mechanical consequence: a stable package cannot depend on a prerelease one, so the family
+      moves to stable together, after verification — never one package at a time.
+
+      BUMP THIS ON EVERY CONTENT CHANGE, including prerelease-to-prerelease. A NuGet version is an
+      immutable identity: once a consumer has restored 1.0.0-preview.1, the extracted copy in
+      ~/.nuget/packages wins over any later .nupkg carrying the same version, so re-packing changed code
+      under an unchanged version ships nothing and — worse — makes two machines disagree about what
+      "preview.1" contains, with no way to tell from the build output. See LES-0025.
+    -->
+    <!--
+      G9FamilyVersion is the single definition; <Version> just consumes it. The indirection exists because
+      $(Version) CANNOT be read back by Directory.Packages.props to pin the consumption side: in an app
+      project the MAUI SDK derives $(Version) from $(ApplicationDisplayVersion), so it means "the app's
+      version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
+      1.0 and failed restore with NU1102. See LES-0025.
+    -->
+    <G9FamilyVersion>1.0.0-preview.3</G9FamilyVersion>
+    <Version>$(G9FamilyVersion)</Version>
+
+    <!--
+      Shared across the family because the family ships as one version (ADR-0010) — per-package notes
+      would have to repeat the same line five times and would drift. Required by ADR-0012, and it was
+      the one metadata property in that ADR that nothing actually set until 2026-08-14.
+    -->
+    <PackageReleaseNotes>
+      1.0.0-preview.3 — first published build, and the first that has been RUN rather than only compiled.
+      Driving a real consuming app on-device found 21 library defects; the RTL ones are the reason this
+      version exists. G9IconView now pins both of its children to LeftToRight, because an RTL parent made
+      the platform mirror the glyph canvas ON TOP of a control's already-correct directional choice — a
+      double flip that reversed every chevron and arrow in the suite and silently mirrored the
+      non-directional glyphs too. G9Glyph gains ArrowBack / ArrowForward (shaft + head) with overridable
+      G9Glyphs slots, and the bottom-sheet header uses them: a bare chevron in a header reads as an
+      expander, not as "go back". Prerelease still: rendered and verified on Android, not yet on iOS,
+      Mac Catalyst or Windows. See AiGuides/09-Progress.md and LES-0034 / LES-0035 in AiGuides/11.
+    </PackageReleaseNotes>
+
+    <PackageProjectUrl>https://github.com/ImanKari/G9MAUIControls</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+
+    <!-- XML docs ship so the docs that DO exist reach consumers' IntelliSense. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!--
+      Symbols as a separate .snupkg rather than embedded PDBs: embedding costs ~30% package size for
+      every consumer, while a symbol package is fetched on demand only by someone actually debugging.
+    -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <!--
+      SourceLink sets RepositoryUrl/RepositoryType itself AND records the exact commit the package was
+      built from, which is what makes step-into debugging work for a consumer. Deterministic +
+      ContinuousIntegrationBuild make the output byte-reproducible.
+    -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!--
+      SourceLink must resolve against the PUBLIC GitHub mirror, not against `origin`.
+
+      This repository's origin is the private Azure DevOps repo; GitHub is a mirror the pipeline pushes
+      with identical commit SHAs. Microsoft.SourceLink.GitHub maps only github.com remotes, so left on
+      origin it would emit no source-link.json at all — and pointing it at Azure instead would emit links
+      that 403 for every consumer, which is worse than none. GitRepositoryRemoteName tells the Git task
+      which remote to read; the pipeline adds a `github` remote before packing.
+
+      Scoped to CI because that remote does not exist on a developer machine, where falling back to
+      origin is the correct behaviour.
+    -->
+    <GitRepositoryRemoteName Condition="'$(CI)' == 'true'">github</GitRepositoryRemoteName>
+  </PropertyGroup>
+
+  <!--
+    The README and icon are per-package files; both are required by the metadata above.
+
+    The icon is per-package by preference and shared by fallback: each package ships its own mark so the
+    five are distinguishable in a NuGet search result, and a new satellite that has not been given one
+    yet still packs a valid (non-blank) icon instead of failing the PackageIcon requirement.
+  -->
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="README.md" Pack="true" PackagePath="\" Condition="Exists('README.md')" />
+    <None Include="icon.png" Pack="true" PackagePath="\" Condition="Exists('icon.png')" />
+    <None Include="$(MSBuildThisFileDirectory)assets\icon.png" Pack="true" PackagePath="\"
+          Condition="!Exists('icon.png') And Exists('$(MSBuildThisFileDirectory)assets\icon.png')" />
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\"
+          Condition="Exists('$(MSBuildThisFileDirectory)LICENSE')" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    The shared MAUI-library shape (target frameworks, platform minimums, MAUI switches, the documented
+    suppressions) lives in G9MauiLibrary.props, which each satellite IMPORTS explicitly.
+
+    It is not conditioned in here, and that is not a style choice: Directory.Build.props is evaluated
+    BEFORE the project body, so a `Condition="'$(G9MauiLibrary)' == 'true'"` block here can never see a
+    flag the project sets — TargetFrameworks comes out empty and restore fails with NETSDK1013. An
+    explicit <Import> at the top of the project body is evaluated in the right order.
+  -->
+
+</Project>

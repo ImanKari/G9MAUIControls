@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Shared target frameworks, MAUI switches and documented suppressions. -->
+    <Import Project="..\G9MauiLibrary.props" />
+
+    <!--
+        SATELLITE: barcode text entry + its camera scan surface.
+
+        Its own package because camera-backed scanning costs a camera permission, a native camera stack,
+        and an app-store privacy declaration (ADR-0009) — none of which the core may impose on a consumer
+        who never shows a scanner.
+
+        Named after the CAPABILITY (.Barcode), not the dependency (.Camera), so the name survives swapping
+        the scanner implementation. See 03-PackageArchitecture.md, naming rule 2.
+    -->
+
+    <PropertyGroup>
+        <RootNamespace>G9MAUIControls.Barcode</RootNamespace>
+        <AssemblyName>G9MAUIControls.Barcode</AssemblyName>
+
+        <!--
+          CS0436 - "type conflicts with the imported type", for AutoBindableAttribute.
+          The [AutoBindable] source generator emits its own attribute into EVERY project it runs in, and
+          the core's emitted copy is public — so a satellite that references the core AND uses the
+          generator legitimately sees two identical declarations. The compiler already resolves to the
+          local one (the message says so). Not a real conflict, and not fixable here: the generator
+          controls the emitted visibility.
+        -->
+        <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+        <!-- Analyzer on, no compatibility claim: the scanner package's platform camera bindings are not
+             trim-annotated. See ADR-0011. -->
+        <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <PackageId>G9MAUIControls.Barcode</PackageId>
+        <Title>G9MAUIControls.Barcode — barcode entry and camera scanning</Title>
+        <Description>Adds G9BarcodeTextEntry to G9MAUIControls: an outlined text field with an integrated camera scan affordance, busy/accepted/error trailing states, optional format validation, and a multi-scan session mode. Ships separately because camera scanning requires a native camera stack and a camera permission, which the core deliberately does not depend on.</Description>
+        <PackageTags>maui;controls;barcode;qrcode;scanner;camera;entry</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\G9MAUIControls\G9MAUIControls.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Controls" />
+        <PackageReference Include="M.BindableProperty.Generator" PrivateAssets="all" />
+    </ItemGroup>
+
+    <!--
+        The camera scanner is referenced ONLY on the platforms that have a camera binding. Mac Catalyst
+        and Windows compile against the no-op scan provider instead, so the package still restores and
+        builds on all four TFMs rather than failing with NU1202 on the two without an asset.
+
+        GetTargetPlatformIdentifier is used rather than comparing the whole TFM string, because it keeps
+        working when the TFM version is bumped.
+    -->
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'
+                       or $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">
+        <PackageReference Include="CameraScanner.Maui" />
+    </ItemGroup>
+
+</Project>

@@ -1,0 +1,120 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Shared target frameworks, MAUI switches and documented suppressions. -->
+    <Import Project="..\G9MauiLibrary.props" />
+
+    <!--
+        SATELLITE: SQLite persistence layer.
+
+        The one package in the family that does NOT reference the core — it has nothing to do with
+        controls. It is named inside the family anyway so the ecosystem stays one discoverable,
+        prefix-reservable set; the tension is recorded in ADR-0009, along with the note that
+        `G9Persistence.Sqlite` is the sibling-family alternative and that renaming is only free before
+        first publish.
+
+        Design and every extension point: AiGuides/04-SqlitePersistence.md.
+    -->
+
+    <PropertyGroup>
+        <RootNamespace>G9MAUIControls.Persistence.Sqlite</RootNamespace>
+        <AssemblyName>G9MAUIControls.Persistence.Sqlite</AssemblyName>
+
+        <!--
+            NO IsAotCompatible here, unlike every other package — and that is the correct, honest call.
+
+            sqlite-net maps rows to objects by reflection, and this layer adds expression-tree and entity
+            metadata reflection on top. The trimming guidance names exactly this shape as the case where
+            "alternative coding approaches ... might need to be considered ... such as source generators".
+            Declaring compatibility would be false, and a false claim is WORSE than none: NativeAOT
+            ignores the flag and trims everything, so the app breaks at runtime instead of warning at
+            build time.
+
+            The posture instead (ADR-0014):
+              * EnableTrimAnalyzer surfaces the warnings without asserting compatibility;
+              * entity type parameters carry [DynamicallyAccessedMembers];
+              * what cannot be annotated is marked [RequiresUnreferencedCode] and PROPAGATED to public
+                API, which is what stops consumers getting an unactionable IL2104;
+              * a TrimmerRootDescriptor ships in the package so a consumer can root their entity assembly
+                without working out the incantation.
+        -->
+        <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+
+        <!--
+            Essentials, NOT Controls. The built-in database locators resolve the app-data directory
+            (FileSystem.AppDataDirectory), which is a MAUI Essentials API — but nothing in this package
+            touches UI, so pulling Microsoft.Maui.Controls would add a whole UI stack to a persistence
+            package. UseMauiEssentials is the documented way to take the smaller half.
+        -->
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <PackageId>G9MAUIControls.Persistence.Sqlite</PackageId>
+        <Title>G9MAUIControls.Persistence.Sqlite — fluent SQLite repository for MAUI apps</Title>
+        <Description>A fluent, cache-aware SQLite persistence layer for .NET MAUI: a generic repository with Select / Insert / Update / Delete accessors, expression-to-SQL translation (projections, joins, grouping, aggregates) that keeps filters in the database rather than in memory, debounced in-memory caches for hot reference tables, ordered schema migrations, and consistent GUID-id handling for stores whose rows can arrive in any case. Application behaviour — audit fields, soft delete, tenancy, sync metadata, conflict policy, value converters — is injected through a configuration builder, entity descriptors, and an interceptor pipeline; the package knows nothing about your domain.</Description>
+        <PackageTags>maui;sqlite;repository;orm;persistence;database;migrations;query-builder;offline</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Essentials" />
+
+        <PackageReference Include="sqlite-net-pcl" />
+
+        <!-- Pins the cross-platform native SQLite to a build bundling SQLite >= 3.50.2, clearing
+             CVE-2025-6965 / GHSA-2m69-gcr7-jv3q which sqlite-net-pcl otherwise pulls transitively via
+             bundle_green. Native-only, so ABI-safe with the 2.x managed layer. -->
+        <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
+
+        <!-- Abstractions only, never the implementations: a library that referenced the DI container or
+             a logging provider would force that choice on its consumer. -->
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    </ItemGroup>
+
+    <!-- Shipped so a consumer can root their entity assembly for trimming without inventing the XML. -->
+    <ItemGroup>
+        <None Include="build\G9MAUIControls.Persistence.Sqlite.xml" Pack="true" PackagePath="build\"
+              Condition="Exists('build\G9MAUIControls.Persistence.Sqlite.xml')" />
+    </ItemGroup>
+
+    <!-- ###############################################################################
+         Documented analyzer posture for THIS package.
+
+         It differs from the rest of the family for one reason: sqlite-net maps by reflection, so the trim
+         analyzer has genuine findings that cannot all be annotated away. See ADR-0014.
+         ############################################################################### -->
+    <PropertyGroup>
+        <!--
+          The IL20xx trim findings stay VISIBLE as warnings but must not fail the build.
+
+          They are real: sqlite-net's InsertAsync/DeleteAsync/InsertAllAsync are themselves marked
+          [RequiresUnreferencedCode], and the generic entity parameter flows into reflection the analyzer
+          cannot follow. The honest response is already made where it matters — SqliteRepository<T> carries
+          [RequiresUnreferencedCode] on the TYPE, so a consumer publishing trimmed gets one actionable
+          warning naming the repository rather than an unactionable "assembly produced trim warnings".
+
+          Making them errors here would leave two options, both worse: suppress them individually and lose
+          the signal, or claim AOT compatibility that is false. Warnings keep them in view as the surface is
+          improved, which is what EnableTrimAnalyzer is for.
+        -->
+        <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2026;IL2070;IL2072;IL2075;IL2077;IL2087;IL2090;IL2091;IL2111</WarningsNotAsErrors>
+
+        <!--
+          CA1000 - "do not declare static members on generic types", on the per-entity caches. The static
+          state IS per closed generic type, which is exactly the design: SqliteDtoCache<Sample, SampleDto>
+          and SqliteDtoCache<Pick, PickDto> must not share a cache. Obeying the rule would mean an
+          instance registry keyed by type — the same thing, indirected, with a lookup on every access.
+        -->
+        <NoWarn>$(NoWarn);CA1000</NoWarn>
+
+        <!--
+          CA1865 - EndsWith(char) over EndsWith(string). Cosmetic; the flagged sites are SQL fragment
+          assembly, not a hot loop. Batched into the same cleanup pass as the family's other cosmetics.
+        -->
+        <NoWarn>$(NoWarn);CA1865</NoWarn>
+
+        <!-- CS1573 - a param tag missing after threading options through a ported signature. Tracked with
+             the wider per-member documentation debt (09-Progress.md). -->
+        <NoWarn>$(NoWarn);CS1573</NoWarn>
+    </PropertyGroup>
+
+</Project>

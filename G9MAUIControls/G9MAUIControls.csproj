@@ -1,0 +1,143 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+        The CORE package. Everything here has minimal dependencies by contract — see
+        AiGuides/03-PackageArchitecture.md for the placement test, and ADR-0009 for why
+        dependency-heavy or domain-shaped components ship as satellites instead.
+
+        Shared build settings and the whole package-metadata block live in Directory.Build.props.
+        This file sets only what is genuinely per-package.
+    -->
+
+    <PropertyGroup>
+        <TargetFrameworks>net10.0-android;net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+        <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+
+        <UseMaui>true</UseMaui>
+        <UseMaterial3>false</UseMaterial3>
+        <SingleProject>true</SingleProject>
+        <OutputType>Library</OutputType>
+        <RootNamespace>G9MAUIControls</RootNamespace>
+        <AssemblyName>G9MAUIControls</AssemblyName>
+        <EnableDefaultXamlItems>true</EnableDefaultXamlItems>
+
+        <!-- Trim/AOT posture per ADR-0011. IsAotCompatible implies IsTrimmable AND enables the AOT
+             analyzers. The controls qualify: no Reflection.Emit, no private-field reads, no runtime
+             codegen. NOTE the honest limit — a library build cannot see its dependencies'
+             implementations, so this is "declared and analyzer-clean", not "verified trim-safe".
+             Verification is a consuming app published with full linking. -->
+        <IsAotCompatible>true</IsAotCompatible>
+
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">26.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+        <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+    </PropertyGroup>
+
+    <!-- Per-package metadata. Everything else is inherited. -->
+    <PropertyGroup>
+        <PackageId>G9MAUIControls</PackageId>
+        <Title>G9MAUIControls — hand-rolled .NET MAUI control suite</Title>
+        <Description>A dependency-light .NET MAUI control suite built entirely on public MAUI primitives: 25 input and feedback controls sharing one outlined-field architecture, a bottom sheet with real per-platform edge-handoff gestures, a popup system, toasts, an animated tab bar, an edge drawer, and a ~110-token light/dark theme engine. No shadows (a measured software-blur ANR hazard), no reflection, trim-analyzer clean, RTL-correct, and bring-your-own icon font — no icon package required.</Description>
+        <PackageTags>maui;controls;ui;bottomsheet;popup;toast;theme;dark-mode;rtl;android;ios;windows;maccatalyst</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Controls" />
+        <PackageReference Include="CommunityToolkit.Mvvm" />
+        <PackageReference Include="SkiaSharp.Views.Maui.Controls" />
+        <PackageReference Include="M.BindableProperty.Generator" PrivateAssets="all" />
+    </ItemGroup>
+
+    <PropertyGroup>
+        <MauiEnableXamlCBindingWithSourceCompilation>true</MauiEnableXamlCBindingWithSourceCompilation>
+        <MauiStrictXamlCompilation>true</MauiStrictXamlCompilation>
+    </PropertyGroup>
+
+    <!-- ###############################################################################
+         Documented analyzer suppressions.
+
+         TreatWarningsAsErrors is ON deliberately — a package must not ship warnings that its consumers
+         then inherit — so every entry below is a rule that is WRONG for this codebase, not a rule being
+         dodged. Each says why. Do not add without a reason of the same kind. (ADR-0008)
+         ############################################################################### -->
+    <PropertyGroup>
+        <!--
+          CS0169 / IDE0044 - "field is never used" / "make field readonly" on the ~300 [AutoBindable]
+          backing fields. FALSE POSITIVES inherent to the generator: the field exists only to declare a
+          bindable property's name, type and default, and the generated property reads through
+          BindableProperty GetValue/SetValue rather than the field, so the compiler cannot see the use.
+          Making it readonly would break the generator's own initialization. Verified against the emitted
+          *.generated.cs, not assumed.
+        -->
+        <NoWarn>$(NoWarn);CS0169;IDE0044</NoWarn>
+
+        <!-- CS0414 - same generator, for backing fields whose only assignment is the ctor default. -->
+        <NoWarn>$(NoWarn);CS0414</NoWarn>
+
+        <!--
+          CA1859 - "return the concrete type for performance". The view-building helpers return View on
+          purpose: the concrete type changes between states (spinner vs glyph vs image) and narrowing the
+          signature would leak that into the API and force call sites to re-widen.
+        -->
+        <NoWarn>$(NoWarn);CA1859</NoWarn>
+
+        <!--
+          CA1822 - "member can be static", on the fluent extension surfaces, where instance methods are
+          the entire point of the `view.ShowToastAsync(...)` shape even when the receiver is unused.
+        -->
+        <NoWarn>$(NoWarn);CA1822</NoWarn>
+
+        <!--
+          CA1305 / CA1873 - explicit IFormatProvider on every format call, and log-argument guards.
+          Culture-sensitive formatting goes through G9Culture.CurrentCulture where it matters (dates,
+          numbers); the flagged sites are diagnostic strings and glyph keys where invariant is correct.
+        -->
+        <NoWarn>$(NoWarn);CA1305;CA1873</NoWarn>
+
+        <!--
+          CA1001 - "owns a disposable field but is not IDisposable", on views holding a
+          CancellationTokenSource. These are MAUI VisualElements: their lifetime is the visual tree's and
+          MAUI never calls Dispose on a view. They cancel and dispose on Unloaded / HandlerChanging, the
+          only hook that actually fires. Implementing IDisposable would advertise a contract nothing in
+          MAUI honours.
+        -->
+        <NoWarn>$(NoWarn);CA1001</NoWarn>
+
+        <!--
+          CA1510 / CA1826 / CA2201 / CA1852 - ThrowIfNull helpers, indexer-over-LINQ, exception
+          specificity, sealing. All cosmetic on ported code that is already correct; each is a mechanical
+          edit with no behavioural change. A dedicated cleanup pass, not a build blocker.
+        -->
+        <NoWarn>$(NoWarn);CA1510;CA1826;CA2201;CA1852</NoWarn>
+
+        <!--
+          CA1720 - "identifier contains a type name", for enum members Single and Decimal. These are the
+          correct domain words: a picker's selection mode really is Single. Renaming would worsen the API.
+        -->
+        <NoWarn>$(NoWarn);CA1720</NoWarn>
+
+        <!--
+          CA1010 - "implement IEnumerable<T>", on the Apple shimmer platform view. It derives from UIView,
+          whose Objective-C bridge surfaces a non-generic IEnumerable; a platform view neither can nor
+          should re-declare that generically.
+        -->
+        <NoWarn>$(NoWarn);CA1010</NoWarn>
+
+        <!--
+          CS1591 - "missing XML comment for publicly visible member".
+          GenerateDocumentationFile stays ON so the docs that DO exist ship in the .xml and reach
+          consumers' IntelliSense. The rule is suppressed because two groups cannot satisfy it:
+          XAML compiler-generated partials emit public types nobody authored, and ~900 members carried
+          over from the source app document behaviour in class-level remarks rather than per-member.
+          Tracked as follow-up in 09-Progress.md. This is NOT "docs are optional" — every type added
+          since the extraction is documented, and new public API is expected to be.
+        -->
+        <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+        <!-- MVVM Toolkit does not yet emit partial properties. -->
+        <NoWarn>$(NoWarn);MVVMTK0045</NoWarn>
+    </PropertyGroup>
+
+</Project>

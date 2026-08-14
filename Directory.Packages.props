@@ -1,0 +1,139 @@
+<Project>
+
+  <!--
+    Central Package Management for the MAUI subtree. This file also STOPS the upward walk to the
+    repository root Directory.Packages.props, whose list belongs to the server/firmware solution and
+    contains none of these. See Directory.Build.props for the same reasoning (ADR-0005).
+
+    ADDING A PACKAGE HERE IS A DECISION WITH WEIGHT. Every reference becomes a dependency in a published
+    .nupkg and lands in every consumer's app. Per ADR-0009 it requires an ADR naming the rejected
+    alternative; adding one to the CORE additionally requires justifying why it cannot be a satellite.
+
+    Versions are plain minimums — never an exact pin, never an upper bound. An upper bound guarantees a
+    restore failure the first time a consumer legitimately needs a newer transitive version.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+
+    <!--
+      Transitive pinning is OFF, and that is deliberate for a LIBRARY family.
+
+      It is a good default for an application: it forces one version of every transitive package. But it
+      works by promoting transitive dependencies into DIRECT ones, and for a packable project those direct
+      references land in the published .nuspec. Measured on the first pack with it enabled:
+      G9MAUIControls.Barcode advertised Microsoft.Extensions.DependencyInjection.Abstractions and
+      Microsoft.Extensions.Logging.Abstractions — versions declared here for the SQLite package, which
+      Barcode does not reference and does not use.
+
+      That is precisely the dependency-list inflation the ecosystem split exists to prevent (ADR-0009),
+      so it stays off here. An APP in this subtree may switch it on in its own csproj, where inflating a
+      dependency list costs nothing because nothing consumes an app.
+    -->
+    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ####### Shared by every package in the family ####### -->
+
+    <!-- Records the exact build commit + repository metadata; build-time only, never a consumer dep. -->
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ####### G9MAUIControls (core) ####### -->
+
+    <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.90" />
+
+    <!-- ObservableObject (G9Palette's ~110 change-notifying colour tokens) and IRelayCommand
+         (G9SafeButton). Tiny, MIT, and present in the large majority of MAUI apps already, so close to
+         a free dependency. -->
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+
+    <!-- Source generator only (PrivateAssets=all at the reference site), so it never reaches a
+         consumer's dependency graph. -->
+    <PackageVersion Include="M.BindableProperty.Generator" Version="0.11.1" />
+
+    <!-- ONLY for G9TabBar's concave FAB-notch silhouette. That shape needs a genuinely blurred path,
+         and both alternatives are ruled out: a MAUI Shadow is a software bitmap blur on the UI thread
+         (a measured ANR — G9Controls.md §0), and ICanvas.SetShadow is unreliable on Android's
+         hardware-accelerated GraphicsView. Skia blurs the exact path on the render thread. -->
+    <PackageVersion Include="SkiaSharp.Views.Maui.Controls" Version="4.151.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ####### G9MAUIControls.IntroCarousel ####### -->
+
+    <!-- Video slides. THE reason this control is a satellite rather than core (ADR-0006/ADR-0009):
+         MediaElement pulls a platform media stack (ExoPlayer on Android, AVPlayer on Apple) that a
+         consumer who only wants a text entry must not acquire. -->
+    <PackageVersion Include="CommunityToolkit.Maui.MediaElement" Version="10.0.0" />
+    <PackageVersion Include="CommunityToolkit.Maui.Core" Version="15.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ####### G9MAUIControls.Barcode ####### -->
+
+    <!-- Camera-backed barcode scanning: a camera permission, a native camera stack, and an app-store
+         privacy declaration. Exactly the dependency profile that must stay out of the core. -->
+    <PackageVersion Include="CameraScanner.Maui" Version="1.8.31" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ####### G9MAUIControls.Persistence.Sqlite ####### -->
+
+    <!-- sqlite-net-pcl over Microsoft.Data.Sqlite for v1 (ADR-0015): the extracted code is built on its
+         SQLiteAsyncConnection and its object mapper, so switching is a rewrite of the materialisation
+         layer rather than a dependency swap. Both embed SQLite through SQLitePCLRaw.bundle_green, which
+         is the part that matters for iOS AOT. -->
+    <!-- Essentials ONLY, never Microsoft.Maui.Controls: the built-in database locators resolve
+         FileSystem.AppDataDirectory, which is an Essentials API. Pulling Controls would put a whole UI
+         stack into a persistence package for one path lookup. -->
+    <PackageVersion Include="Microsoft.Maui.Essentials" Version="10.0.90" />
+
+    <PackageVersion Include="sqlite-net-pcl" Version="1.11.285" />
+
+    <!-- Pins the cross-platform native SQLite to a build bundling SQLite >= 3.50.2 (clears
+         CVE-2025-6965 / GHSA-2m69-gcr7-jv3q, which sqlite-net-pcl otherwise pulls transitively via
+         bundle_green). Native-only, so ABI-safe with the 2.x managed layer. -->
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ####### G9Controls.Gallery (verification app — never packed) ####### -->
+
+    <!--
+        Pinned to 10.0.0, matching the Abstractions above rather than the newest patch. The libraries floor
+        Microsoft.Extensions.* at 10.0.0 on purpose — a library that demands a patch version forces it on
+        every consumer. Because an app in this subtree pins transitively (LES-0006), a 10.0.10 here drags
+        Abstractions 10.0.10 in behind it and NU1109-fails against the 10.0.0 pin. Debug-only diagnostics
+        are not worth splitting the graph over.
+    -->
+    <PackageVersion Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+
+    <!--
+        The suite's own versions, for the UseG9Packages=true verification path (see G9Controls.Gallery.csproj).
+        Central Package Management requires a version for every PackageReference, including these.
+
+        DERIVED from $(G9FamilyVersion) in Directory.Build.props, not hardcoded — because hardcoding them
+        meant they did not move when the family version did. On 2026-08-14 the family went to preview.2 and
+        these five stayed on preview.1; the verification build then succeeded against the PREVIOUS packages,
+        still sitting in ~/.nuget/packages, and reported "Build succeeded / 0 Warning(s)" while testing none
+        of the new code. That is the worst available outcome: a green verification of the wrong artifact.
+
+        $(G9FamilyVersion) and NOT $(Version), which was tried first and fails: this file is evaluated in the
+        CONSUMING project, and for a MAUI app the SDK derives $(Version) from $(ApplicationDisplayVersion) —
+        so the pins resolved to the app's own "1.0" and restore died with NU1102 (>= 1.0.0 requested, only
+        1.0.0-preview.2 on the feed). A dedicated property name has one meaning everywhere. See LES-0025.
+    -->
+    <PackageVersion Include="G9MAUIControls" Version="$(G9FamilyVersion)" />
+    <PackageVersion Include="G9MAUIControls.Barcode" Version="$(G9FamilyVersion)" />
+    <PackageVersion Include="G9MAUIControls.IntroCarousel" Version="$(G9FamilyVersion)" />
+    <PackageVersion Include="G9MAUIControls.ProgressOverlay" Version="$(G9FamilyVersion)" />
+    <PackageVersion Include="G9MAUIControls.Persistence.Sqlite" Version="$(G9FamilyVersion)" />
+  </ItemGroup>
+
+</Project>

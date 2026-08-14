@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<ContentView
+    x:Class="G9MAUIControls.Controls.G9G9PlusButtonItemView"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:g9icons="clr-namespace:G9MAUIControls.Icons"
+    xmlns:buttons="clr-namespace:G9MAUIControls.Controls"
+    xmlns:theme="clr-namespace:G9MAUIControls.Theming"
+    x:DataType="buttons:G9PlusButtonItem"
+    HeightRequest="46"
+    WidthRequest="179"
+    HorizontalOptions="Start"
+    VerticalOptions="End"
+    IsClippedToBounds="False">
+
+    <Grid
+        x:Name="TapGrid">
+        <Grid.GestureRecognizers>
+            <TapGestureRecognizer Command="{Binding SelectedCommand}" CommandParameter="{Binding .}" />
+        </Grid.GestureRecognizers>
+
+        <Border
+            x:Name="TextBorder"
+            Margin="26,4"
+            BackgroundColor="{theme:G9Color Primary}"
+            Stroke="{theme:G9Color PrimaryBorder}"
+            StrokeThickness="1"
+            HorizontalOptions="Start"
+            WidthRequest="0">
+
+            <Label
+                x:Name="TextLabel"
+                Margin="25,0,0,0"
+                FontAttributes="Bold"
+                FontSize="16"
+                HorizontalTextAlignment="Start"
+                Opacity="0"
+                Text="{Binding Text}"
+                TextColor="{theme:G9Color OnPrimary}"
+                VerticalTextAlignment="Center" />
+        </Border>
+
+        <!--  Icon circle  -->
+        <Border
+            Padding="2.9"
+            BackgroundColor="{theme:G9Color Primary}"
+            Stroke="{theme:G9Color PrimaryBorder}"
+            StrokeThickness="5"
+            HorizontalOptions="Start"
+            VerticalOptions="Center">
+
+            <Border.StrokeShape>
+                <RoundRectangle CornerRadius="99" />
+            </Border.StrokeShape>
+
+            <g9icons:G9IconView
+                Size="{OnPlatform Default=32, WinUI=24}"
+                Icon="{Binding Icon}" />
+        </Border>
+
+    </Grid>
+</ContentView>

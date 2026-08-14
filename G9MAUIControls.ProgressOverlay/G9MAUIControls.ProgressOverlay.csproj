@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Shared target frameworks, MAUI switches and documented suppressions. -->
+    <Import Project="..\G9MauiLibrary.props" />
+
+    <!--
+        SATELLITE: staged progress overlay with cancel, retry and terminal states.
+
+        This one adds NO dependency beyond the core, and is still separate. The reason is API-surface
+        hygiene rather than dependency weight (ADR-0009): it is an OPINIONATED component — a four-state
+        machine with a cancel contract, a retry affordance and a message-driven progress source — whereas
+        the core ships only the generic seam, IG9BottomAnchoredOverlay.
+
+        Keeping it out keeps the core's public surface small and lets this iterate without moving the
+        core's version. Folding it in later is a non-breaking merge; pulling it out later would be
+        breaking — so it starts outside, cheaply.
+    -->
+
+    <PropertyGroup>
+        <RootNamespace>G9MAUIControls.ProgressOverlay</RootNamespace>
+        <AssemblyName>G9MAUIControls.ProgressOverlay</AssemblyName>
+
+        <!--
+          CS0436 - "type conflicts with the imported type", for AutoBindableAttribute.
+          The [AutoBindable] source generator emits its own attribute into EVERY project it runs in, and
+          the core's emitted copy is public — so a satellite that references the core AND uses the
+          generator legitimately sees two identical declarations. The compiler already resolves to the
+          local one (the message says so). Not a real conflict, and not fixable here: the generator
+          controls the emitted visibility.
+        -->
+        <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+        <!-- Same posture as the core: no reflection, so the claim is honest. -->
+        <IsAotCompatible>true</IsAotCompatible>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <PackageId>G9MAUIControls.ProgressOverlay</PackageId>
+        <Title>G9MAUIControls.ProgressOverlay — staged progress with cancel and retry</Title>
+        <Description>Adds a bottom-anchored staged-progress overlay to G9MAUIControls: one Running / Canceling / Success / Error state machine plus a draggable minimized bubble, a 44dp cancel target that never routes a cancellation through an error terminal, and a retry affordance on failure. Mounts above the toast stack via the core's IG9BottomAnchoredOverlay seam. No dependencies beyond the core.</Description>
+        <PackageTags>maui;controls;progress;overlay;cancel;retry;sync;long-running</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\G9MAUIControls\G9MAUIControls.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Controls" />
+        <PackageReference Include="CommunityToolkit.Mvvm" />
+        <PackageReference Include="M.BindableProperty.Generator" PrivateAssets="all" />
+    </ItemGroup>
+
+</Project>

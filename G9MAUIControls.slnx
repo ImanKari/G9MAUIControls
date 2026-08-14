@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="G9Controls.Gallery/G9Controls.Gallery.csproj" />
+  <Project Path="G9MAUIControls.Barcode/G9MAUIControls.Barcode.csproj" />
+  <Project Path="G9MAUIControls.IntroCarousel/G9MAUIControls.IntroCarousel.csproj" />
+  <Project Path="G9MAUIControls.Persistence.Sqlite/G9MAUIControls.Persistence.Sqlite.csproj" />
+  <Project Path="G9MAUIControls.ProgressOverlay/G9MAUIControls.ProgressOverlay.csproj" />
+  <Project Path="G9MAUIControls/G9MAUIControls.csproj" />
+</Solution>
