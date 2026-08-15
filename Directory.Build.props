@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.0</G9FamilyVersion>
+    <G9FamilyVersion>1.0.1</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,18 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.1 — packaging fix, no API or behaviour change.
+
+      G9MAUIControls.Persistence.Sqlite 1.0.0 shipped a Windows resource index (.pri) that named
+      `G9MAUIControls.Persistence.Sqlite\icon.png`, a path the package does not contain — the icon is
+      packed at the package root, as PackageIcon requires. Every consumer building a net10.0-windows*
+      target failed with MSB3030 ("could not copy ... icon.png ... because it was not found"). The
+      packaging icon is now kept out of the SDK's default item globs family-wide, so it can no longer be
+      indexed as a WinUI resource. Only that one package was affected, because it is the only
+      Essentials-only project — the Controls-based four had the image swept back out of @(Content) by
+      the MAUI targets. Consumers on 1.0.0 that added a build-side workaround can remove it after
+      upgrading.
+
       1.0.0 — first stable release. The controls themselves are not new: they have been carrying a
       production application for a long time, and this version is the point at which the extracted
       PACKAGES have been driven by that same application end to end rather than merely compiling.
@@ -154,6 +166,38 @@
       origin is the correct behaviour.
     -->
     <GitRepositoryRemoteName Condition="'$(CI)' == 'true'">github</GitRepositoryRemoteName>
+  </PropertyGroup>
+
+  <!--
+    ############### The packaging icon is METADATA, never build content ###############
+
+    `icon.png` sits at a package's project root purely to satisfy <PackageIcon> above. It must never be
+    swept into the SDK's DEFAULT item globs, because on the Windows target a root .png lands in
+    @(Content) — and @(Content) is what MakePri indexes. The library then ships a `.pri` whose index
+    names `<AssemblyName>\icon.png`, a path the nupkg does not contain (the icon is packed at the
+    package ROOT, exactly as PackageIcon requires), and EVERY consumer building net10.0-windows* dies:
+
+        error MSB3030: Could not copy "...\lib\net10.0-windows10.0.19041\<AssemblyName>\icon.png"
+        because it was not found.
+
+    This bit exactly ONE package — G9MAUIControls.Persistence.Sqlite 1.0.0, the only one that shipped a
+    `.pri` at all. The asymmetry is the tell and is worth understanding before touching this: the other
+    four reference Microsoft.Maui.Controls, whose targets sweep root images back out of @(Content); this
+    one is deliberately Essentials-only (a persistence layer must not drag in the UI stack), so nothing
+    removed it. Verified, not assumed — `-getItem:Content` reports exactly one item for the Sqlite
+    project and zero for the other four, and its DefiningProjectName is Microsoft.NET.Sdk.DefaultItems.
+
+    DefaultItemExcludes is the fix rather than a <Content Remove/>: it is the SDK's own supported "keep
+    this out of the default globs" knob and it is read BEFORE the default items are created, whereas a
+    Remove in this file would run before the item exists and quietly do nothing (Directory.Build.props is
+    imported ahead of Microsoft.NET.Sdk.DefaultItems.props). Excluding it from the default globs does not
+    unpack it — the explicit Pack=true include below is what puts it in the nupkg, and that is untouched.
+
+    Keep this family-wide, not scoped to the Sqlite project: a future satellite that also skips
+    Microsoft.Maui.Controls would otherwise reintroduce the same broken package silently.
+  -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);icon.png</DefaultItemExcludes>
   </PropertyGroup>
 
   <!--

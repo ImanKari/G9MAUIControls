@@ -11,7 +11,32 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-08-14**
+Last updated: **2026-08-15**
+
+## 1.0.1 — packaging fix (2026-08-15)
+
+**The first defect found by a consumer on PACKAGE references rather than project references, and it
+could not have been found any other way.**
+
+`G9MAUIControls.Persistence.Sqlite` 1.0.0 shipped a Windows `.pri` that indexed
+`G9MAUIControls.Persistence.Sqlite\icon.png` — a path the nupkg does not contain, because the icon is
+packed at the package root as `<PackageIcon>` requires. Every consumer building `net10.0-windows*`
+failed with `MSB3030`. It was the only package affected: the other four reference
+`Microsoft.Maui.Controls`, whose targets sweep root images back out of `@(Content)`, while this one is
+Essentials-only by design (ADR-0009) so nothing removed it.
+
+Fixed family-wide in `Directory.Build.props` by keeping the packaging icon out of the SDK's default
+item globs (`DefaultItemExcludes`). No API or behaviour change; no source file touched.
+
+Verified by packing all five and inspecting the artifacts (icon at package root in each, no `.pri`
+indexing it), then by restoring a real consumer against a throwaway `1.0.1-localverify` build and
+building both `net10.0-windows10.0.19041.0` and `net10.0-android` green with the consumer's temporary
+workaround removed.
+
+**What this says about the verification story.** Every in-repo build and every pack was green for the
+whole time this was broken, and the gallery could never have caught it: it builds from PROJECT
+references, which never exercises the `lib/` layout a package reference resolves. Package-reference
+consumption is a distinct verification axis from project-reference consumption — see LES-0036.
 
 ## Provenance
 

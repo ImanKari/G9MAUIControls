@@ -1164,6 +1164,60 @@ only someone who knew the original spots it.
 
 ---
 
+## LES-0036 — The packaging icon became a WinUI resource, and broke every consumer's Windows build
+
+**Symptom.** Any consumer of `G9MAUIControls.Persistence.Sqlite` **1.0.0** building a
+`net10.0-windows*` target failed outright:
+
+```
+error MSB3030: Could not copy the file
+"…\g9mauicontrols.persistence.sqlite\1.0.0\lib\net10.0-windows10.0.19041\
+ G9MAUIControls.Persistence.Sqlite\icon.png" because it was not found.
+```
+
+Reported from AgriPad after it moved to SDK 10.0.400. Android, iOS and Mac Catalyst were unaffected,
+which is exactly why it shipped.
+
+**Root cause.** `icon.png` sits at each package's project root only to satisfy `<PackageIcon>`, and
+`Directory.Build.props` packs it with an explicit `<None Include="icon.png" Pack="true"
+PackagePath="\" />`. But on the Windows target the SDK's **default item globs** also picked it up as
+`@(Content)` — confirmed with `-getItem:Content`, whose `DefiningProjectName` was
+`Microsoft.NET.Sdk.DefaultItems`, not our props file. `@(Content)` is what MakePri indexes, so
+`obj/…/filtered.layout.resfiles` contained exactly one line, `G9MAUIControls.Persistence.Sqlite\icon.png`,
+and the shipped `.pri` indexed a path the nupkg does not contain — the icon is packed at the package
+ROOT, as `PackageIcon` requires. The consumer's Windows build then resolves a copy item for a file
+that cannot exist.
+
+**Why only one of five packages.** The asymmetry was the whole diagnostic. The other four reference
+`Microsoft.Maui.Controls`, whose targets sweep root images back out of `@(Content)`; this one is
+deliberately **Essentials-only** (a persistence layer must not drag in the UI stack, ADR-0009), so
+nothing removed it. `-getItem:Content` reported 1 item for Sqlite and 0 for the other four.
+
+**Fix (1.0.1).** `<DefaultItemExcludes>$(DefaultItemExcludes);icon.png</DefaultItemExcludes>` in
+`Directory.Build.props`, family-wide. It is the SDK's own supported "keep this out of the default
+globs" knob and it is read BEFORE the default items are created — whereas a `<Content Remove/>` in
+that same file would run before the item exists and silently do nothing, because
+`Directory.Build.props` is imported ahead of `Microsoft.NET.Sdk.DefaultItems.props`. Excluding it
+from the default globs does not unpack it: the explicit `Pack="true"` include is untouched. Verified
+by packing all five and inspecting the artifacts — icon at root in every package, and no `.pri`
+indexes it any more.
+
+**Rules.**
+1. *A file that exists purely as package METADATA must be kept out of the default item globs.* The
+   same trap is waiting for any future `PackageReadmeFile`/`PackageLicenseFile`/icon that happens to
+   carry an extension a platform treats as a resource.
+2. *A packaging defect is only visible to a CONSUMER, so packing successfully proves nothing.* Both
+   the pack and every in-repo build were green the whole time this was broken. The gallery builds
+   from project references, which never exercises the `lib/` layout a package reference resolves.
+   Where a defect of this class is suspected, extract the `.nupkg` and look — or pack under a
+   throwaway version, restore a real consumer against it, and build.
+3. *Never verify a package fix by packing the version you intend to publish and restoring it
+   locally.* That writes an unpublished payload into `~/.nuget/packages` under a version number the
+   feed will later serve differently — LES-0025 with a longer fuse. Pack under a distinct throwaway
+   version (`1.0.1-localverify`), verify, then delete it from the cache.
+
+---
+
 ## RSK-0001 — Rendered on Android, signed in, driven screen by screen — LARGELY CLOSED 2026-08-14
 
 A consuming app was deployed to an Android emulator, signed in against a real server, synced, and
