@@ -13,6 +13,24 @@ needs a human eye, and iOS NativeAOT.**
 
 Last updated: **2026-08-15**
 
+## 1.0.2 — `G9CultureDateTimeLabel` stops pinning its own `FlowDirection` (2026-08-15)
+
+**A behaviour fix, and the first defect found by simply running a consumer in the OTHER language.**
+
+The label pinned `FlowDirection = LeftToRight` for every absolute mode so a numeric date would not be
+re-ordered inside a Persian screen. Pinning the flow direction is a paragraph-direction switch, so it
+silently pinned the label's ALIGNMENT too — `HorizontalTextAlignment` and `HorizontalOptions` resolve
+`Start`/`End` against the view's own effective direction. The consuming app had therefore written
+`HorizontalTextAlignment="End"` at several call sites to reach the right edge under Persian, and every
+one of them was visibly wrong in English (a date hanging off the right edge while its own caption and
+the value beside it sat left). No alignment value existed that was correct in both languages.
+
+The order is now kept in the STRING — the formatted value is wrapped in a Unicode LTR embedding
+(U+202A/U+202C) under an RTL culture — and the label is an ordinary `Label` for layout. `Relative` mode
+is untouched (localized words must read in the culture's direction) and nothing is wrapped under an LTR
+culture, so no invisible character enters a string an LTR app might log or export. See LES-0037 and
+ADR-0017.
+
 ## 1.0.1 — packaging fix (2026-08-15)
 
 **The first defect found by a consumer on PACKAGE references rather than project references, and it

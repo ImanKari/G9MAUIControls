@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.1</G9FamilyVersion>
+    <G9FamilyVersion>1.0.2</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,25 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.2 — G9CultureDateTimeLabel no longer pins its own FlowDirection.
+
+      The label used to set FlowDirection = LeftToRight for every absolute (Date / Time / DateTime)
+      value, to keep a numeric date reading left-to-right inside a right-to-left screen. That is a
+      paragraph-direction switch, so it also pinned the label's ALIGNMENT: HorizontalTextAlignment and
+      HorizontalOptions resolve Start/End against the view's own effective flow direction, so a consumer
+      asking for "Start" got the physical LEFT edge under an RTL culture too. A date could therefore not
+      be aligned with the plain Label beside it in both languages — whichever alignment the consumer
+      wrote, one language was wrong. The order is now kept by wrapping the formatted value in a Unicode
+      LTR embedding (U+202A/U+202C), so the label is an ordinary Label for layout and its logical
+      alignment mirrors with the rest of the screen. Relative mode is unchanged (its phrase is localized
+      words and must read in the culture's direction), and nothing is wrapped under an LTR culture.
+
+      CONSUMER ACTION: a consumer that compensated by writing a PHYSICAL alignment (e.g.
+      HorizontalTextAlignment="End" purely to reach the right edge under Persian) now gets the trailing
+      edge in both languages, which is probably not what that call site meant. Express the intent
+      logically — Start to align with the label above it, End to sit against the trailing edge — and it
+      is correct in both directions.
+
       1.0.1 — packaging fix, no API or behaviour change.
 
       G9MAUIControls.Persistence.Sqlite 1.0.0 shipped a Windows resource index (.pri) that named

@@ -1218,6 +1218,48 @@ indexes it any more.
 
 ---
 
+## LES-0037 — Pinning a control's `FlowDirection` to fix text ORDER silently pinned its ALIGNMENT
+
+**Symptom.** In the consuming app, a tree's planting date sat hard against the RIGHT edge of its
+column in **English**, while its own caption ("Date") and the value beside it ("Seedling age") sat
+left. In **Persian** the same screen looked correct. Reported as "the date is fine in RTL, in LTR it
+gets RTL direction or right alignment" — the reporter's instinct was right, and the cause was not in
+the app at all.
+
+**Root cause.** `G9CultureDateTimeLabel` set `FlowDirection = LeftToRight` on itself for every absolute
+mode, so that `1403/05/24 - 14:30` would not be re-ordered by the bidi algorithm inside a Persian
+screen. `FlowDirection` is the paragraph direction, and `Label.HorizontalTextAlignment` resolves
+`Start`/`End` against the **view's own** effective flow direction — so on this one view `End` always
+meant physically RIGHT, in both languages. The app had (correctly, for what it could observe) written
+`HorizontalTextAlignment="End"` to get the leading edge under Persian, and that value then pointed the
+wrong way in English. **No value of that property was correct in both languages**, which is the tell:
+when a consumer cannot express an intent, the control has taken the choice away from them.
+
+**Why it hid for so long.** Persian is the consuming app's primary language, so every call site was
+tuned there and looked right. The defect is invisible until someone runs the app in the other
+language — and it was invisible to the library too, because the control did exactly what its own
+comment said it did. It also affected `HorizontalOptions` on the same view, for the same reason,
+which is why "just don't set the alignment" was not a fix either.
+
+**Fix (1.0.2).** The order is kept in the STRING — the formatted value is wrapped in a Unicode LTR
+embedding (`U+202A` … `U+202C`) under an RTL culture — and the control sets no `FlowDirection`. It is
+an ordinary `Label` for layout again, so logical alignment mirrors with everything else on screen.
+`Relative` mode is excluded (localized words must read in the culture's own direction) and nothing is
+wrapped under an LTR culture. Rule generalised as ADR-0017.
+
+**Rules.**
+1. *A control may not set its own `FlowDirection` to solve a TEXT-ORDER problem.* Every logical layout
+   value the consumer writes resolves against that property, so the control is silently answering a
+   question it was not asked. Use bidi control characters, which apply to the run they wrap and to
+   nothing else.
+2. *When a consumer has to write a PHYSICAL value (`End` meaning "right") to get a LOGICAL result, a
+   control is lying about its contract.* Treat that call site as a bug report against the library, not
+   as the consumer's own styling choice — there was one in this suite and it had four of them.
+3. *Directional behaviour is verified by switching the language with the screen open*, not by reading
+   the code. This one is two taps to reproduce and was not reproducible any other way.
+
+---
+
 ## RSK-0001 — Rendered on Android, signed in, driven screen by screen — LARGELY CLOSED 2026-08-14
 
 A consuming app was deployed to an Android emulator, signed in against a real server, synced, and

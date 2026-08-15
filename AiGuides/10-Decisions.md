@@ -479,3 +479,45 @@ consumed it, so this is the last point where the surface is cheap to get right (
 applied to shape rather than to stability).
 
 ---
+
+## ADR-0017 — Text ORDER is fixed in the string; a control never pins its own `FlowDirection` to get it
+
+**Decision.** When a control needs a run of text to read left-to-right regardless of the surrounding
+language — a numeric date, a version, a coordinate pair — it wraps that STRING in a Unicode LTR
+embedding (`U+202A` … `U+202C`). It does **not** set `FlowDirection` on itself.
+`G9CultureDateTimeLabel` was moved onto this rule in 1.0.2.
+
+**Why.** `FlowDirection` is the paragraph direction, and every logical layout value in MAUI resolves
+against the view's own effective flow direction: `HorizontalTextAlignment`, `HorizontalOptions`,
+`Grid` placement of its children. Pinning it to fix glyph ORDER therefore also pins ALIGNMENT, and the
+consumer has no way to opt out of the second effect while keeping the first. The concrete failure:
+`Start` meant the physical LEFT edge under Persian, so a date could not be aligned with the plain
+`Label` beside it in both languages — one of the two was always wrong (LES-0037). Bidi control
+characters are the mechanism the Unicode algorithm provides for exactly this, they apply to the run
+they wrap and to nothing else, and they leave the view an ordinary view.
+
+**Scope, and the one thing this does NOT overturn.** The rule is about TEXT. `G9IconView` still pins
+its children to `LeftToRight` (see the 1.0.0 notes and LES-0034), and that stays correct: there the
+platform was mirroring a drawing CANVAS, which no string-level mark can reach and which has no logical
+alignment to lose. The test is *what is being pinned* — a canvas has only a direction; a text view has a
+direction **and** an alignment that consumers depend on.
+
+**Rules that come with it.**
+- Wrap only under an RTL culture. Under LTR the marks are inert but not free: they would enter every
+  string an app might log, export, diff or compare, for no benefit.
+- Wrap only content that is genuinely direction-neutral. Localized WORDS must read in the culture's
+  direction; embedding them is the same defect inverted (which is why `Relative` mode is excluded).
+- Prefer embedding (`U+202A`/`U+202C`) over isolates (`U+2066`/`U+2069`) when the control IS the whole
+  paragraph: isolation buys nothing there, and embedding is honoured by every bidi engine since
+  Unicode 2.0.
+
+**Alternatives rejected.**
+- *Keep the pin and translate the consumer's logical alignment inside the control* (flip `Start`/`End`
+  when the culture is RTL, since the control knows it pinned itself). It works, but it makes one
+  control's `HorizontalTextAlignment` mean something different from every other view's, and the next
+  property that resolves against flow direction — `HorizontalOptions`, a nested `Grid` column — would
+  need the same hand-translation or would silently disagree.
+- *Let the consumer set the alignment from the culture.* That is the workaround the consumer already
+  had, and it is one per call site, invisible until someone runs the app in the other language.
+
+---
