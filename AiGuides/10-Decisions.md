@@ -521,3 +521,37 @@ direction **and** an alignment that consumers depend on.
   had, and it is one per call site, invisible until someone runs the app in the other language.
 
 ---
+
+## ADR-0018 — The canonical GUID case is LOWER, and `UseCanonicalIdCase` is honoured
+
+**Decision.** `G9SqliteOptions.CanonicalIdCase` defaults to `G9IdCase.Lower`, and
+`SqliteGuidStringNormalizer` defaults to the same. Changed in 1.0.2, together with the wiring that
+makes the setting take effect at all.
+
+**Why.** Every other layer in the stack emits lower case: `Guid.ToString("D")`, RFC 4122, PostgreSQL's
+`uuid` output, and Dotmim.Sync's wire format. Upper case made this library the only component
+disagreeing, and the disagreement was invisible in the place people look — SQL — because every id
+column is `COLLATE NOCASE`. It was NOT invisible anywhere comparisons are ORDINAL: dictionary and
+`HashSet` keys, a sync engine's hashed scope parameters, and any path that derives a FILE NAME from a
+normalised id. A sync engine that writes rows straight into SQLite bypasses this normaliser entirely,
+so the server's lower-case ids land verbatim and the same entity ends up with two different string
+forms depending on which side wrote it. Measured on a consumer's production device: 55,870 of ~56,000
+stored ids were already lower case; only the 175 locally-created rows were upper.
+
+**The history matters, because it explains a defect that shipped.** The property was originally
+declared with a `Lower` default that was never read — the normaliser was hard-coded to upper, so
+`UseCanonicalIdCase` was silently a no-op. When the setting was finally wired up, the default was
+changed to `Upper` to preserve the only behaviour the library had ever had. That was
+bug-compatibility, and it made the wrong value the documented one. **1.0.1 shipped without the wiring
+at all**, so a consumer calling `UseCanonicalIdCase(Lower)` against 1.0.1 gets no error, no effect,
+and no way to tell — see `11-EngineeringLog.md` LES-0038.
+
+**The cost, and why it is still worth paying.** This is a DATA event, not a setting change. Ids already
+written keep their old casing (harmless — `COLLATE NOCASE`), but anything KEYED by a normalised id
+moves: a per-user database directory renames, and a sync engine's parameterised scopes re-register
+under the new casing and re-download once. `UseCanonicalCase` therefore freezes on first use and throws
+if asked to change afterwards, so a consumer cannot flip it accidentally mid-session. Consumers that
+derive paths from ids must adopt the differently-cased directory on upgrade; the reference
+implementation is AgriPad's `UserDataPartitionService.TryAdoptDifferentlyCasedDirectory`, which
+RENAMES (atomic, no free space needed) rather than copying — the databases are routinely hundreds of
+MB, so a copy fails exactly on the devices holding the most data.

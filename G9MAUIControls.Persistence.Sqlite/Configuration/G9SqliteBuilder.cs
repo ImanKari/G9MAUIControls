@@ -21,7 +21,7 @@ public sealed class G9SqliteOptions
     public IG9CurrentUserProvider CurrentUser { get; internal set; } = new G9NoCurrentUser();
 
     /// <summary>
-    ///     Canonical casing for GUID strings the library writes. Defaults to UPPER case.
+    ///     Canonical casing for GUID strings the library writes. Defaults to <b>lower</b> case.
     ///     <para>
     ///         ⚠ Choose once, before first release. Rows already written keep the old casing (harmless in
     ///         SQL — every id column is <c>COLLATE NOCASE</c>), but if anything derives a <b>file path</b>
@@ -30,14 +30,21 @@ public sealed class G9SqliteOptions
     ///         therefore refuses to change it once ids have been normalised.
     ///     </para>
     ///     <para>
-    ///         <b>The default reads <c>Upper</c>, not <c>Lower</c>, deliberately.</b> This property was
-    ///         declared with a <c>Lower</c> default but never applied — the normaliser was hard-coded to
-    ///         upper case, so <c>Lower</c> described behaviour that did not exist and
-    ///         <c>UseCanonicalIdCase</c> was a no-op. Now that it is honoured, the default states what the
-    ///         library has always actually done, so honouring it cannot re-case an existing consumer's ids.
+    ///         <b>Why lower is the right default, and why it briefly was not.</b> The property was declared
+    ///         with a <c>Lower</c> default but never applied — the normaliser was hard-coded to upper case,
+    ///         so <c>UseCanonicalIdCase</c> was silently a no-op. When it was wired up, the default was
+    ///         changed to <c>Upper</c> to preserve the only behaviour the library had ever had. That
+    ///         preserved bug-compatibility and was wrong on the merits: <c>Guid.ToString("D")</c>, the
+    ///         RFC 4122 text form, PostgreSQL's <c>uuid</c> output and Dotmim.Sync's wire format are all
+    ///         LOWER case. Upper made the library the only component in the stack disagreeing with every
+    ///         other one, so any ORDINAL comparison between a normalised id and an id that arrived from the
+    ///         server (or from a sync engine writing rows directly, bypassing this normaliser) silently
+    ///         failed to match. Measured on a real consumer device: 55,870 of ~56,000 stored ids were
+    ///         already lower case; only 175 — the locally-created rows — were upper. The default is now
+    ///         <c>Lower</c>, which agrees with the rest of the platform.
     ///     </para>
     /// </summary>
-    public G9IdCase CanonicalIdCase { get; internal set; } = G9IdCase.Upper;
+    public G9IdCase CanonicalIdCase { get; internal set; } = G9IdCase.Lower;
 
     /// <summary>
     ///     Retry budget for <c>SQLITE_BUSY</c>. Built in rather than left to each call site, which is where

@@ -13,6 +13,19 @@ needs a human eye, and iOS NativeAOT.**
 
 Last updated: **2026-08-15**
 
+## 1.0.2 — canonical GUID case corrected to LOWER, and the setting is finally honoured (2026-08-17)
+
+`G9SqliteOptions.CanonicalIdCase` now defaults to `G9IdCase.Lower`, and `AddG9Sqlite` actually applies
+it (`SqliteGuidStringNormalizer.UseCanonicalCase`). **In 1.0.1 the setter was accepted and silently
+ignored**, so consumers configuring the case got no error and no effect — LES-0038 has the full
+diagnosis and the one-command check. Lower matches `Guid.ToString("D")`, RFC 4122, PostgreSQL `uuid`
+and Dotmim.Sync's wire format; upper made this library the only component in the stack disagreeing,
+which SQL hid (`COLLATE NOCASE`) but every ordinal comparison did not. Rationale, cost and the
+migration a consumer must perform: ADR-0018.
+
+**Consumer-visible:** if you derive a file path from a normalised id, you MUST adopt the
+differently-cased directory on upgrade or existing installs will look empty. Rename it; do not copy it.
+
 ## 1.0.2 — `G9CultureDateTimeLabel` stops pinning its own `FlowDirection` (2026-08-15)
 
 **A behaviour fix, and the first defect found by simply running a consumer in the OTHER language.**

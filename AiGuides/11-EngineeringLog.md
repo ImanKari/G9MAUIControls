@@ -1281,3 +1281,41 @@ The 26 `.md` guides came across verbatim. They reference the source application'
 and link guide files that are not part of this repository, none of which exist for a package consumer. The *technical* content is
 accurate and valuable — especially §15's platform crash catalog — but the surrounding prose will
 confuse the first outside reader. Prose pass tracked in `09-Progress.md`.
+
+## LES-0038 — A setting the builder accepts, stores, and never reads: `UseCanonicalIdCase` in 1.0.1
+
+**Symptom.** A consumer changed the canonical GUID case from upper to lower, deployed, and nothing
+changed. The configuration demonstrably ran — a trace right after the call logged
+`configured CanonicalIdCase=Lower` — the app started normally, no exception was raised, and ids kept
+coming out UPPER. Roughly an hour went into the consumer's DI order, static initialisation order, and
+the freeze-on-first-use guard in `SqliteGuidStringNormalizer`, all of which were innocent.
+
+**Root cause.** The published 1.0.1 package does not contain the wiring at all. `G9SqliteBuilder`
+accepts `UseCanonicalIdCase` and stores it on the options; `AddG9Sqlite` never calls
+`SqliteGuidStringNormalizer.UseCanonicalCase`, so the normaliser stays hard-coded to upper. The call
+that closes the loop exists only in source, i.e. in unpublished 1.0.2. The consumer's repository
+carries the library sources alongside the app, which is what made this so easy to miss: reading the
+source proved the chain was correct end to end, and the source was NOT what was executing.
+
+**What finally isolated it.** Not more reading — a PROBE. Logging the output of normalising a known
+literal (`"11111111-2222-3333-4444-AAAABBBBCCCC"` came back upper) proved the normaliser's state
+directly, instead of inferring it from the configuration call that had already been confirmed. Then
+one command settled which artifact was to blame:
+
+```bash
+strings -a ~/.nuget/packages/g9mauicontrols.persistence.sqlite/1.0.1/lib/*/*.Sqlite.dll   | grep -c UseCanonicalCase   # 0
+```
+
+**Lessons.**
+
+1. **A configuration API that can silently do nothing is a defect in the API, not just in that
+   release.** `UseCanonicalIdCase` had already been a no-op once before (the property was declared with
+   a default nothing read). If a setter cannot take effect, it should throw or warn — an accepted value
+   that is never read is indistinguishable from a working one until something downstream is wrong.
+2. **When source and package can disagree, verify WHICH ONE is executing before debugging either.**
+   `obj/project.assets.json` says `"type": "project"` vs `"package"`, and `strings` on the resolved dll
+   settles it in one command. This is the library-level twin of the consumer-side trap where a
+   fast-deploy APK ships no assemblies — same failure mode, same cure: check the artifact, not the
+   build log.
+3. **Probe the state, do not infer it from the call.** "The configure delegate ran" and "the setting is
+   in effect" are different claims, and only the second one matters.

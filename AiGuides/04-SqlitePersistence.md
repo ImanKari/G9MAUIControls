@@ -247,12 +247,18 @@ wanted later it is `G9MAUIControls.Persistence.Sqlite.Sync`, a satellite of a sa
 expressible as a descriptor filter plus an interceptor that stamps the column, which is the generic form
 of the same idea.
 
-**The uppercase-vs-lowercase canonical GUID decision.** The source cannot flip it because its per-user
-*partition directory name* is derived from the same normaliser, so flipping orphans existing installs on
-case-sensitive Android filesystems. That is a migration hazard the source must live with; a new package
-should not inherit it. So `UseCanonicalIdCase` is configurable with a **lowercase default** (matching
-`Guid.ToString()`), and the guide states plainly: choose once, before first release, and never change it
-on a shipped app.
+**The uppercase-vs-lowercase canonical GUID decision.** `UseCanonicalIdCase` is configurable with a
+**lowercase default** (matching `Guid.ToString()`), and the guide states plainly: choose once, before
+first release, and never change it on a shipped app.
+
+> **Status (1.0.2).** Two corrections landed here. (1) The setting was declared but never READ — the
+> normaliser was hard-coded to upper — and when it was wired up the default was briefly set to `Upper`
+> for bug-compatibility. It is now `Lower`, as designed above. See ADR-0018 and LES-0038. (2) The
+> reason given below for why the source "cannot flip it" has been SOLVED, not merely accepted: the
+> consumer adopts the differently-cased partition directory by RENAMING it on first activation
+> (`UserDataPartitionService.TryAdoptDifferentlyCasedDirectory`), which is atomic and needs no free
+> space. Verified on device with a 722 MB database: zero rows lost. The hazard is real, but it is
+> migratable, and any consumer deriving a path from a normalised id must do the same.
 
 **A "database is locked" retry helper as app-level advice.** The source guide tells each DataService to
 write its own back-off loop. That is a library responsibility, not a consumer one: retry-on-`SQLITE_BUSY`

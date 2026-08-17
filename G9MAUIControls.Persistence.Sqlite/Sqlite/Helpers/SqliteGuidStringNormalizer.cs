@@ -15,7 +15,7 @@ namespace G9MAUIControls.Persistence.Sqlite;
 /// </remarks>
 public static class SqliteGuidStringNormalizer
 {
-    private static G9IdCase _canonicalCase = G9IdCase.Upper;
+    private static G9IdCase _canonicalCase = G9IdCase.Lower;
     private static bool _canonicalCaseObserved;
     private static readonly Lock CanonicalCaseGate = new();
 
@@ -36,9 +36,19 @@ public static class SqliteGuidStringNormalizer
     ///     <para>
     ///         Until this was wired, <see cref="G9SqliteOptions.CanonicalIdCase" /> was accepted from the
     ///         builder and then ignored: the normaliser was hard-coded to upper case. A consumer calling
-    ///         <c>UseCanonicalIdCase</c> got no error and no effect. The declared default has been corrected
-    ///         from <c>Lower</c> to <c>Upper</c> to match the only behaviour the library has ever had, so
-    ///         wiring it changes nothing for anyone who already depends on it.
+    ///         <c>UseCanonicalIdCase</c> got no error and no effect.
+    ///     </para>
+    ///     <para>
+    ///         <b>The default is <c>Lower</c>, and upper case was a mistake.</b> When the setting was first
+    ///         wired up the default was set to <c>Upper</c> to match the library's existing hard-coded
+    ///         behaviour. That preserved bug-compatibility at the cost of correctness: every other layer in
+    ///         the stack — <c>Guid.ToString("D")</c>, RFC 4122, PostgreSQL <c>uuid</c>, Dotmim.Sync's wire
+    ///         format — emits LOWER case, and a sync engine that writes rows straight into SQLite bypasses
+    ///         this normaliser entirely. Upper therefore guaranteed that a normalised id and a
+    ///         server-written id were different STRINGS for the same entity. In SQL that was invisible
+    ///         (id columns are <c>COLLATE NOCASE</c>), but every ORDINAL comparison — a dictionary key, a
+    ///         <c>HashSet</c>, a hashed sync-scope parameter, a derived file path — silently failed to
+    ///         match. See <c>G9SqliteOptions.CanonicalIdCase</c> for the measured evidence.
     ///     </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">
