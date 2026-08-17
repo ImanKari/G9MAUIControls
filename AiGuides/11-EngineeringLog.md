@@ -1303,8 +1303,20 @@ directly, instead of inferring it from the configuration call that had already b
 one command settled which artifact was to blame:
 
 ```bash
-strings -a ~/.nuget/packages/g9mauicontrols.persistence.sqlite/1.0.1/lib/*/*.Sqlite.dll   | grep -c UseCanonicalCase   # 0
+# Byte-search the RESOLVED dll for the wiring symbol. Do NOT use `strings` here: it is absent from
+# Git Bash on Windows, and `strings ... 2>/dev/null | grep -c` then reports 0 for ANY input - a
+# check that cannot fail is worse than no check. (That mistake was made while writing this entry.)
+python - <<'EOF'
+import glob, os
+for f in glob.glob(os.path.expanduser(
+        "~/.nuget/packages/g9mauicontrols.persistence.sqlite/*/lib/*/G9MAUIControls.Persistence.Sqlite.dll")):
+    b = open(f, "rb").read()
+    print(f.split("packages/")[1], "UseCanonicalCase=", b.count(b"UseCanonicalCase"))
+EOF
 ```
+
+Measured across all four TFMs: **1.0.1 = 0, 1.0.2 = 1**. Both versions contain `CanonicalIdCase`
+(4 hits) - the PROPERTY shipped in 1.0.1, only the call that reads it did not.
 
 **Lessons.**
 
@@ -1319,3 +1331,8 @@ strings -a ~/.nuget/packages/g9mauicontrols.persistence.sqlite/1.0.1/lib/*/*.Sql
    build log.
 3. **Probe the state, do not infer it from the call.** "The configure delegate ran" and "the setting is
    in effect" are different claims, and only the second one matters.
+4. **A verification command that cannot fail is worse than no verification.** The first attempt at the
+   check above used `strings`, which is not present in Git Bash on Windows; with `2>/dev/null` in the
+   pipe, `grep -c` dutifully reported `0` - the expected answer - for the broken package AND for the
+   fixed one. It briefly "confirmed" the conclusion for the wrong reason. Before trusting a check that
+   returns the number you expect, run it against a case you KNOW should return the opposite.
