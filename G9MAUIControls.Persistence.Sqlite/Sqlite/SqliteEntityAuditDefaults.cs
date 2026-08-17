@@ -4,8 +4,6 @@ namespace G9MAUIControls.Persistence.Sqlite;
 
 public static class SqliteEntityAuditDefaults
 {
-    private static string? _cachedCurrentUserId;
-
     public static void ApplyInsertDefaults(
         IG9AuditedEntity entity,
         DateTime now,

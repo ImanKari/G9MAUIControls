@@ -21,15 +21,23 @@ public sealed class G9SqliteOptions
     public IG9CurrentUserProvider CurrentUser { get; internal set; } = new G9NoCurrentUser();
 
     /// <summary>
-    ///     Canonical casing for GUID strings the library writes. Defaults to lowercase, matching
-    ///     <see cref="Guid.ToString()" />.
+    ///     Canonical casing for GUID strings the library writes. Defaults to UPPER case.
     ///     <para>
-    ///         ⚠ Choose once, before first release. Rows already written keep the old casing (harmless —
-    ///         every id column is <c>COLLATE NOCASE</c>), but if anything derives a <b>file path</b> from a
-    ///         normalised id, changing this orphans the old directory on case-sensitive filesystems.
+    ///         ⚠ Choose once, before first release. Rows already written keep the old casing (harmless in
+    ///         SQL — every id column is <c>COLLATE NOCASE</c>), but if anything derives a <b>file path</b>
+    ///         from a normalised id, changing this orphans the old directory on case-sensitive filesystems
+    ///         and presents as total data loss. <see cref="SqliteGuidStringNormalizer.UseCanonicalCase" />
+    ///         therefore refuses to change it once ids have been normalised.
+    ///     </para>
+    ///     <para>
+    ///         <b>The default reads <c>Upper</c>, not <c>Lower</c>, deliberately.</b> This property was
+    ///         declared with a <c>Lower</c> default but never applied — the normaliser was hard-coded to
+    ///         upper case, so <c>Lower</c> described behaviour that did not exist and
+    ///         <c>UseCanonicalIdCase</c> was a no-op. Now that it is honoured, the default states what the
+    ///         library has always actually done, so honouring it cannot re-case an existing consumer's ids.
     ///     </para>
     /// </summary>
-    public G9IdCase CanonicalIdCase { get; internal set; } = G9IdCase.Lower;
+    public G9IdCase CanonicalIdCase { get; internal set; } = G9IdCase.Upper;
 
     /// <summary>
     ///     Retry budget for <c>SQLITE_BUSY</c>. Built in rather than left to each call site, which is where

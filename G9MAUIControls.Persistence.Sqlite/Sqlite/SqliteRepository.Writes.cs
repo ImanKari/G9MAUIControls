@@ -11,9 +11,51 @@ public partial class SqliteRepository<T> where T : class, new()
     {
         ApplyInsertAuditIfNeeded(entity, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(entity);
+        EnsureGeneratedPrimaryKey(entity);
         var affectedRows = await Db.InsertAsync(entity).ConfigureAwait(false);
         await RefreshCacheAfterWriteAsync(affectedRows).ConfigureAwait(false);
         return affectedRows;
+    }
+
+    /// <summary>
+    ///     Last line of defence: a library-managed primary key is NEVER written blank.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <see cref="ApplyInsertAuditIfNeeded(T, DateTime, string?)" /> already mints the id for an
+    ///         <see cref="IG9AuditedEntity" />, so on a correctly wired entity this finds nothing to do. It
+    ///         exists because an empty primary key is not a recoverable state and the cost of one is wildly
+    ///         out of proportion to the mistake that causes it: the first such row inserts fine, the SECOND
+    ///         fails with <c>UNIQUE constraint failed</c>, and if the table is replicated the empty string is
+    ///         rejected by any server whose key column is a real <c>uuid</c> — which, in the incident that
+    ///         motivated this, aborted the transaction and wedged the whole sync scope permanently.
+    ///     </para>
+    ///     <para>
+    ///         Scope is deliberately narrow: only a primary-key column the library already considers a
+    ///         library-managed id (named <c>Id</c>, or marked
+    ///         <see cref="SqliteGuidIdColumnAttribute" />). A composite or business primary key —
+    ///         <c>FarmId</c>, <c>SiteId</c>, an <c>int</c> key — is the consumer's to assign and is left
+    ///         alone; minting a GUID into one of those would replace a diagnosable error with a wrong row.
+    ///     </para>
+    /// </remarks>
+    private static void EnsureGeneratedPrimaryKey(T entity)
+    {
+        foreach (var column in Metadata.Columns)
+        {
+            if (!column.IsPrimaryKey ||
+                !column.IsGuidStringId ||
+                !column.Property.CanWrite)
+            {
+                continue;
+            }
+
+            if (column.Property.GetValue(entity) is string value && !string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            column.Property.SetValue(entity, SqliteGuidStringNormalizer.CreateNewId());
+        }
     }
 
     /// <summary>
@@ -29,6 +71,7 @@ public partial class SqliteRepository<T> where T : class, new()
     {
         ApplyInsertAuditIfNeeded(entity, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(entity);
+        EnsureGeneratedPrimaryKey(entity);
     }
 
     public async Task<int> InsertManyCoreAsync(IEnumerable<T> entities)
@@ -38,6 +81,7 @@ public partial class SqliteRepository<T> where T : class, new()
         var buffered = entities as IList<T> ?? entities.ToList();
         ApplyInsertAuditIfNeeded(buffered, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(buffered);
+        EnsureGeneratedPrimaryKey(buffered);
 
         var affectedRows = await Db.InsertAllAsync(buffered).ConfigureAwait(false);
         await RefreshCacheAfterWriteAsync(affectedRows).ConfigureAwait(false);
@@ -58,6 +102,7 @@ public partial class SqliteRepository<T> where T : class, new()
 
         ApplyInsertAuditIfNeeded(buffered, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(buffered);
+        EnsureGeneratedPrimaryKey(buffered);
 
         var total = 0;
         if (runInSingleTransaction)
@@ -109,6 +154,7 @@ public partial class SqliteRepository<T> where T : class, new()
     {
         ApplyUpsertAuditIfNeeded(entity, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(entity);
+        EnsureGeneratedPrimaryKey(entity);
         var affectedRows = await Db.InsertOrReplaceAsync(entity).ConfigureAwait(false);
         await RefreshCacheAfterWriteAsync(affectedRows).ConfigureAwait(false);
         return affectedRows;
@@ -175,6 +221,7 @@ public partial class SqliteRepository<T> where T : class, new()
 
         ApplyUpsertAuditIfNeeded(buffered, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(buffered);
+        EnsureGeneratedPrimaryKey(buffered);
 
         var conflictColumns = ResolveConflictColumns(keyProperties);
         var sql = GetOrBuildMergeSql(conflictColumns);
@@ -379,6 +426,14 @@ public partial class SqliteRepository<T> where T : class, new()
             {
                 column.Property.SetValue(entity, normalized);
             }
+        }
+    }
+
+    private static void EnsureGeneratedPrimaryKey(IEnumerable<T> entities)
+    {
+        foreach (var entity in entities)
+        {
+            EnsureGeneratedPrimaryKey(entity);
         }
     }
 

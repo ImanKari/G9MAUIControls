@@ -15,9 +15,60 @@ namespace G9MAUIControls.Persistence.Sqlite;
 /// </remarks>
 public static class SqliteGuidStringNormalizer
 {
+    private static G9IdCase _canonicalCase = G9IdCase.Upper;
+    private static bool _canonicalCaseObserved;
+    private static readonly Lock CanonicalCaseGate = new();
+
+    /// <summary>
+    ///     Applies <see cref="G9SqliteOptions.CanonicalIdCase" /> to this normaliser. Called once by
+    ///     <c>AddG9Sqlite</c> while the options are being frozen.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Why a static, and why it is write-once.</b> Normalisation is reached through static
+    ///         extension methods from hundreds of call sites, none of which can see the options object, so
+    ///         the setting has nowhere else to live. It is frozen the first time an id is normalised because
+    ///         changing the canonical case mid-session is not a setting change, it is a data event: ids
+    ///         already written keep the old casing, and any path that derives a FILE NAME from a normalised
+    ///         id (a per-user database directory, for instance) would start pointing somewhere else — which
+    ///         presents to the user as total data loss, not as a formatting change.
+    ///     </para>
+    ///     <para>
+    ///         Until this was wired, <see cref="G9SqliteOptions.CanonicalIdCase" /> was accepted from the
+    ///         builder and then ignored: the normaliser was hard-coded to upper case. A consumer calling
+    ///         <c>UseCanonicalIdCase</c> got no error and no effect. The declared default has been corrected
+    ///         from <c>Lower</c> to <c>Upper</c> to match the only behaviour the library has ever had, so
+    ///         wiring it changes nothing for anyone who already depends on it.
+    ///     </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    ///     A different case is requested after ids have already been normalised in this process.
+    /// </exception>
+    public static void UseCanonicalCase(G9IdCase idCase)
+    {
+        lock (CanonicalCaseGate)
+        {
+            if (_canonicalCase == idCase)
+            {
+                return;
+            }
+
+            if (_canonicalCaseObserved)
+            {
+                throw new InvalidOperationException(
+                    $"The canonical GUID case is already fixed to '{_canonicalCase}' and ids have been " +
+                    $"normalised with it; changing it to '{idCase}' now would silently stop matching every " +
+                    "row already written, and orphan anything keyed by a normalised id (per-user database " +
+                    "directories, preference keys). Configure it once, before the first database touch.");
+            }
+
+            _canonicalCase = idCase;
+        }
+    }
+
     public static string CreateNewId()
     {
-        return Guid.NewGuid().ToString("D").ToUpperInvariant();
+        return ToCanonicalString(Guid.NewGuid());
     }
 
     public static string? NormalizeOptionalId(string? value)
@@ -97,6 +148,9 @@ public static class SqliteGuidStringNormalizer
 
     private static string ToCanonicalString(Guid guid)
     {
-        return guid.ToString("D").ToUpperInvariant();
+        // Reading the setting is what freezes it — see UseCanonicalCase.
+        _canonicalCaseObserved = true;
+        var text = guid.ToString("D");
+        return _canonicalCase == G9IdCase.Lower ? text.ToLowerInvariant() : text.ToUpperInvariant();
     }
 }

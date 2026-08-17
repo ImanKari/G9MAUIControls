@@ -59,6 +59,12 @@ public static class G9SqliteServiceCollectionExtensions
         configure(builder);
         var options = builder.Build();
 
+        // Normalisation runs through static extension methods that cannot see the options, so the one
+        // setting they need is pushed to them here, while the options are still being frozen and before
+        // any consumer code can touch the database. Without this the builder accepted
+        // UseCanonicalIdCase and silently ignored it. See SqliteGuidStringNormalizer.UseCanonicalCase.
+        SqliteGuidStringNormalizer.UseCanonicalCase(options.CanonicalIdCase);
+
         services.AddSingleton(options);
 
         // The three ambient services, projected out of the frozen options into the container.
