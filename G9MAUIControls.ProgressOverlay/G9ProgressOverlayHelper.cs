@@ -922,7 +922,7 @@ internal sealed class G9ProgressOverlaySession
         await G9ToastHelper.ShowToastAsync(
             G9Strings.Get(G9StringKey.CancelFinishingStep),
             G9ToastType.Information,
-            new G9ToastOptions { Icon = G9Glyph.Clock }).ConfigureAwait(false);
+            new G9ToastOptions { Icon = G9Glyphs.Clock }).ConfigureAwait(false);
     }
 
     private static Task ShowCanceledToastAsync()
@@ -930,7 +930,7 @@ internal sealed class G9ProgressOverlaySession
         return G9ToastHelper.ShowToastAsync(
             G9Strings.Get(G9StringKey.Cancelled),
             G9ToastType.Information,
-            new G9ToastOptions { Icon = G9Glyph.Info });
+            new G9ToastOptions { Icon = G9Glyphs.CloudOff });
     }
 
     private static void CancelWatchdog(CancellationTokenSource? cts)

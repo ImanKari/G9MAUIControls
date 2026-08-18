@@ -1372,3 +1372,37 @@ other thread has just nulled. It is a torn read, not a null bug.
    here landed on the wrong method — `AnimatePillToSelected` had a byte-identical preamble — and
    "fixed" a site that was not the reported one while leaving `PositionPillNow` untouched. Routing
    all four call sites through `FindCell` removed both the bug and the class of mistake.
+
+## LES-0040 — Extracting a control library substituted the nearest icon, and changed what three controls PROMISED
+
+**Reported as** "the barcode scanner button became a search button". A consumer noticed that the
+`ثبت نمونهٔ جدید` sheet's scanner field, which opens the camera, now showed a magnifier.
+
+**Root cause.** Extraction replaced every host `MaterialIcons.X` reference with this package's
+built-in vector set. That set is deliberately small (23 glyphs), so several host icons had no
+equivalent — and each one was quietly resolved to the nearest available glyph rather than being
+recorded as missing. `MaterialIcons.QrCodeScanner` became `G9Glyphs.Search`; the intro carousel's
+`MaterialIcons.Language` became a hard-coded `G9Glyph.Info`; the cancelled-sync toast's
+`MaterialIcons.CloudOff` became a hard-coded `G9Glyph.Info`. Two more collapsed onto one slot:
+`Today` and `DateRange` both resolved to `G9Glyphs.Calendar`.
+
+**Why it survived review.** Every substitution compiles, renders, and looks deliberate. There is no
+diagnostic for "this glyph is a stand-in", and the two worst cases bypassed `G9Glyphs` entirely by
+assigning `G9Glyph.X` directly, so no consumer could have themed around them even after noticing.
+
+**Lessons.**
+
+1. **An icon is part of a control's contract, not its styling.** A magnifier on a field that opens a
+   camera is a wrong promise, and it is exactly as much a defect as a wrong string would be. Audit
+   icons when extracting, and treat "no equivalent exists" as a gap to fill, not a value to
+   approximate.
+2. **A control must never hard-code `G9Glyph`.** Going through `G9Glyphs` is what makes an icon
+   themable; `Icon = G9Glyph.Info` is unoverridable by construction. Grepping for `= G9Glyph.` in
+   control code (excluding the gallery) is a cheap standing check and is what found the other two.
+3. **One slot per affordance, even when the default drawing is shared.** `CalendarToday` and
+   `DateRange` both default to the `Calendar` drawing, but they are separate slots so a host with a
+   richer font can tell "pick a date", "jump to today" and "choose a range" apart. Collapsing them
+   was a silent loss of expressiveness that only the host could see.
+4. **Verify each mapping against the original, do not infer it from the name.** `CloudOff` looked
+   like an offline-notice icon; in the original it was the CANCELLED-sync toast. The restoration was
+   only correct because the pre-extraction source was read rather than reasoned about.

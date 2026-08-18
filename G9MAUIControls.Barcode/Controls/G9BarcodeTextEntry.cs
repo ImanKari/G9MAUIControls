@@ -52,7 +52,7 @@ public partial class G9BarcodeTextEntry : G9TextEntry
 
         ForceTrailingIconRight = true;
         InputTextDirection = G9TextInputDirection.LeftToRight;
-        TrailingIcon = G9Glyphs.Search;
+        TrailingIcon = G9Glyphs.ScanCode;
         KeyboardType = G9KeyboardType.Default;
 
         ApplyBarcodeState();
@@ -175,7 +175,7 @@ public partial class G9BarcodeTextEntry : G9TextEntry
         {
             G9BarcodeTextEntryState.Accepted => G9Glyphs.Success,
             G9BarcodeTextEntryState.Error => G9Glyphs.Info,
-            _ => G9Glyphs.Search
+            _ => G9Glyphs.ScanCode
         };
     }
 }

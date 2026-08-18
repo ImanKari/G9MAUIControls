@@ -55,6 +55,22 @@ public enum G9Glyph
     /// <summary>A magnifier. Search fields and the selection sheet's filter box.</summary>
     Search,
 
+    /// <summary>
+    ///     A globe. The language / locale switcher. Distinct from every status glyph on purpose — a
+    ///     language chooser wearing an "info" mark reads as help, not as a choice.
+    /// </summary>
+    Language,
+
+    /// <summary>A cloud with a strike. "No connection" / offline, as distinct from a generic notice.</summary>
+    CloudOff,
+
+    /// <summary>
+    ///     A QR / barcode scanner frame. The call-to-action on a scanner-aware entry — deliberately
+    ///     NOT a magnifier: "scan a code with the camera" and "search the text you typed" are
+    ///     different promises, and a field offering the first while showing the second is a lie.
+    /// </summary>
+    ScanCode,
+
     /// <summary>An open eye. "Password is visible."</summary>
     Eye,
 

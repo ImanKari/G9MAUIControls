@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.3</G9FamilyVersion>
+    <G9FamilyVersion>1.0.4</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,34 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.4 — Icons: restore the affordances the extraction had quietly replaced, and make each one
+      themable.
+
+      Extracting these controls out of their host app swapped every host icon reference for the
+      package's own built-in vector set. Where an icon had no built-in equivalent, the nearest
+      available glyph was substituted — and three of those substitutions changed what the control
+      MEANT rather than merely how it looked:
+
+        * G9BarcodeTextEntry showed the SEARCH magnifier at rest. The field opens a camera scanner;
+          promising "search" for that is a different action, not a different drawing.
+        * G9IntroCarousel's language switcher showed the INFO mark, which reads as help, not as a
+          choice of language.
+        * G9ProgressOverlayHelper's cancelled-sync toast showed the INFO mark instead of an
+          offline/no-connection cloud.
+
+      Two more collapsed distinct affordances onto one slot: the date picker sheet's "jump to today"
+      and the time-span picker's "date range" both resolved to the generic Calendar glyph.
+
+      This release adds the built-in glyphs ScanCode, Language and CloudOff (drawn in the same 24x24
+      stroke style as the rest), exposes G9Glyphs.ScanCode / Language / CloudOff / CalendarToday /
+      DateRange so a host can substitute its own icon font per affordance, and points the affected
+      controls at those slots. G9IntroCarousel and G9ProgressOverlayHelper had hard-coded G9Glyph
+      values, which no host could override at all; they now go through G9Glyphs like everything else.
+
+      No API removed and no behaviour changed beyond the artwork. A host that sets nothing gets the
+      new built-in drawings; a host that wants the pre-extraction icons assigns its own to the five
+      new slots.
+
       1.0.2 — G9CultureDateTimeLabel no longer pins its own FlowDirection.
 
       The label used to set FlowDirection = LeftToRight for every absolute (Date / Time / DateTime)

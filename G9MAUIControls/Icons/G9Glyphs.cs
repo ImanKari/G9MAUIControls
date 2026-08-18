@@ -53,6 +53,30 @@ public static class G9Glyphs
     /// <summary>Search entry, and the selection sheet's filter box.</summary>
     public static G9IconSource Search { get; set; } = G9Glyph.Search;
 
+    /// <summary>
+    ///     The resting call-to-action on a scanner-aware entry (<c>G9BarcodeTextEntry</c>). Separate
+    ///     from <see cref="Search" /> ON PURPOSE: they are different actions, and a host that swaps its
+    ///     own scanner artwork in must not thereby change every search field.
+    /// </summary>
+    public static G9IconSource ScanCode { get; set; } = G9Glyph.ScanCode;
+
+    /// <summary>The language / locale switcher (the intro carousel's header button).</summary>
+    public static G9IconSource Language { get; set; } = G9Glyph.Language;
+
+    /// <summary>"No connection" — the offline notice, distinct from <see cref="Info" />.</summary>
+    public static G9IconSource CloudOff { get; set; } = G9Glyph.CloudOff;
+
+    /// <summary>
+    ///     "Jump to today" in the date picker sheet. Defaults to the same built-in drawing as
+    ///     <see cref="Calendar" />, but is its OWN slot so a host with a richer icon font can tell the
+    ///     three calendar affordances apart — picking a date, jumping to today, and choosing a range
+    ///     are different actions and were three different icons before the controls were extracted.
+    /// </summary>
+    public static G9IconSource CalendarToday { get; set; } = G9Glyph.Calendar;
+
+    /// <summary>A date RANGE (the time-span picker). See <see cref="CalendarToday" /> for why it is separate.</summary>
+    public static G9IconSource DateRange { get; set; } = G9Glyph.Calendar;
+
     /// <summary>Password reveal toggle, showing state.</summary>
     public static G9IconSource EyeOpen { get; set; } = G9Glyph.Eye;
 
@@ -113,6 +137,11 @@ public static class G9Glyphs
         ArrowForward = G9Glyph.ArrowForward;
         Clear = G9Glyph.Close;
         Search = G9Glyph.Search;
+        ScanCode = G9Glyph.ScanCode;
+        Language = G9Glyph.Language;
+        CloudOff = G9Glyph.CloudOff;
+        CalendarToday = G9Glyph.Calendar;
+        DateRange = G9Glyph.Calendar;
         EyeOpen = G9Glyph.Eye;
         EyeClosed = G9Glyph.EyeOff;
         Check = G9Glyph.Check;

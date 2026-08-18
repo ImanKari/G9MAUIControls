@@ -215,7 +215,7 @@ public partial class G9IntroCarousel : G9ControlBase
             IsGhost = true,
             ButtonSize = 40,
             IconSize = 24,
-            Icon = G9Glyph.Info,
+            Icon = G9Glyphs.Language,
             HorizontalOptions = LayoutOptions.End,
             VerticalOptions = LayoutOptions.Start,
             FlowDirection = FlowDirection.LeftToRight

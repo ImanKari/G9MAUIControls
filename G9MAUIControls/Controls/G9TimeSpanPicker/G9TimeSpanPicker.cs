@@ -38,7 +38,7 @@ public partial class G9TimeSpanPicker : G9OutlinedFieldBase
 
         InnerContentHost.Content = _valueLabel;
 
-        TrailingIcon = G9Glyphs.Calendar;
+        TrailingIcon = G9Glyphs.DateRange;
 
         var tap = new TapGestureRecognizer();
         tap.Tapped += OnTapped;

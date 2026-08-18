@@ -565,7 +565,7 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         var text = _mode == G9DateTimePickerMode.Time ? G9Strings.Get(G9StringKey.Now) : G9Strings.Get(G9StringKey.Today);
 
         var icon = new G9IconView {
-            Icon = G9Glyphs.Calendar,
+            Icon = G9Glyphs.CalendarToday,
             Size = 14,
             Color = palette.Primary,
             VerticalOptions = LayoutOptions.Center

@@ -93,6 +93,10 @@ public sealed class G9GlyphDrawable : IDrawable
                 canvas.DrawLine(14.6f, 14.6f, 19f, 19f);
                 break;
 
+            case G9Glyph.ScanCode: ScanCode(canvas); break;
+            case G9Glyph.Language: Language(canvas); break;
+            case G9Glyph.CloudOff: CloudOff(canvas); break;
+
             case G9Glyph.Eye: Eye(canvas, struck: false); break;
             case G9Glyph.EyeOff: Eye(canvas, struck: true); break;
 
@@ -204,6 +208,63 @@ public sealed class G9GlyphDrawable : IDrawable
     ///     arrow rather than a line with a chevron parked on it; the shaft stops at the head's apex so
     ///     a round stroke cap does not poke past the tip.
     /// </remarks>
+    /// <summary>
+    ///     A scanner frame: four corner brackets around a horizontal sweep line — the universally read
+    ///     "point the camera at a code" affordance, and distinguishable from the magnifier at 18px.
+    /// </summary>
+    /// <summary>A globe: a circle, the equator, and one meridian ellipse — the standard locale mark.</summary>
+    private static void Language(ICanvas canvas)
+    {
+        canvas.DrawCircle(12f, 12f, 8.5f);
+        canvas.DrawLine(3.5f, 12f, 20.5f, 12f);
+
+        // Meridian: two mirrored arcs meeting at the poles, drawn as a single closed curve.
+        var meridian = new PathF();
+        meridian.MoveTo(12f, 3.5f);
+        meridian.CurveTo(16.2f, 7.4f, 16.2f, 16.6f, 12f, 20.5f);
+        meridian.CurveTo(7.8f, 16.6f, 7.8f, 7.4f, 12f, 3.5f);
+        canvas.DrawPath(meridian);
+    }
+
+    /// <summary>A cloud with a diagonal strike through it — offline / no connection.</summary>
+    private static void CloudOff(ICanvas canvas)
+    {
+        var cloud = new PathF();
+        cloud.MoveTo(7.5f, 17.5f);
+        cloud.CurveTo(4.6f, 17.5f, 3f, 15.6f, 3f, 13.4f);
+        cloud.CurveTo(3f, 11.3f, 4.5f, 9.7f, 6.5f, 9.4f);
+        cloud.CurveTo(7.2f, 6.7f, 9.6f, 5f, 12.2f, 5f);
+        cloud.CurveTo(15.2f, 5f, 17.7f, 7.2f, 18.1f, 10.1f);
+        cloud.CurveTo(20.1f, 10.5f, 21f, 12.1f, 21f, 13.7f);
+        cloud.CurveTo(21f, 15.8f, 19.4f, 17.5f, 17.2f, 17.5f);
+        canvas.DrawPath(cloud);
+
+        canvas.DrawLine(4f, 4f, 20f, 20f);
+    }
+
+    private static void ScanCode(ICanvas canvas)
+    {
+        const float near = 4.5f;
+        const float far = 19.5f;
+        const float arm = 3.6f;
+
+        // Four corner brackets.
+        canvas.DrawLine(near, near + arm, near, near);
+        canvas.DrawLine(near, near, near + arm, near);
+
+        canvas.DrawLine(far - arm, near, far, near);
+        canvas.DrawLine(far, near, far, near + arm);
+
+        canvas.DrawLine(near, far - arm, near, far);
+        canvas.DrawLine(near, far, near + arm, far);
+
+        canvas.DrawLine(far - arm, far, far, far);
+        canvas.DrawLine(far, far, far, far - arm);
+
+        // The sweep line.
+        canvas.DrawLine(near + 1.4f, 12f, far - 1.4f, 12f);
+    }
+
     private static void Arrow(ICanvas canvas, float degrees)
     {
         canvas.SaveState();
