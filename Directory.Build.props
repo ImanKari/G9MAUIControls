@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.2</G9FamilyVersion>
+    <G9FamilyVersion>1.0.3</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--

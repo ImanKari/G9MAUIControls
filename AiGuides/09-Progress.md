@@ -13,6 +13,26 @@ needs a human eye, and iOS NativeAOT.**
 
 Last updated: **2026-08-15**
 
+## 1.0.3 — G9TabView: fix a NullReferenceException when the tab bar rebuilds off the UI thread (2026-08-18)
+
+`RebuildAll` now marshals itself to the UI thread, and every `_cells` lookup goes through one
+null-tolerant `FindCell` helper.
+
+**The crash.** Reported from production as a `NullReferenceException` inside
+`_cells.FirstOrDefault(c => c.LogicalIndex == effective)` in `PositionPillNow`, reached from a
+`Dispatcher.Dispatch` queued by `RebuildAll`. In that predicate the only thing that can be null is
+`c` — an element of the list — and `_cells` is only ever populated with non-null cells.
+
+**Why an element can be null.** `List<T>.Clear()` nulls the backing array slots for a reference
+element type. `RebuildAll` calls `_cells.Clear()` and runs on whatever thread raised its trigger:
+`OnItemsCollectionChanged` fires on the mutating thread, so an `ObservableCollection` updated from a
+background worker rebuilds the bar off-thread. A reader already enumerating on the UI thread has
+captured the old count and walks into a slot that has just been nulled.
+
+**Consumer-visible:** none, beyond the crash going away. Marshalling `RebuildAll` was already
+required by MAUI (it mutates the visual tree); the guard makes that contract explicit instead of
+relying on every caller to honour it. LES-0039.
+
 ## 1.0.2 — canonical GUID case corrected to LOWER, and the setting is finally honoured (2026-08-17)
 
 `G9SqliteOptions.CanonicalIdCase` now defaults to `G9IdCase.Lower`, and `AddG9Sqlite` actually applies

@@ -1336,3 +1336,39 @@ Measured across all four TFMs: **1.0.1 = 0, 1.0.2 = 1**. Both versions contain `
    pipe, `grep -c` dutifully reported `0` - the expected answer - for the broken package AND for the
    fixed one. It briefly "confirmed" the conclusion for the wrong reason. Before trusting a check that
    returns the number you expect, run it against a case you KNOW should return the opposite.
+
+## LES-0039 — A NullReferenceException whose only possible null was a list element
+
+**Symptom.** From production, seen once: `NullReferenceException` at
+`G9TabView.<PositionPillNow>b__0(TabCell c)`, i.e. inside
+`_cells.FirstOrDefault(c => c.LogicalIndex == effective)`, reached from a `Dispatcher.Dispatch`
+queued by `RebuildAll`. The user hit it by closing a bottom sheet that hosted the tab view.
+
+**Reading the frame is the whole diagnosis.** `LogicalIndex` is an `int`, so it cannot throw;
+`effective` is a captured `int`, so it cannot throw. The only dereference in that predicate is `c`
+itself, and `_cells` is only ever fed non-null cells by `BuildCell`. So the list was handing out a
+null ELEMENT — which a correctly-used `List<T>` never does.
+
+**Root cause.** `List<T>.Clear()` nulls the backing array slots for a reference element type.
+`RebuildAll` calls `_cells.Clear()` and then re-adds, and it runs on whatever thread raised its
+trigger — `OnItemsCollectionChanged` is raised on the thread that mutated the collection. A reader
+enumerating on the UI thread has already captured the old `_size`, so it indexes a slot that the
+other thread has just nulled. It is a torn read, not a null bug.
+
+**Lessons.**
+
+1. **"Which of these can actually be null?" is a faster question than "where is the null?"** Narrowing
+   the predicate to its single reference dereference turned an unreproducible one-off into a
+   deterministic explanation in one step, with no repro attempt.
+2. **A cross-thread `List<T>` does not always fail loudly.** The textbook symptom is
+   `InvalidOperationException("Collection was modified")`, which is why an NRE reads as "impossible"
+   here. `Clear()` racing an in-flight enumerator produces a null element instead, and nothing in the
+   type system hints at it.
+3. **Put the thread guard where the state is mutated, not where it is read.** The fix is the
+   `IsDispatchRequired` check at the top of `RebuildAll`; the null-tolerant `FindCell` helper is
+   defence in depth for late dispatches. Guarding only the reader would have moved the crash rather
+   than removed it.
+4. **When the same lookup appears four times, make it one helper before fixing it.** The first patch
+   here landed on the wrong method — `AnimatePillToSelected` had a byte-identical preamble — and
+   "fixed" a site that was not the reported one while leaving `PositionPillNow` untouched. Routing
+   all four call sites through `FindCell` removed both the bug and the class of mistake.

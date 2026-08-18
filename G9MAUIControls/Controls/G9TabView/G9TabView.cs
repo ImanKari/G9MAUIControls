@@ -507,7 +507,17 @@ public partial class G9TabView : G9ControlBase
     private void OnItemVisualChanged(object? sender, EventArgs e)
     {
         if (sender is not G9TabItem changed) return;
-        var matchingCell = _cells.FirstOrDefault(c => ReferenceEquals(c.Item, changed));
+
+        // Same thread contract as RebuildAll — this reads _cells and then mutates the visual tree.
+        if (Dispatcher.IsDispatchRequired)
+        {
+            Dispatcher.Dispatch(() => OnItemVisualChanged(sender, e));
+            return;
+        }
+
+        // `c is not null` is not redundant: see RebuildAll for how a concurrent Clear() can expose a
+        // nulled slot to an in-flight enumerator. Defence in depth behind the thread guard above.
+        var matchingCell = _cells.FirstOrDefault(c => c is not null && ReferenceEquals(c.Item, changed));
         if (matchingCell is null)
         {
             // Cell doesn't exist yet (item hasn't been added to the bar). RebuildAll
@@ -751,8 +761,56 @@ public partial class G9TabView : G9ControlBase
         public View? BadgeView { get; set; }
     }
 
+    /// <summary>
+    ///     Finds the cell for a logical index without enumerating <c>_cells</c> live.
+    /// </summary>
+    /// <remarks>
+    ///     Indexed rather than LINQ, and null-tolerant, on purpose. <c>List&lt;T&gt;.Clear()</c> nulls
+    ///     the backing array slots for a reference element type, so a reader that has already captured
+    ///     the old count can walk into a slot that is now null and dereference it. That is the field
+    ///     crash this guards: a <c>NullReferenceException</c> raised inside
+    ///     <c>_cells.FirstOrDefault(c =&gt; c.LogicalIndex == effective)</c>, where <c>c</c> is the only
+    ///     thing that can be null.
+    ///     <para>
+    ///         <b>The thread guard in <see cref="RebuildAll" /> is the actual fix</b>; this is defence
+    ///         in depth, and it also covers the ordinary case where a queued dispatch runs after the
+    ///         control has been rebuilt or torn down. Every lookup goes through here so the four call
+    ///         sites cannot drift apart again.
+    ///     </para>
+    /// </remarks>
+    private TabCell? FindCell(int logicalIndex)
+    {
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            var candidate = _cells[i];
+            if (candidate is not null && candidate.LogicalIndex == logicalIndex)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     private void RebuildAll()
     {
+        // MUST run on the UI thread, and not only because MAUI forbids touching the visual tree off
+        // it: this method calls _cells.Clear(), and List<T>.Clear() nulls the backing array slots for
+        // a reference element type. A reader already enumerating _cells on the UI thread — the
+        // dispatched PositionPillNow below is exactly that — has captured the OLD count, so it walks
+        // into a slot that is now null and dereferences it.
+        //
+        // Observed in the field as a NullReferenceException inside
+        // `_cells.FirstOrDefault(c => c.LogicalIndex == effective)`, where the only thing that can be
+        // null is `c` itself. Reachable because RebuildAll runs on whatever thread raised the
+        // trigger: OnItemsCollectionChanged fires on the mutating thread, so an ObservableCollection
+        // updated from a background worker (data load, teardown) rebuilds off-thread.
+        if (Dispatcher.IsDispatchRequired)
+        {
+            Dispatcher.Dispatch(RebuildAll);
+            return;
+        }
+
         // Clear cells AND separators (keep the pill — it's a stable instance we never
         // recreate). The pill's shape/size has already been re-applied for the current
         // Style by ApplyVisualsCore. Separators are always rebuilt because the column
@@ -1019,6 +1077,9 @@ public partial class G9TabView : G9ControlBase
 
         foreach (var cell in _cells)
         {
+            // Null-tolerant for the same reason FindCell is — see RebuildAll.
+            if (cell is null) continue;
+
             var selected = cell.LogicalIndex == effective;
             var color = selected ? activeColor : inactiveColor;
 
@@ -1079,7 +1140,7 @@ public partial class G9TabView : G9ControlBase
         var effective = EffectiveIndex;
         if (effective < 0 || _cells.Count == 0) return;
 
-        var cell = _cells.FirstOrDefault(c => c.LogicalIndex == effective);
+        var cell = FindCell(effective);
         if (cell is null) return;
 
         var targetX = cell.Container.X;
@@ -1171,7 +1232,7 @@ public partial class G9TabView : G9ControlBase
         var effective = EffectiveIndex;
         if (effective < 0 || _cells.Count == 0) return;
 
-        var cell = _cells.FirstOrDefault(c => c.LogicalIndex == effective);
+        var cell = FindCell(effective);
         if (cell is null) return;
         if (cell.Container.Width <= 0)
         {
@@ -1380,7 +1441,7 @@ public partial class G9TabView : G9ControlBase
         var effective = EffectiveIndex;
         if (effective < 0 || _cells.Count == 0) return;
 
-        var cell = _cells.FirstOrDefault(c => c.LogicalIndex == effective);
+        var cell = FindCell(effective);
         if (cell?.Container.Width <= 0) return;
         if (cell is null) return;
 
