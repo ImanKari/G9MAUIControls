@@ -98,6 +98,31 @@ MainBottomMenu.ItemSelected += (_, args) =>
 };
 ```
 
+## Intercepting the FAB tap
+
+By default the centre FAB fans out `SubMenuItems`. A host that needs the `+` to do something else —
+open a sheet of its own, start a flow, show a picker — handles `FabTapped` and marks it handled:
+
+```csharp
+MainBottomMenu.FabTapped += (_, e) =>
+{
+    e.Handled = true;      // suppress the built-in fan-out for this tap
+    OpenMyOwnSheet();
+};
+```
+
+`Handled = false` (or no handler at all) leaves the FAB behaving exactly as before, so the event is
+purely additive.
+
+**Why an event with `Handled`, and not "watch `IsFabOpen`".** The obvious workaround — observe
+`IsFabOpen` and set it back to `false` — runs *after* the control has already opened, so the sub-menu
+visibly flashes open and shut on every tap, and the FAB has also already moved `SelectedIndex` to the
+FAB slot. `FabTapped` is raised **before** any of that state changes, which is what makes suppression
+clean rather than corrective.
+
+Unsubscribe in the host's teardown (`OnHandlerChanging` with a null handler, or equivalent) like any
+other control event.
+
 ## Useful Properties
 
 - `FabIndex`: which bottom item is the FAB (-1 = none). Bindable, two-way.

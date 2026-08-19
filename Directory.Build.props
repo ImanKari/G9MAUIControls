@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.4</G9FamilyVersion>
+    <G9FamilyVersion>1.0.5</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,11 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.5
+      - G9TabBar: new FabTapped event, raised BEFORE the control acts on a centre-FAB tap. Setting
+        G9TabBarFabTappedEventArgs.Handled suppresses the built-in sub-menu fan-out (and the implicit
+        move of SelectedIndex to the FAB slot) so a host can give the '+' its own meaning without the
+        fan-out flashing open and shut. Additive: unhandled taps behave exactly as in 1.0.4.
       1.0.4 — Icons: restore the affordances the extraction had quietly replaced, and make each one
       themable.
 

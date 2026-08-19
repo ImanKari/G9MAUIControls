@@ -150,6 +150,15 @@ public partial class G9TabBar : ContentView
 
     public event EventHandler<G9TabBarSelectionChangedEventArgs>? ItemSelected;
 
+    /// <summary>
+    ///     Raised when the centre FAB is tapped, before the control acts on it.
+    /// </summary>
+    /// <remarks>
+    ///     Set <see cref="G9TabBarFabTappedEventArgs.Handled" /> to replace the default fan-out with the
+    ///     host's own behaviour. Unhandled taps behave exactly as before, so this is additive.
+    /// </remarks>
+    public event EventHandler<G9TabBarFabTappedEventArgs>? FabTapped;
+
     [AutoBindable(OnChanged = nameof(OnItemsChanged))]
     private ObservableCollection<G9TabBarItem>? _items;
 
@@ -912,6 +921,17 @@ public partial class G9TabBar : ContentView
     private void OnFabTapped()
     {
         CancelStartupSelectionReveal();
+
+        // The host gets first refusal on the tap. Raised BEFORE any state changes so a handler that
+        // suppresses the default sees a bar that has not already opened, moved the selection, or
+        // collapsed the overflow — anything else would flash the fan-out open and shut.
+        var args = new G9TabBarFabTappedEventArgs();
+        FabTapped?.Invoke(this, args);
+
+        if (args.Handled)
+        {
+            return;
+        }
 
         // Opening the FAB closes the overflow column to keep only one cluster expanded at a time.
         if (IsOverflowOpen)

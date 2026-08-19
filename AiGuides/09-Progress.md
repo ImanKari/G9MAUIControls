@@ -424,6 +424,19 @@ configurations × `dotnet pack` found none of them.
 
 ---
 
+# 1.0.5 — G9TabBar FAB interception
+
+`G9TabBar` gained `FabTapped` (`G9TabBarFabTappedEventArgs.Handled`), raised before the control reacts
+to a centre-FAB tap. It exists because a consumer needed the `+` to open its own bottom sheet instead
+of the radial sub-menu, and the only previously available approach — watching `IsFabOpen` and closing
+it again — fires after the fan-out has already opened and after `SelectedIndex` has already moved to
+the FAB slot, so it flashes visibly.
+
+Additive by construction: with no handler, or `Handled = false`, the FAB path is byte-for-byte the
+1.0.4 behaviour. Documented in `TabBar/G9TabBar.md` → *Intercepting the FAB tap*.
+
+---
+
 # Known risks
 
 | Risk | Note |
