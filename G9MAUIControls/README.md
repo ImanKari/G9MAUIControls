@@ -89,6 +89,16 @@ and use the controls:
 await G9ToastHelper.ShowToastAsync("Saved", G9ToastType.Success);
 var ok = await G9PopupHelper.ShowConfirmAsync("Turn off all relays?", type: G9PopupType.Warning);
 G9BottomSheetHelper.ShowG9BottomSheet(content, G9BottomSheetOptions.FitToContentOptions());
+
+// Two detents: opens at a peek, drags open to the CONTENT's own height (capped, then scrolls).
+G9BottomSheetHelper.ShowG9BottomSheet(content, G9BottomSheetOptions.DefaultOptions() with
+{
+    CurrentState = G9BottomSheetState.Peek,
+    States = [G9BottomSheetState.Peek, G9BottomSheetState.Medium],
+    PeekHeight = 260,
+    CollapsedHeight = 260,
+    ExpandedFitsContent = true      // ScrollingExpandsSheet is already on by default
+});
 ```
 
 ---
@@ -101,7 +111,7 @@ G9BottomSheetHelper.ShowG9BottomSheet(content, G9BottomSheetOptions.FitToContent
 | **Actions** | `G9Button` `G9IconButton` `G9SafeButton` `G9SafeIconButton` `G9PlusButton` `G9NavCard` `G9SwipeView` |
 | **Structure** | `G9TabView` `G9Expander` `G9CascadePanel` `G9Separator` `G9TitleWithLine` |
 | **Feedback** | `G9ProgressBar` `G9Shimmer` `G9ActivityIndicator` |
-| **Overlays** | `G9BottomSheetHelper` (+ stacking, morph, fit-to-content, list picker) · `G9PopupHelper` (types, input forms, confirm, non-modal draggable) · `G9ToastHelper` (typed toasts, loaders, progress) |
+| **Overlays** | `G9BottomSheetHelper` (+ stacking, morph, fit-to-content, content-sized detents, list picker) · `G9PopupHelper` (types, input forms, confirm, non-modal draggable) · `G9ToastHelper` (typed toasts, loaders, progress) |
 | **Navigation** | `G9TabBar` (animated bottom bar + FAB notch) · `G9EdgePanel` (edge drawer) |
 | **Theming** | `G9Theme` `G9Palette` (~110 tokens) `G9LayoutMetrics` · `{theme:G9Color …}` markup extension |
 | **Hosting** | `G9PageBase` `G9ContentViewBase` `G9PageTemplate` (the six-layer overlay z-stack) |

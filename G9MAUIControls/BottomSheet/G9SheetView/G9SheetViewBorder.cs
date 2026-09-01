@@ -30,6 +30,21 @@ internal partial class G9SheetViewBorder : Border
         }
     }
 
+    /// <summary>
+    ///     Whether a scrollable child under the finger may consume this drag, or whether the drag
+    ///     belongs to the SHEET because there is still a larger detent to expand into. Mirrors
+    ///     <see cref="G9SheetView.ScrollingExpandsSheet" />; see that property for the rationale and
+    ///     for why it is a no-op on a single-detent sheet.
+    /// </summary>
+    /// <remarks>
+    ///     Fails OPEN (returns <c>true</c>) when the owner is gone, so a detached border can never
+    ///     swallow a scroll gesture.
+    /// </remarks>
+    internal bool ShouldInnerScrollerConsumeDrag()
+    {
+        return TryGetOwner()?.ShouldInnerScrollerConsumeDrag() ?? true;
+    }
+
     /// <summary>Returns the owning <see cref="G9SheetView" /> if still alive.</summary>
     internal G9SheetView? TryGetOwner()
     {

@@ -404,6 +404,86 @@ G9BottomSheetOptions.DefaultOptions() with
 
 Fixed-state sheets are sheets with `FitToContent` or only one allowed state. Fixed-state sheets do not show a grabber, even if `HasHandle = true`.
 
+### Detents, and what `AllowedState` does NOT say
+
+The control thinks in **detents** — the heights it may come to rest at. `AllowedState` only says
+which of the two LARGE detents exists (`HalfExpanded` / `FullExpanded` / both); it cannot say
+whether a peek step sits under them. `G9SheetView.AllowCollapsedState` is that missing bit, and the
+helper sets it (`HasPeekDetent`) exactly when the caller declared `Peek` **alongside** another
+state. It is what separates a two-detent peek→medium sheet from a single-state sheet that happens
+to carry the same `AllowedState`, and three behaviours read it:
+
+| | Single detent (full-screen, single-state, fit) | Two+ detents (`[Peek, Medium]`, `[Peek, Medium, Large]`) |
+|---|---|---|
+| Drag DOWN past `DragCloseThreshold` | close request | step DOWN a detent; only from the SMALLEST detent is it a close request |
+| Drag UP | clamped at the one detent | clamped at the largest ALLOWED detent |
+| Release between detents | snaps back | snaps to the nearest ALLOWED detent, ties going to the current one |
+
+⛔ **The drag is clamped to the largest ALLOWED detent, not to the window.** Before 2026-09 the
+limit was derived from the state the sheet was IN, so a sheet resting at `Peek` had no upper limit
+short of the screen: it could be dragged to the status bar and was then snapped back down, which is
+what reads to a user as "it over-drags and then leaves a gap". Below the smallest detent a
+cancelable sheet keeps its height and SLIDES OFF instead of shrinking — a dismiss is not a resize,
+and shrinking re-lays the body out on every frame.
+
+### Content-sized top detent — `ExpandedFitsContent`
+
+For a multi-detent `States` sheet, `G9BottomSheetOptions.ExpandedFitsContent = true` sizes the
+LARGEST detent to the MEASURED content instead of to a ratio. This is Material's
+`BottomSheetBehavior.fitToContents` applied to the top detent, and it is the answer whenever the
+body's height varies with data, permissions or locale — a tuned ratio cannot be right twice.
+
+```csharp
+G9BottomSheetHelper.ShowG9BottomSheet(body, G9BottomSheetOptions.DefaultOptions() with
+{
+    SizeMode      = G9BottomSheetSizeMode.States,
+    CurrentState  = G9BottomSheetState.Peek,
+    States        = [G9BottomSheetState.Peek, G9BottomSheetState.Medium],
+    PeekHeight    = 470,           // what the sheet OPENS at
+    CollapsedHeight = 470,
+    ExpandedFitsContent = true,    // what it settles at when dragged open
+    MaxFitToContentHeightRatio = 0.9
+});
+```
+
+- The measured height is written to whichever detent is largest — `HalfExpandedRatio` when the
+  states stop at `Medium`, `FullExpandedRatio` when they include `Large`. The control clamps the
+  half ratio to **0.9**, so a sheet whose top detent must go higher has to declare `Large`.
+- **Content taller than the cap** (`MaxFitToContentHeightRatio`, default 0.75) stops at the cap and
+  SCROLLS. To make that possible the helper hosts the body in its own vertical scroll viewport —
+  skipped when the body already is a scroller/list, which would nest two scrollers.
+- **Content shorter than `PeekHeight`** lowers the peek to the content too. Only ever lowered: the
+  peek stays the caller's "open short" answer for a tall body.
+- **Authoring rule, inverted from fit-to-content:** the body must still be INTRINSIC-height (no
+  `ScrollView`-as-body, no greedy `*` row) — a scroller reports its viewport, so the top detent
+  would silently fall back to the cap. The helper adds the scrolling, the body does not.
+- A cold measure (Android measures a not-yet-attached tree as 0) is DISCARDED rather than applied:
+  the peek is a fixed height and already correct, so there is nothing to hold. The same settle
+  passes (0 / 160 / 380 ms), `MeasureInvalidated` tracker and
+  `IG9BottomSheetContentHeightProvider` events that drive fit-to-content re-run this.
+- Ignored for `SizeMode.FitToContent` (already content-sized) and for single-state sheets.
+
+### Scroll belongs to the sheet until it is fully open — `ScrollingExpandsSheet`
+
+`G9BottomSheetOptions.ScrollingExpandsSheet` (**default `true`**) decides who owns a drag that
+starts on a scrollable part of the body: while the sheet is below its largest detent the SHEET does
+— the drag expands it — and the inner scroller takes over only once there is nowhere further to go.
+That is UIKit's `prefersScrollingExpandsWhenScrolledToEdge` (whose default is likewise on) and
+Material's nested-scroll contract, and it is why a peek-then-expand sheet feels right: at the peek,
+dragging up opens the sheet; at the top, the same drag scrolls; at the scroller's top edge, dragging
+down collapses it again.
+
+**It is a no-op for a single-detent sheet by construction** — full-screen, single-state and
+fit-to-content sheets are always AT their maximum detent, so `IsAtMaximumDetent` is true and their
+content scrolls exactly as it always did. Set it `false` only for a multi-detent sheet whose body
+must scroll at every step (it then resizes from the grabber alone).
+
+The gate lives in the control (`G9SheetView.ShouldInnerScrollerConsumeDrag`) and is asked by each
+per-platform handler BEFORE its edge test, so all four targets share one rule. The helper also
+rewinds its own viewport to the top when the sheet leaves the top detent — the grabber sits outside
+the scroller and can collapse the sheet from any scroll offset, which would otherwise strand the
+peek on the middle of the content with scrolling switched off.
+
 ## Full-Screen Safe Area
 
 Full-screen top safe-area padding is state-aware:
@@ -537,10 +617,10 @@ When the user drags the body past `DragCloseThreshold` (default 72 dp) downward 
 
 ### `IsCancelable` and `DragCloseThreshold`
 
-- `G9SheetView.IsCancelable` (default `true`) — when `false`, the control suppresses `BackRequested` on drag-to-close. The sheet still animates back to its resting position after a drag, but no close request is raised.
-- `G9SheetView.DragCloseThreshold` (default `72`) — pixels of downward drag on release that triggers the close request.
+- `G9SheetView.IsCancelable` (default `true`) — when `false`, the control suppresses `BackRequested` on drag-to-close AND refuses to be dragged below its smallest detent. The sheet still animates back to its resting position after a drag; only the close request is suppressed.
+- `G9SheetView.DragCloseThreshold` (default `72`) — dp of downward FINGER travel on release that triggers the close request. Finger travel, not sheet movement: a sheet clamped at its detent may not have moved at all, and that is precisely the case the gesture exists for.
 
-Both are bindable properties set by the helper in `ApplyOptions` based on `G9BottomSheetOptions.IsCancelable`.
+Both are bindable properties set by the helper in `ApplyOptions` from `G9BottomSheetOptions.IsCancelable` (they were documented as such long before the helper actually wrote them — fixed 2026-09).
 
 `IsDraggable` controls state dragging and drag-to-close support.
 
@@ -564,8 +644,13 @@ Close behavior:
 Content drag behavior:
 
 - Multi-state sheets can be dragged from the content body, not only from the grabber.
-- Scrollable content has priority. When a `ScrollView`, `CollectionView`, `CarouselView`, `ListView`, or Nalu `VirtualScroll` can scroll in the drag direction, the content scrolls first; otherwise the drag promotes to a sheet state change or close. The decision is made by the per-platform `G9SheetViewBorder` handler so it uses real native `CanScrollVertically` / `ContentOffset` data instead of inferred MAUI heights.
-- Fixed fit-to-content sheets close on a downward body drag when cancelable.
+- Scrollable content has priority **once the sheet is at its largest detent**. When a `ScrollView`, `CollectionView`, `CarouselView`, `ListView`, or Nalu `VirtualScroll` can scroll in the drag direction, the content scrolls first; otherwise the drag promotes to a sheet state change or close. The decision is made by the per-platform `G9SheetViewBorder` handler so it uses real native `CanScrollVertically` / `ContentOffset` data instead of inferred MAUI heights. Below the largest detent the SHEET takes the drag instead — see `ScrollingExpandsSheet` under "Sizing Rules"; that gate is always open for a single-detent sheet, so this priority is unchanged for them.
+- The iOS and Windows handlers resolve the scroller under the finger by walking UP the tree, and skip scrollers that cannot scroll vertically at all. Without that, a side-scrolling row inside the body (a tile rail, a chip strip) resolved as "the scroller", reported "cannot scroll" for every vertical drag and handed the gesture to the sheet — so the body's own vertical scroller never got a chance. Android resolves the OUTERMOST scroller under the point and was already correct.
+- **Fit-to-content sheets receive no drag at all.** `ShouldEnableNativeStateSwiping` turns
+  `EnableSwiping` off for `SizeMode.FitToContent` (and for any sheet with an `OnBackRequested`
+  callback or `IsDraggable = false`), so the per-platform handlers forward nothing and none of the
+  drag rules above apply to them. They are dismissed by the overlay tap, hardware back, or their own
+  close button. Do not document or rely on a drag-to-close for a fit sheet.
 
 Example:
 
@@ -1120,6 +1205,17 @@ The helper reads current app flow direction and theme palette when building shee
 - **Full-screen + drag-to-close + back guard** — full-screen modal, toolbar, hardware-back veto via `OnBackRequested`, drag-down body closes.
 - **Lazy full-screen (heavy factory)** — deferred spinner, factory invocation after open animation, `OnContentCreated` callback.
 
+### Two-detent sizing (2 buttons, `G9Controls.Gallery` → Overlays)
+
+The reference app carries the pair that proves the 2026-09 detent work; run BOTH after touching the
+drag/clamp/scroll-gate code, on a device (a build says nothing about a gesture):
+
+- **Sheet — peek, drag to FIT (short body)** — dragging up settles exactly under the last row: no
+  empty band, and the sheet cannot be dragged past it.
+- **Sheet — peek, drag to CAP + scroll (tall body)** — dragging up stops at the cap and the body
+  then scrolls; at the PEEK step the same drag expands instead of scrolling; from the top, a drag
+  down at the scroller's top edge steps back to the peek and a further one dismisses.
+
 ### Composability (3 buttons)
 
 - **Stacked sheet (open more from inside)** — recursive stacked-sheet opening, modal overlay layering.
@@ -1134,6 +1230,16 @@ The helper reads current app flow direction and theme palette when building shee
 Run the whole G9BottomSheet tab after changing `G9BottomSheetHelper`, `G9BottomSheetOptions`, `G9BottomSheetSettings`, `G9SheetView`, `DeferredContentView`, `VirtualScrollView`, the helper's header/footer builders, or shared modal metrics. Toggle LTR/RTL and Light/Dark while sheets are open to verify slot order, title alignment, footer divider color, and the backdrop card recede color all stay correct.
 
 ## Do Not Regress
+
+- **The drag clamp is the largest ALLOWED detent, not the window.** `ClampDragTranslation` /
+  `ResolveMaximumDetentHeight`. Deriving it from the current state is the bug that let a peek sheet
+  be dragged to the status bar.
+- **`ScrollingExpandsSheet` must stay a no-op for single-detent sheets.** It is what makes a default
+  of `true` safe. If `IsAtMaximumDetent` ever stops being trivially true for full-screen /
+  fit-to-content sheets, every one of them loses its inner scrolling.
+- **`UpdateStateBasedOnNearestPoint` breaks ties toward the CURRENT state.** A fit-to-content sheet
+  puts all three detents at the same position; nearest-wins would promote it to `FullExpanded` and
+  every state-driven consumer would act on a state it never entered.
 
 - Do not reintroduce `Plugin.Maui.G9BottomSheet`.
 - Do not reintroduce a vendored copy of the former third-party library (now removed)'s `SfG9BottomSheet`. The hand-rolled `G9SheetView` is the contract; if you need a feature that's missing, add it to `G9SheetView` rather than swapping the control out.

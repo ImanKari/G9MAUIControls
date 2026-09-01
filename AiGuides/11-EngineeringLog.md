@@ -1373,6 +1373,44 @@ other thread has just nulled. It is a torn read, not a null bug.
    "fixed" a site that was not the reported one while leaving `PositionPillNow` untouched. Routing
    all four call sites through `FindCell` removed both the bug and the class of mistake.
 
+## LES-0041 — A gesture limit derived from the CURRENT state is not a limit
+
+**Symptom.** A bottom sheet opened with `States = [Peek, Medium]` could be dragged to the top of the
+window, and on release dropped back to ~75% of the screen leaving a band of empty sheet background
+under its last row. A downward drag from that step closed the sheet outright instead of returning it
+to the peek.
+
+**Root cause.** `ShouldRestrictMovement` computed its bound from `State`:
+
+```csharp
+var endPosition = State switch { HalfExpanded => Height * HalfExpandedRatio, Collapsed => CollapsedHeight, … };
+var halfRestricted = State == HalfExpanded && AllowedState == HalfExpanded && updatedHeight > endPosition;
+```
+
+While the sheet sat at `Collapsed` neither `halfRestricted` nor `fullRestricted` could be true, so the
+only remaining bound was the window itself (`FullExpandedRatio` defaults to 1). **A limit that is only
+armed once you are already at the limit is not a limit.** The same shape explains the close: the
+control asked `AllowedState != All` to decide "is this a fixed sheet?", and `AllowedState` only
+encodes which LARGE detent exists — a two-detent peek→medium sheet answers exactly like a fixed
+single-state one.
+
+**Rule.** Derive gesture bounds from the sheet's DECLARED set of resting positions, never from the one
+it currently occupies; and when an enum cannot express a distinction the behaviour depends on, add the
+bit rather than inferring it (`AllowCollapsedState`). The tell that inference was wrong: the helper
+knew the answer all along — it has `options.States` — and was throwing it away at the boundary.
+
+**Two things this uncovered, both worth repeating.**
+
+- *Documented is not implemented.* The guide had stated for a year that the helper applies
+  `IsCancelable` and `DragCloseThreshold` to the control in `ApplyOptions`. It never did. It was
+  harmless only by luck (every sheet that opts out of cancelling also sets `IsDraggable = false`).
+  When a guide asserts a wiring, grep for the assignment before building on it.
+- *Measure the finger, snap the sheet.* Drag-to-close had been judged on how far the SHEET moved,
+  which is zero for a sheet clamped at its detent — the exact case the gesture is for. The two
+  questions need two accumulators: finger travel decides the close, sheet travel decides the snap.
+
+---
+
 ## LES-0040 — Extracting a control library substituted the nearest icon, and changed what three controls PROMISED
 
 **Reported as** "the barcode scanner button became a search button". A consumer noticed that the

@@ -125,7 +125,16 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
                 // dy > 0 (finger down)  -> child needs to scroll UP    -> dir = -1
                 // dy < 0 (finger up)    -> child needs to scroll DOWN  -> dir = +1
                 var dir = dy > 0 ? -1 : 1;
-                if (CanChildScrollVertically(_scrollableUnderFinger, dir))
+
+                // The sheet outranks the scroller while there is still a larger detent to reach
+                // (G9SheetView.ScrollingExpandsSheet — the Material nested-scroll / UIKit
+                // prefersScrollingExpandsWhenScrolledToEdge contract). Asked BEFORE the edge test,
+                // because a scroller that CAN scroll is exactly the case being overridden. Reads
+                // true — i.e. behaves as it always did — for any sheet already at its maximum.
+                var innerMayConsume = !_borderRef.TryGetTarget(out var gateBorder) ||
+                                      gateBorder.ShouldInnerScrollerConsumeDrag();
+
+                if (innerMayConsume && CanChildScrollVertically(_scrollableUnderFinger, dir))
                 {
                     DisallowParentIntercept(true);
                     _lastX = curX;
@@ -133,7 +142,8 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
                     return false;
                 }
 
-                // Edge reached — take over and forward to the bottom sheet. Android sends
+                // Edge reached (or the sheet claimed the drag) — take over and forward to the
+                // bottom sheet. Android sends
                 // ACTION_CANCEL to the inner scrollable for us when intercept switches to
                 // true mid-stream, so the list cleanly hands off without a residual scroll.
                 DisallowParentIntercept(true);

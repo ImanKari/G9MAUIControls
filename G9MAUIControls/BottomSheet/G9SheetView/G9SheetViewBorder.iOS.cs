@@ -137,7 +137,11 @@ internal sealed class G9SheetViewPanGestureRecognizer : UIPanGestureRecognizer
 
                 if (_insideScrollable && _activeScrollView is { } scroll)
                 {
-                    if (CanInnerScroll(scroll, dy))
+                    // The sheet outranks the scroller while there is still a larger detent to reach
+                    // (G9SheetView.ScrollingExpandsSheet — the same contract UIKit expresses as
+                    // prefersScrollingExpandsWhenScrolledToEdge). A single-detent sheet is always at
+                    // its maximum, so this reads true and the handoff behaves exactly as before.
+                    if (border.ShouldInnerScrollerConsumeDrag() && CanInnerScroll(scroll, dy))
                     {
                         // Inner scroll can still consume — stay passive.
                         _lastPoint = location;
@@ -183,12 +187,22 @@ internal sealed class G9SheetViewPanGestureRecognizer : UIPanGestureRecognizer
         _handoff = false;
     }
 
+    /// <summary>
+    ///     Nearest ancestor scroll view that can actually scroll VERTICALLY.
+    /// </summary>
+    /// <remarks>
+    ///     Horizontal-only scrollers are skipped rather than returned: a sheet body whose rows are
+    ///     side-scrolling strips (a tile row, a chip rail) would otherwise resolve to one of those,
+    ///     report "cannot scroll" for every vertical drag, and hand the gesture straight to the
+    ///     sheet — so the body's own vertical scroller never got a chance even at full height.
+    ///     Falling through to the outer scroller is what makes the two axes independent.
+    /// </remarks>
     private static UIScrollView? ResolveScrollableAncestor(UIView? view)
     {
         var current = view;
         while (current is not null)
         {
-            if (current is UIScrollView scroll)
+            if (current is UIScrollView scroll && CanScrollVerticallyAtAll(scroll))
             {
                 return scroll;
             }
@@ -197,6 +211,12 @@ internal sealed class G9SheetViewPanGestureRecognizer : UIPanGestureRecognizer
         }
 
         return null;
+    }
+
+    private static bool CanScrollVerticallyAtAll(UIScrollView scroll)
+    {
+        var insets = scroll.AdjustedContentInset;
+        return scroll.ContentSize.Height > scroll.Bounds.Height - (insets.Top + insets.Bottom);
     }
 
     private static bool CanInnerScroll(UIScrollView scroll, nfloat dy)

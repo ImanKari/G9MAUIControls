@@ -29,6 +29,13 @@ public partial class G9SheetView : Grid
     private const double DefaultHalfExpandedRatio = 0.5;
     private const double DefaultFullExpandedRatio = 1;
     private const double DefaultOverlayOpacity = 0.5;
+    /// <summary>
+    ///     How close (dp) the body has to be to a detent to count as resting AT it. Deliberately
+    ///     larger than the 2 dp settle overshoot <see cref="AnimateG9BottomSheet" /> adds, so a sheet
+    ///     that finished its open animation reads as "at the detent" rather than 2 dp short of it.
+    /// </summary>
+    private const double DetentTolerance = 4;
+
     private const string SheetAnimationName = "G9SheetViewMotion";
     private const string OverlayAnimationName = "G9SheetViewOverlay";
 
@@ -52,8 +59,12 @@ public partial class G9SheetView : Grid
     private bool _isOverlayAdded;
     private bool _pendingShow;
     private double _initialTouchY;
-    private double _startTouchY;
-    private double _endTouchY;
+
+    /// <summary>Raw finger travel over the current gesture — drives the drag-to-CLOSE decision.</summary>
+    private double _dragTravelY;
+
+    /// <summary>How far the sheet body actually moved over the current gesture — drives the SNAP decision.</summary>
+    private double _sheetTravelY;
 
     #endregion
 
@@ -174,6 +185,54 @@ public partial class G9SheetView : Grid
     public static readonly BindableProperty DragCloseThresholdProperty = BindableProperty.Create(
         nameof(DragCloseThreshold), typeof(double), typeof(G9SheetView), 72d);
 
+    /// <summary>
+    ///     Whether <see cref="G9SheetViewState.Collapsed" /> is one of the resting DETENTS this
+    ///     sheet may snap to, as opposed to merely the position it happens to open at.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <see cref="AllowedState" /> only says which of the two LARGE detents exists; it cannot
+    ///         express "this sheet has a peek step as well". Without that distinction a two-detent
+    ///         peek→medium sheet was indistinguishable from a fixed single-state one, so a downward
+    ///         drag from its medium step raised a CLOSE request instead of stepping back down to the
+    ///         peek (<see cref="HasSingleAllowedState" />).
+    ///     </para>
+    ///     <para>
+    ///         Default <c>false</c>, which keeps every fixed sheet (full-screen, single-state,
+    ///         fit-to-content) behaving exactly as before. <c>G9BottomSheetHelper</c> sets it true
+    ///         only when the caller declared more than one state and one of them is Peek.
+    ///     </para>
+    /// </remarks>
+    public static readonly BindableProperty AllowCollapsedStateProperty = BindableProperty.Create(
+        nameof(AllowCollapsedState), typeof(bool), typeof(G9SheetView), false);
+
+    /// <summary>
+    ///     Whether a drag that starts on a SCROLLABLE part of the body expands the sheet to its
+    ///     next detent before the content is allowed to scroll (default <c>true</c>).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is the cross-platform equivalent of UIKit's
+    ///         <c>UISheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge</c> (whose
+    ///         default is likewise <c>true</c>) and of the Material
+    ///         <c>BottomSheetBehavior</c> + nested-scroll contract on Android: while the sheet is
+    ///         below its largest detent the drag belongs to the SHEET, and the inner scroller only
+    ///         takes over once there is nowhere further to expand.
+    ///     </para>
+    ///     <para>
+    ///         Turning it off restores the "inner scroller always wins" behaviour — the content
+    ///         scrolls at every detent and the sheet is resized only from the grabber / non-scrolling
+    ///         chrome.
+    ///     </para>
+    ///     <para>
+    ///         <b>It is a no-op for a single-detent sheet by construction</b> (full-screen,
+    ///         single-state and fit-to-content sheets are always AT their maximum detent), which is
+    ///         why the default can be <c>true</c> without changing any fixed sheet's behaviour.
+    ///     </para>
+    /// </remarks>
+    public static readonly BindableProperty ScrollingExpandsSheetProperty = BindableProperty.Create(
+        nameof(ScrollingExpandsSheet), typeof(bool), typeof(G9SheetView), true);
+
     #endregion
 
     #region Properties
@@ -218,6 +277,20 @@ public partial class G9SheetView : Grid
     {
         get => (G9SheetViewAllowedState)GetValue(AllowedStateProperty);
         set => SetValue(AllowedStateProperty, value);
+    }
+
+    /// <inheritdoc cref="AllowCollapsedStateProperty" />
+    public bool AllowCollapsedState
+    {
+        get => (bool)GetValue(AllowCollapsedStateProperty);
+        set => SetValue(AllowCollapsedStateProperty, value);
+    }
+
+    /// <inheritdoc cref="ScrollingExpandsSheetProperty" />
+    public bool ScrollingExpandsSheet
+    {
+        get => (bool)GetValue(ScrollingExpandsSheetProperty);
+        set => SetValue(ScrollingExpandsSheetProperty, value);
     }
 
     public bool IsModal
@@ -523,7 +596,8 @@ public partial class G9SheetView : Grid
             case G9SheetViewTouchAction.Pressed:
                 _initialTouchY = touchY;
                 _isPointerPressed = true;
-                _startTouchY = touchY;
+                _dragTravelY = 0;
+                _sheetTravelY = 0;
                 return;
 
             case G9SheetViewTouchAction.Moved:
@@ -1104,23 +1178,47 @@ public partial class G9SheetView : Grid
         }
 
         var diffY = touchY - _initialTouchY;
-        var newTranslation = Math.Max(0, _bottomSheet.TranslationY + diffY);
 
-        if (ShouldRestrictMovement(newTranslation, diffY))
+        // Two accumulators, because the two release decisions ask different questions:
+        //  * _dragTravelY  — how far the FINGER went. A gesture that is fully clamped (the sheet is
+        //    already at a detent it may not pass) still travels, and that travel is what a
+        //    drag-to-close has to be judged on. Measuring the close by SHEET movement is why a
+        //    fit-to-content sheet could never be dismissed by dragging it down: it cannot move.
+        //  * _sheetTravelY — how far the SHEET went, which is what the snap-to-next-detent rules
+        //    have always been written against. Keeping it separate means a clamped drag no longer
+        //    also reads as "a big swipe" to the snap logic.
+        _dragTravelY += diffY;
+        _initialTouchY = touchY;
+
+        var desired = _bottomSheet.TranslationY + diffY;
+        var target = ClampDragTranslation(desired);
+        var applied = target - _bottomSheet.TranslationY;
+        if (Math.Abs(applied) < 0.01)
         {
             return;
         }
 
-        _bottomSheet.TranslationY = newTranslation;
-        _initialTouchY = touchY;
-        _bottomSheet.HeightRequest = Math.Max(0, Height - newTranslation);
+        _sheetTravelY += applied;
+        _bottomSheet.TranslationY = target;
+
+        // Below the smallest detent the body SLIDES OFF instead of shrinking: the sheet is being
+        // dismissed, not resized, and re-laying the content out on every frame while it leaves the
+        // screen costs a layout pass per frame and reads as the content collapsing in on itself.
+        // Above it the height tracks the position as before, so the body's bottom edge stays welded
+        // to the screen bottom.
+        var minRestingHeight = ResolveMinimumDetentHeight();
+        var visibleHeight = Math.Max(0, Height - target);
+        _bottomSheet.HeightRequest = Math.Max(visibleHeight, Math.Min(minRestingHeight, Height));
+
         RaisePositionChanged();
 
-        var shouldShow = IsModal && _bottomSheet.HeightRequest > CollapsedHeight;
+        // Overlay alpha follows the VISIBLE height (not the height request, which is pinned during
+        // a dismiss drag), so the scrim keeps fading out as the sheet slides away.
+        var shouldShow = IsModal && visibleHeight > CollapsedHeight;
         if (shouldShow)
         {
             AddOverlayToView();
-            _overlayGrid.Opacity = ComputeDragOverlayOpacity(_bottomSheet.HeightRequest);
+            _overlayGrid.Opacity = ComputeDragOverlayOpacity(visibleHeight);
         }
         else
         {
@@ -1128,32 +1226,110 @@ public partial class G9SheetView : Grid
         }
     }
 
-    private bool ShouldRestrictMovement(double newTranslation, double diffY)
+    /// <summary>
+    ///     Clamps a proposed body position to the range this sheet may be dragged through: never
+    ///     above its LARGEST allowed detent, and never below its smallest one unless the sheet is
+    ///     cancelable — in which case the extra travel is the dismiss gesture.
+    /// </summary>
+    /// <remarks>
+    ///     ⛔ The upper bound is the largest ALLOWED detent, not the host height. The rule this
+    ///     replaces derived its limit from the CURRENT state, so a sheet resting at Peek had no
+    ///     upper limit beyond the window itself: a two-detent peek→medium sheet could be dragged to
+    ///     the very top of the screen and was then snapped back down on release, which is the
+    ///     "it over-drags, then leaves a band of empty background" defect.
+    /// </remarks>
+    private double ClampDragTranslation(double desired)
     {
-        _ = diffY;
-
-        var endPosition = State switch
+        if (Height <= 0 || double.IsPositiveInfinity(Height))
         {
-            G9SheetViewState.FullExpanded => Height * FullExpandedRatio,
-            G9SheetViewState.HalfExpanded => Height * HalfExpandedRatio,
-            G9SheetViewState.Collapsed => CollapsedHeight,
-            _ => 0d
+            return Math.Max(0, desired);
+        }
+
+        var maxHeight = ResolveMaximumDetentHeight();
+        var minHeight = IsCancelable ? 0 : ResolveMinimumDetentHeight();
+
+        var minTranslation = Math.Max(0, Height - maxHeight);
+        var maxTranslation = Math.Max(minTranslation, Height - minHeight);
+
+        return Math.Clamp(desired, minTranslation, maxTranslation);
+    }
+
+    /// <summary>
+    ///     Height (dp) of the largest detent this sheet may rest at, given
+    ///     <see cref="AllowedState" /> and the current ratios.
+    /// </summary>
+    private double ResolveMaximumDetentHeight()
+    {
+        if (Height <= 0 || double.IsPositiveInfinity(Height))
+        {
+            return 0;
+        }
+
+        var maxHeight = AllowedState switch
+        {
+            G9SheetViewAllowedState.HalfExpanded => Height * HalfExpandedRatio,
+            G9SheetViewAllowedState.FullExpanded => Height * FullExpandedRatio,
+            _ => Math.Max(Height * FullExpandedRatio, Height * HalfExpandedRatio)
         };
 
-        var updatedHeight = Height - newTranslation;
+        // A collapsed height taller than the large detent is not a contradiction — it is exactly
+        // how a fit-to-content sheet is expressed (CollapsedHeight = the measured content height) —
+        // so the peek participates in the maximum instead of being overridden by it.
+        return Math.Clamp(Math.Max(maxHeight, CollapsedHeight), 0, Height);
+    }
 
-        var halfRestricted = State == G9SheetViewState.HalfExpanded
-                             && AllowedState == G9SheetViewAllowedState.HalfExpanded
-                             && updatedHeight > endPosition;
+    /// <summary>Height (dp) of the smallest detent this sheet may rest at.</summary>
+    private double ResolveMinimumDetentHeight()
+    {
+        if (Height <= 0 || double.IsPositiveInfinity(Height))
+        {
+            return 0;
+        }
 
-        var collapsedDown = State == G9SheetViewState.Collapsed && updatedHeight < endPosition;
+        if (AllowCollapsedState || AllowedState == G9SheetViewAllowedState.All)
+        {
+            return Math.Clamp(CollapsedHeight, 0, Height);
+        }
 
-        var fullRestricted = State == G9SheetViewState.FullExpanded && updatedHeight > endPosition;
+        return AllowedState switch
+        {
+            G9SheetViewAllowedState.HalfExpanded => Math.Clamp(Height * HalfExpandedRatio, 0, Height),
+            G9SheetViewAllowedState.FullExpanded => Math.Clamp(Height * FullExpandedRatio, 0, Height),
+            _ => Math.Clamp(CollapsedHeight, 0, Height)
+        };
+    }
 
-        var beyondHost = newTranslation > Height - CollapsedHeight ||
-                         newTranslation < Height * (1 - FullExpandedRatio);
+    /// <summary>
+    ///     <c>true</c> while the body rests at (or past) its largest allowed detent — i.e. there is
+    ///     nothing left to expand into. Consumed by the per-platform border handlers to decide
+    ///     whether an inner scroller may take a drag; see <see cref="ScrollingExpandsSheetProperty" />.
+    /// </summary>
+    internal bool IsAtMaximumDetent
+    {
+        get
+        {
+            if (Height <= 0 || double.IsPositiveInfinity(Height))
+            {
+                return true;
+            }
 
-        return halfRestricted || collapsedDown || fullRestricted || beyondHost;
+            var maxHeight = ResolveMaximumDetentHeight();
+            if (maxHeight <= 0)
+            {
+                return true;
+            }
+
+            return Height - _bottomSheet.TranslationY >= maxHeight - DetentTolerance;
+        }
+    }
+
+    /// <summary>
+    ///     Whether a scrollable child under the finger may consume the drag, or whether the drag
+    ///     belongs to the sheet because there is still a larger detent to reach.
+    /// </summary>
+    internal bool ShouldInnerScrollerConsumeDrag()
+    {
+        return !ScrollingExpandsSheet || IsAtMaximumDetent;
     }
 
     private double ComputeDragOverlayOpacity(double currentHeight)
@@ -1171,7 +1347,6 @@ public partial class G9SheetView : Grid
 
     private void HandleTouchReleased()
     {
-        _endTouchY = _initialTouchY;
         _initialTouchY = 0;
         _isPointerPressed = false;
         UpdateAfterRelease();
@@ -1181,16 +1356,18 @@ public partial class G9SheetView : Grid
     {
         const double SwipeThreshold = 100;
         const double DoubleSwipeThreshold = SwipeThreshold * 2;
-        var swipeDistance = _endTouchY - _startTouchY;
+        var swipeDistance = _sheetTravelY;
 
         // whether it snaps to another state or becomes a close request.
 
-        // Fixed-state sheets (FitToContent or only one allowed state) can't snap to a smaller
+        // Fixed-state sheets (FitToContent or only one allowed detent) can't snap to a smaller
         // state — a downward drag past DragCloseThreshold is a close request instead. The
         // helper layer turns that into either a real close or an OnBackRequested round-trip.
+        // Judged on FINGER travel: such a sheet is clamped at its detent and may not have moved at
+        // all, which is precisely the case the gesture exists for.
         if (HasSingleAllowedState() &&
             IsCancelable &&
-            swipeDistance > DragCloseThreshold)
+            _dragTravelY > DragCloseThreshold)
         {
             Show();
             BackRequested?.Invoke(
@@ -1216,8 +1393,10 @@ public partial class G9SheetView : Grid
     private bool HasSingleAllowedState()
     {
         // The helper sets AllowedState to FullExpanded for fixed full-screen modal sheets. For
-        // multi-state sheets it's left as All so the drag-snap path runs normally.
-        return AllowedState != G9SheetViewAllowedState.All;
+        // multi-state sheets it's left as All so the drag-snap path runs normally. AllowCollapsedState
+        // is what separates a genuine two-detent peek→medium sheet (which must step DOWN a detent
+        // rather than close) from a single-state sheet that happens to carry the same AllowedState.
+        return AllowedState != G9SheetViewAllowedState.All && !AllowCollapsedState;
     }
 
     private void HandleReleaseFromFullExpanded(double swipeDistance, double swipeThreshold, double doubleSwipeThreshold)
@@ -1242,7 +1421,7 @@ public partial class G9SheetView : Grid
         {
             State = G9SheetViewState.FullExpanded;
         }
-        else if (swipeDistance > swipeThreshold)
+        else if (swipeDistance > swipeThreshold && IsDetentAllowed(G9SheetViewState.Collapsed))
         {
             State = G9SheetViewState.Collapsed;
         }
@@ -1268,47 +1447,94 @@ public partial class G9SheetView : Grid
             {
                 UpdateStateBasedOnNearestPoint();
             }
+
+            return;
         }
-        else
+
+        // The smallest detent is where a downward drag means "dismiss" rather than "step down".
+        // Without this a sheet resting at its lowest detent would spring back from the gesture every
+        // platform reads as a dismissal.
+        if (IsCancelable && _dragTravelY > DragCloseThreshold)
         {
             Show();
+            BackRequested?.Invoke(
+                this,
+                new G9SheetViewBackRequestedEventArgs(G9SheetViewBackRequestReason.DragToClose));
+            return;
         }
+
+        Show();
     }
 
+    /// <summary>
+    ///     Snaps to the allowed detent nearest to where the body was actually released.
+    /// </summary>
+    /// <remarks>
+    ///     Ties go to the CURRENT state, which matters more than it looks: a fit-to-content sheet
+    ///     expresses all three detents at the SAME position (collapsed height == both ratios == the
+    ///     measured content height), so a nearest-wins scan would arbitrarily promote it to
+    ///     <see cref="G9SheetViewState.FullExpanded" /> — no visual change, but every state-driven
+    ///     consumer (overlay opacity, top safe-area padding, the helper's state handlers) would then
+    ///     act on a state the sheet never really entered.
+    /// </remarks>
     private void UpdateStateBasedOnNearestPoint()
     {
-        var fullExpandedY = Height * (1 - FullExpandedRatio);
-        var halfExpandedY = Height * (1 - HalfExpandedRatio);
-        var collapsedY = Height - CollapsedHeight;
-        var points = new[] { fullExpandedY, halfExpandedY, collapsedY };
-        var nearest = points.OrderBy(p => Math.Abs(p - _endTouchY)).First();
+        if (Height <= 0 || double.IsPositiveInfinity(Height))
+        {
+            Show();
+            return;
+        }
 
-        if (Math.Abs(nearest - fullExpandedY) < 0.001)
+        var released = _bottomSheet.TranslationY;
+        var candidates = new[]
         {
-            if (State != G9SheetViewState.FullExpanded)
+            (State: G9SheetViewState.FullExpanded, Position: Height * (1 - FullExpandedRatio)),
+            (State: G9SheetViewState.HalfExpanded, Position: Height * (1 - HalfExpandedRatio)),
+            (State: G9SheetViewState.Collapsed, Position: Height - CollapsedHeight)
+        };
+
+        var bestState = State;
+        var bestDistance = double.MaxValue;
+
+        foreach (var candidate in candidates)
+        {
+            if (!IsDetentAllowed(candidate.State))
             {
-                State = G9SheetViewState.FullExpanded;
+                continue;
             }
-            else
+
+            var distance = Math.Abs(candidate.Position - released);
+
+            // Strictly closer wins; an equal distance leaves the incumbent in place, which is what
+            // keeps coincident detents from reclassifying the sheet.
+            if (distance < bestDistance - 0.5 ||
+                (candidate.State == State && distance <= bestDistance + 0.5))
             {
-                Show();
+                bestDistance = distance;
+                bestState = candidate.State;
             }
         }
-        else if (Math.Abs(nearest - halfExpandedY) < 0.001)
+
+        if (bestState != State)
         {
-            State = G9SheetViewState.HalfExpanded;
+            State = bestState;
+            return;
         }
-        else
+
+        Show();
+    }
+
+    private bool IsDetentAllowed(G9SheetViewState candidate)
+    {
+        return candidate switch
         {
-            if (State != G9SheetViewState.Collapsed)
-            {
-                State = G9SheetViewState.Collapsed;
-            }
-            else
-            {
-                Show();
-            }
-        }
+            G9SheetViewState.FullExpanded => AllowedState is G9SheetViewAllowedState.All
+                or G9SheetViewAllowedState.FullExpanded,
+            G9SheetViewState.HalfExpanded => AllowedState is G9SheetViewAllowedState.All
+                or G9SheetViewAllowedState.HalfExpanded,
+            G9SheetViewState.Collapsed => AllowCollapsedState || AllowedState == G9SheetViewAllowedState.All,
+            _ => false
+        };
     }
 
     #endregion

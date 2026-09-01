@@ -11,7 +11,7 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-08-15**
+Last updated: **2026-09-01**
 
 ## 1.0.3 — G9TabView: fix a NullReferenceException when the tab bar rebuilds off the UI thread (2026-08-18)
 
@@ -307,7 +307,7 @@ Six pages, each written around what actually breaks rather than around what is e
 | **Glyphs** | every built-in glyph × 4 sizes × 2 backgrounds. The reason the gallery was built first |
 | **Inputs** | every input control empty / filled / with icon / error / counter / disabled |
 | **Actions** | all 12 `G9ButtonVariant`s, icon buttons, progress bars (including indeterminate and paused), separators |
-| **Overlays** | z-stack proofs, toast stacking, popup variants, the input popup, and the progress overlay run / indeterminate / fail-with-retry / top-anchored / standalone-failure |
+| **Overlays** | z-stack proofs, toast stacking, popup variants, the input popup, the progress overlay run / indeterminate / fail-with-retry / top-anchored / standalone-failure, and the two-detent sheet pair (peek → fit, peek → cap + scroll) that proves the 1.0.6 drag/clamp/scroll-gate rules |
 | **Navigation** | tab bar + FAB notch, both tab-view styles, expander, nav cards, the platform-handler shimmer band, swipe view |
 | **Satellites** | a core `G9TextEntry` beside a `G9BarcodeTextEntry` (same base, different assembly), the barcode accept/reject regex, and the carousel resolving slide keys through a consumer-supplied catalogue |
 
@@ -434,6 +434,43 @@ the FAB slot, so it flashes visibly.
 
 Additive by construction: with no handler, or `Handled = false`, the FAB path is byte-for-byte the
 1.0.4 behaviour. Documented in `TabBar/G9TabBar.md` → *Intercepting the FAB tap*.
+
+---
+
+# 1.0.6 — the bottom sheet learned what a detent is (2026-09-01)
+
+Three reported symptoms on one sheet (a peek→medium map-layers picker in the consuming app), one
+cause. `G9SheetView` derived its drag limits from the state it was IN rather than from the set of
+detents it was ALLOWED to rest at, and `G9SheetViewAllowedState` has no way to say "there is a peek
+step under this" — so a two-detent sheet could be dragged clear to the status bar, was snapped back
+to whatever ratio the caller had guessed for its medium step (empty band under the content), and a
+downward drag from that step raised a CLOSE request instead of stepping back to the peek.
+
+What shipped:
+
+- **`AllowCollapsedState`** on the control (helper-set via `HasPeekDetent`) — the missing bit.
+  Everything else keys off it, and it is `false` for every single-detent sheet, which is what keeps
+  full-screen / single-state / fit-to-content behaviour byte-for-byte unchanged.
+- **A real clamp** (`ClampDragTranslation`) to the largest allowed detent, and to the smallest for a
+  non-cancelable sheet. Below the smallest detent a cancelable sheet keeps its height and slides off
+  rather than shrinking.
+- **`ExpandedFitsContent`** — the top detent is the MEASURED content, capped by
+  `MaxFitToContentHeightRatio`; taller content stops at the cap and scrolls inside a viewport the
+  helper hosts; shorter-than-peek content lowers the peek too. Material's `fitToContents`, applied to
+  the top detent, reusing the fit-to-content measuring tiers rather than a second engine.
+- **`ScrollingExpandsSheet`** (default ON) — a drag on a scrollable body expands the sheet before the
+  content scrolls. UIKit's `prefersScrollingExpandsWhenScrolledToEdge`, whose default is likewise on.
+  A no-op for single-detent sheets **by construction**, which is what makes that default safe.
+- Two corrections found on the way: the helper never actually applied `IsCancelable` /
+  `DragCloseThreshold` to the control although the guide said it did; and the iOS/Windows handlers
+  resolved the INNERMOST scroller under the finger, so a horizontal row inside a body reported
+  "cannot scroll" for vertical drags and stole them from the body's own scroller.
+
+**Verified on Android (emulator, Pixel-class), both apps.** The gallery gained two Overlays buttons —
+short body (settles exactly at the content) and tall body (stops at the cap, scrolls there, does not
+scroll at the peek) — and the consuming app's layers sheet was driven through the whole cycle with
+`adb input`. Not exercised on iOS / Mac Catalyst / Windows: they build and the gate is shared code,
+but the three handler edits are per-platform and unrendered. See ADR-0019, LES-0041.
 
 ---
 

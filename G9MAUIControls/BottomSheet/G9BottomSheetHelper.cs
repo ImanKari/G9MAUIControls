@@ -1272,6 +1272,30 @@ public static class G9BottomSheetHelper
                !options.HasHandle;
     }
 
+    /// <summary>
+    ///     True when the LARGEST detent of a multi-detent States sheet is sized from its content
+    ///     rather than from a ratio — see <see cref="G9BottomSheetOptions.ExpandedFitsContent" />.
+    ///     Requires more than one distinct state; on a single-state sheet there is no "expanded"
+    ///     detent distinct from the resting one, so the flag has nothing to size.
+    /// </summary>
+    private static bool UsesExpandedFitsContent(G9BottomSheetOptions options)
+    {
+        return options.ExpandedFitsContent &&
+               options.SizeMode == G9BottomSheetSizeMode.States &&
+               options.States.Distinct().Count() > 1;
+    }
+
+    /// <summary>
+    ///     True when the sheet's height comes from MEASURING its body — either the whole sheet
+    ///     (<see cref="G9BottomSheetSizeMode.FitToContent" />) or just its top detent
+    ///     (<see cref="UsesExpandedFitsContent" />). The settle passes, the MeasureInvalidated
+    ///     tracker and the measure-target unwrapping are shared by both.
+    /// </summary>
+    private static bool RequiresContentMeasurement(G9BottomSheetOptions options)
+    {
+        return options.SizeMode == G9BottomSheetSizeMode.FitToContent || UsesExpandedFitsContent(options);
+    }
+
     private static bool HasFixedAllowedState(G9BottomSheetOptions options)
     {
         return options.SizeMode == G9BottomSheetSizeMode.FitToContent ||
@@ -1441,8 +1465,9 @@ public static class G9BottomSheetHelper
         var contentRoot = CreateSheetContentRoot(sheet, contentRequest, handle, options);
         sheet.G9BottomSheetContent = contentRoot;
 
+        SeedExpandedFitsContentDetent(sheet, options);
         ApplyStateAwareTopPadding(sheet, animated: false);
-        ApplyFitToContentHeight(sheet, contentRoot, options);
+        ApplySheetContentSizing(sheet, contentRoot, options);
         UpdateModalOverlayBackground(sheet, animated: false);
         ScheduleFitToContentRefresh(sheet, contentRoot, options);
         // Late settle re-measures. The MeasureInvalidated tracker can't see a content tree whose
@@ -1453,6 +1478,51 @@ public static class G9BottomSheetHelper
         ScheduleFitToContentRefresh(sheet, contentRoot, options, delayMs: 160);
         ScheduleFitToContentRefresh(sheet, contentRoot, options, delayMs: 380);
         AttachFitToContentSizeTracking(sheet, contentRoot, options);
+        AttachExpandedBodyScrollRewind(sheet, options);
+    }
+
+    /// <summary>
+    ///     Rewinds a helper-owned body viewport whenever the sheet leaves its top detent.
+    /// </summary>
+    /// <remarks>
+    ///     Dragging the BODY down already implies a scroll offset of zero (the scroller has to be at
+    ///     its top edge before the drag reaches the sheet), but the grabber and the sheet chrome are
+    ///     outside the scroller and can collapse it from anywhere. Without this, a sheet collapsed
+    ///     that way opens its peek onto the middle of the content — with scrolling disabled at that
+    ///     detent, and therefore no way back to the top except expanding again.
+    /// </remarks>
+    private static void AttachExpandedBodyScrollRewind(
+        CustomizedSfG9BottomSheet sheet,
+        G9BottomSheetOptions options)
+    {
+        if (!UsesExpandedFitsContent(options))
+        {
+            return;
+        }
+
+        if (!SheetBehaviorStates.TryGetValue(sheet, out var behavior) ||
+            behavior?.BodyScrollViewport is not { } viewport)
+        {
+            return;
+        }
+
+        var allowedStates = NormalizeAllowedStates(options.States);
+        if (allowedStates.Count == 0)
+        {
+            return;
+        }
+
+        var topState = MapState(allowedStates[^1]);
+
+        sheet.StateChanged += (_, e) =>
+        {
+            if (e.NewState == topState || viewport.ScrollY <= 0.5)
+            {
+                return;
+            }
+
+            _ = viewport.ScrollToAsync(0, 0, false);
+        };
     }
 
     private static IG9BottomSheetHandle OpenPrimarySheet(Grid overlayHost, PendingPrimarySheetRequest request)
@@ -1848,12 +1918,16 @@ public static class G9BottomSheetHelper
         if (content is IDeferredSheetLoad)
         {
             RegisterDeferredLoad(sheet, content);
-            return useFullScreenSizing ? CreateFullScreenSizingHost(sheet, content, options) : CreateFillHost(content, options);
+            return useFullScreenSizing
+                ? CreateFullScreenSizingHost(sheet, content, options)
+                : CreateFillHost(sheet, content, options);
         }
 
         if (!options.DeferContent)
         {
-            return useFullScreenSizing ? CreateFullScreenSizingHost(sheet, content, options) : CreateFillHost(content, options);
+            return useFullScreenSizing
+                ? CreateFullScreenSizingHost(sheet, content, options)
+                : CreateFillHost(sheet, content, options);
         }
 
         var deferred = new DeferredContentView
@@ -1871,7 +1945,9 @@ public static class G9BottomSheetHelper
         AttachDeferredContentLoadedRefresh(sheet, deferred, options);
         ApplyDeferredLoadingMetrics(sheet, deferred, options);
 
-        return useFullScreenSizing ? CreateFullScreenSizingHost(sheet, deferred, options) : CreateFillHost(deferred, options);
+        return useFullScreenSizing
+            ? CreateFullScreenSizingHost(sheet, deferred, options)
+            : CreateFillHost(sheet, deferred, options, bodyProbe: content);
     }
 
     private static View CreateFactoryHost(
@@ -1904,7 +1980,9 @@ public static class G9BottomSheetHelper
                 }
             }
 
-            return useFullScreenSizing ? CreateFullScreenSizingHost(sheet, content, options) : CreateFillHost(content, options);
+            return useFullScreenSizing
+                ? CreateFullScreenSizingHost(sheet, content, options)
+                : CreateFillHost(sheet, content, options);
         }
 
         var deferred = new DeferredContentView
@@ -1934,7 +2012,9 @@ public static class G9BottomSheetHelper
         AttachDeferredContentLoadedRefresh(sheet, deferred, options);
         ApplyDeferredLoadingMetrics(sheet, deferred, options);
 
-        return useFullScreenSizing ? CreateFullScreenSizingHost(sheet, deferred, options) : CreateFillHost(deferred, options);
+        return useFullScreenSizing
+            ? CreateFullScreenSizingHost(sheet, deferred, options)
+            : CreateFillHost(sheet, deferred, options);
     }
 
     // Loading placeholder for the deferred loading window (G9BottomSheetOptions.LoadingSkeleton).
@@ -2019,6 +2099,195 @@ public static class G9BottomSheetHelper
 
         deferred.MinimumHeightRequest = height;
         deferred.HeightRequest = height;
+    }
+
+    /// <summary>
+    ///     One entry point for both content-sizing modes. Each half no-ops for the mode it does not
+    ///     own, so every settle pass, tracker callback and provider event can call this rather than
+    ///     each learning which engine applies.
+    /// </summary>
+    private static void ApplySheetContentSizing(
+        CustomizedSfG9BottomSheet sheet,
+        View content,
+        G9BottomSheetOptions options,
+        bool animate = false)
+    {
+        ApplyFitToContentHeight(sheet, content, options, animate);
+        ApplyExpandedFitsContentHeight(sheet, content, options);
+    }
+
+    /// <summary>
+    ///     Sizes the LARGEST detent of a multi-detent States sheet to its content, capped at
+    ///     <see cref="G9BottomSheetOptions.MaxFitToContentHeightRatio" /> — Material's
+    ///     <c>fitToContents</c> applied to the top detent. See
+    ///     <see cref="G9BottomSheetOptions.ExpandedFitsContent" />.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         It writes a RATIO, not a height, because that is the only vocabulary the control has
+    ///         for its two large detents — whichever of <c>HalfExpandedRatio</c> /
+    ///         <c>FullExpandedRatio</c> corresponds to this sheet's top detent. The control clamps
+    ///         the half ratio to 0.9, so a sheet whose top detent must reach further has to declare
+    ///         <c>Large</c> among its states.
+    ///     </para>
+    ///     <para>
+    ///         A cold measure (Android measures a not-yet-laid-out tree as 0 — see the sizing-engine
+    ///         section of the guide) is DISCARDED rather than applied: the peek detent is a fixed
+    ///         height and is already correct, so there is nothing to hold and no reason to write a
+    ///         wrong top detent. The scheduled settle passes and the MeasureInvalidated tracker
+    ///         re-run this as soon as the platform can measure.
+    ///     </para>
+    /// </remarks>
+    private static void ApplyExpandedFitsContentHeight(
+        CustomizedSfG9BottomSheet sheet,
+        View content,
+        G9BottomSheetOptions options)
+    {
+        if (!UsesExpandedFitsContent(options))
+        {
+            return;
+        }
+
+        void Apply()
+        {
+            var behavior = SheetBehaviorStates.GetValue(
+                sheet,
+                static _ => new SheetBehaviorState(G9BottomSheetOptions.DefaultOptions()));
+            if (behavior.IsClosing || IsSheetClosing(sheet))
+            {
+                return;
+            }
+
+            var fullHeight = ResolveFullScreenHeight();
+            if (fullHeight <= 0)
+            {
+                return;
+            }
+
+            var cap = fullHeight * Math.Clamp(options.MaxFitToContentHeightRatio, 0.2, 1.0);
+            EnsureHeightProviderSubscribed(sheet, behavior, content, options);
+
+            // A loading visual measures nothing useful (see the fit engine's loading-window rule).
+            // The peek detent is unaffected, so simply wait for the settle pass that follows the
+            // reveal rather than writing a top detent sized to a spinner.
+            if (ContainsLoadingDeferredContent(content))
+            {
+                return;
+            }
+
+            double naturalHeight;
+            if (behavior.HeightProvider is { } provider)
+            {
+                naturalHeight = provider.GetDesiredG9BottomSheetContentHeight(ResolveMeasureWidth(sheet, options), cap)
+                                + ResolveHelperChromeHeight(sheet, options);
+            }
+            else if (IsRootGreedyScroller(ResolveExpandedMeasureRoot(behavior, content)))
+            {
+                // The CALLER's body is itself a scroller, which reports its viewport rather than its
+                // content — unmeasurable, so the honest top detent is the cap. (The helper's OWN
+                // viewport is unwrapped by ResolveExpandedMeasureRoot and does not land here.)
+                naturalHeight = cap;
+            }
+            else
+            {
+                naturalHeight = MeasureContentHeight(content, sheet, options, out var usedMeasureFallback);
+                if (usedMeasureFallback)
+                {
+                    return;
+                }
+            }
+
+            var peekHeight = ResolveExpandedFitsPeekHeight(sheet, options);
+            var targetHeight = Math.Clamp(naturalHeight, Math.Max(FitContentAbsoluteMinHeight, peekHeight), cap);
+
+            // The peek follows the content DOWN but never up: a site whose groups are filtered away
+            // must not open with a band of dead space, and a caller asking to "open short" must not
+            // be talked out of it by tall content.
+            if (naturalHeight > FitContentAbsoluteMinHeight && naturalHeight < peekHeight - 0.5)
+            {
+                sheet.CollapsedHeight = naturalHeight;
+                targetHeight = naturalHeight;
+            }
+
+            ApplyExpandedDetentRatio(sheet, options, targetHeight / fullHeight);
+        }
+
+        if (MainThread.IsMainThread)
+        {
+            Apply();
+            return;
+        }
+
+        MainThread.BeginInvokeOnMainThread(Apply);
+    }
+
+    /// <summary>
+    ///     Opens an <see cref="G9BottomSheetOptions.ExpandedFitsContent" /> sheet's top detent at the
+    ///     CAP until the content has been measured.
+    /// </summary>
+    /// <remarks>
+    ///     Without this the top detent starts at whatever ratio the caller's preset carried — 0.5 for
+    ///     <c>DefaultOptions()</c> — and on a tall screen that is BELOW the peek height, so
+    ///     <c>ResolveMaximumDetentHeight</c> resolves the peek as the maximum and the sheet cannot be
+    ///     dragged open at all. In practice the settle passes land long before a finger does, so this
+    ///     is invisible; it exists so that a body which never measures (the cold-measure case the fit
+    ///     engine is built around) degrades to "drag to the cap and scroll" rather than to a sheet
+    ///     stuck at its peek. The seed is never visible on open — the sheet opens at its peek.
+    /// </remarks>
+    private static void SeedExpandedFitsContentDetent(CustomizedSfG9BottomSheet sheet, G9BottomSheetOptions options)
+    {
+        if (!UsesExpandedFitsContent(options))
+        {
+            return;
+        }
+
+        ApplyExpandedDetentRatio(sheet, options, Math.Clamp(options.MaxFitToContentHeightRatio, 0.2, 1.0));
+    }
+
+    /// <summary>
+    ///     The body as the sizing tiers should see it: the helper's own scroll viewport is
+    ///     transparent for measurement (it exists so a CAPPED top detent can scroll), a caller's
+    ///     scroller is not.
+    /// </summary>
+    private static View ResolveExpandedMeasureRoot(SheetBehaviorState behavior, View content)
+    {
+        return behavior.BodyScrollViewport is { } viewport &&
+               ReferenceEquals(viewport, content) &&
+               viewport.Content is { } inner
+            ? inner
+            : content;
+    }
+
+    /// <summary>
+    ///     Writes the resolved content ratio onto whichever detent is this sheet's largest.
+    /// </summary>
+    private static void ApplyExpandedDetentRatio(
+        CustomizedSfG9BottomSheet sheet,
+        G9BottomSheetOptions options,
+        double ratio)
+    {
+        if (options.States.Contains(G9BottomSheetState.Large))
+        {
+            var clamped = Math.Clamp(ratio, 0.1, 1);
+            if (Math.Abs(sheet.FullExpandedRatio - clamped) > 0.001)
+            {
+                sheet.FullExpandedRatio = clamped;
+            }
+
+            return;
+        }
+
+        var half = Math.Clamp(ratio, 0.1, 0.9);
+        if (Math.Abs(sheet.HalfExpandedRatio - half) > 0.001)
+        {
+            sheet.HalfExpandedRatio = half;
+        }
+    }
+
+    private static double ResolveExpandedFitsPeekHeight(CustomizedSfG9BottomSheet sheet, G9BottomSheetOptions options)
+    {
+        var peek = options.PeekHeight ?? options.CollapsedHeight ?? sheet.CollapsedHeight;
+        return peek > 0 ? peek : 0;
     }
 
     private static void ApplyFitToContentHeight(
@@ -2244,7 +2513,7 @@ public static class G9BottomSheetHelper
                 behavior.IsProviderRefreshScheduled = false;
                 if (IsSheetAlive(sheet) && !IsSheetClosing(sheet))
                 {
-                    ApplyFitToContentHeight(sheet, sheet.G9BottomSheetContent ?? content, options, animate: true);
+                    ApplySheetContentSizing(sheet, sheet.G9BottomSheetContent ?? content, options, animate: true);
                 }
             });
         };
@@ -2428,7 +2697,7 @@ public static class G9BottomSheetHelper
         G9BottomSheetOptions options,
         int delayMs = 16)
     {
-        if (options.SizeMode != G9BottomSheetSizeMode.FitToContent)
+        if (!RequiresContentMeasurement(options))
         {
             return;
         }
@@ -2442,7 +2711,7 @@ public static class G9BottomSheetHelper
 
             if (IsSheetAlive(sheet) && !IsSheetClosing(sheet))
             {
-                ApplyFitToContentHeight(sheet, content, options);
+                ApplySheetContentSizing(sheet, content, options);
             }
         });
     }
@@ -2460,7 +2729,7 @@ public static class G9BottomSheetHelper
         View contentRoot,
         G9BottomSheetOptions options)
     {
-        if (options.SizeMode != G9BottomSheetSizeMode.FitToContent)
+        if (!RequiresContentMeasurement(options))
         {
             return;
         }
@@ -2496,7 +2765,7 @@ public static class G9BottomSheetHelper
 
                 if (IsSheetAlive(sheet) && !IsSheetClosing(sheet))
                 {
-                    ApplyFitToContentHeight(sheet, sheet.G9BottomSheetContent ?? contentRoot, options);
+                    ApplySheetContentSizing(sheet, sheet.G9BottomSheetContent ?? contentRoot, options);
                 }
             });
         };
@@ -2779,7 +3048,7 @@ public static class G9BottomSheetHelper
 
     private static View ResolveFitToContentMeasureTarget(View view, G9BottomSheetOptions options)
     {
-        if (options.SizeMode != G9BottomSheetSizeMode.FitToContent)
+        if (!RequiresContentMeasurement(options))
         {
             return view;
         }
@@ -3082,7 +3351,22 @@ public static class G9BottomSheetHelper
         }
     }
 
-    private static View CreateFillHost(View content, G9BottomSheetOptions options)
+    /// <summary>
+    ///     Hosts a non-full-screen body inside the sheet, optionally inside a helper-owned vertical
+    ///     scroll viewport (<see cref="G9BottomSheetOptions.ExpandedFitsContent" />).
+    /// </summary>
+    /// <param name="sheet">The sheet the body belongs to; owns the viewport reference.</param>
+    /// <param name="content">The body (or the deferred wrapper standing in for it) to host.</param>
+    /// <param name="options">The options this sheet was opened with.</param>
+    /// <param name="bodyProbe">
+    ///     The REAL body when <paramref name="content" /> is a deferred wrapper around it — the
+    ///     "is this already a scroller?" test has to see the eventual tree, not the spinner.
+    /// </param>
+    private static View CreateFillHost(
+        CustomizedSfG9BottomSheet sheet,
+        View content,
+        G9BottomSheetOptions options,
+        View? bodyProbe = null)
     {
         // Fit-to-content used to host its body Top-aligned (Start) so it wouldn't stretch. But
         // when the content is capped at MaxFitToContentHeightRatio (a long list), the body must be
@@ -3100,7 +3384,46 @@ public static class G9BottomSheetHelper
             BackgroundColor = options.BackgroundColor ?? G9Palette.Current.Background
         };
         host.Children.Add(content);
-        return host;
+
+        if (!ShouldHostBodyInScrollViewport(options, bodyProbe ?? content))
+        {
+            return host;
+        }
+
+        // An ExpandedFitsContent sheet promises "grow to the content, and if the content is taller
+        // than the cap, scroll inside it" — which needs a scroller the caller did not have to
+        // write. Natural-height (Start) inside the viewport: Fill would let the body stretch to the
+        // viewport and there would be nothing to scroll.
+        content.VerticalOptions = LayoutOptions.Start;
+        host.VerticalOptions = LayoutOptions.Start;
+
+        var viewport = new ScrollView
+        {
+            Content = host,
+            Orientation = ScrollOrientation.Vertical,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Never,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Never,
+            HorizontalOptions = LayoutOptions.Fill,
+            VerticalOptions = LayoutOptions.Fill,
+            FlowDirection = ResolveCurrentFlowDirection(),
+            BackgroundColor = options.BackgroundColor ?? G9Palette.Current.Background
+        };
+
+        SheetBehaviorStates
+            .GetValue(sheet, static _ => new SheetBehaviorState(G9BottomSheetOptions.DefaultOptions()))
+            .BodyScrollViewport = viewport;
+
+        return viewport;
+    }
+
+    /// <summary>
+    ///     Whether the helper should wrap this body in its own scroll viewport. Never for a body
+    ///     that already scrolls — a list inside a ScrollView is the classic MAUI measurement trap
+    ///     (the outer scroller hands the inner one infinite height and virtualization dies).
+    /// </summary>
+    private static bool ShouldHostBodyInScrollViewport(G9BottomSheetOptions options, View body)
+    {
+        return UsesExpandedFitsContent(options) && !IsRootGreedyScroller(body);
     }
 
     private static View WrapBodyOnlyRootForDrag(CustomizedSfG9BottomSheet sheet, View contentRoot, G9BottomSheetOptions options)
@@ -4562,6 +4885,21 @@ public static class G9BottomSheetHelper
             sheet.HalfExpandedRatio = Math.Clamp(ratio, 0.1, 0.9);
         }
 
+        // Drag-to-close, at the control level. Left at the control's default until 2026-09, which
+        // meant a sheet that opted OUT of cancelling could still raise a close request from a body
+        // drag — harmless only because every such sheet in practice also sets IsDraggable = false.
+        // The threshold is passed through for the same reason: the two belong together, and the
+        // guide has always described both as helper-applied.
+        sheet.IsCancelable = options.IsCancelable;
+        sheet.DragCloseThreshold = DragCloseThreshold;
+
+        // Detent vocabulary the control cannot infer from AllowedState alone (which only says
+        // WHICH large detent exists, never whether a peek step sits under it). Set for every sizing
+        // mode: a fit-to-content sheet has exactly one detent, and saying so is what lets a downward
+        // drag on it read as a dismissal rather than as a step to a smaller state that isn't there.
+        sheet.AllowCollapsedState = HasPeekDetent(options);
+        sheet.ScrollingExpandsSheet = options.ScrollingExpandsSheet;
+
         if (options.SizeMode == G9BottomSheetSizeMode.FitToContent)
         {
             sheet.AllowedState = SfG9BottomSheetAllowedState.All;
@@ -5358,6 +5696,19 @@ public static class G9BottomSheetHelper
         return true;
     }
 
+    /// <summary>
+    ///     Whether Peek is a real DETENT of this sheet — i.e. the caller declared it alongside at
+    ///     least one larger state. A single-state sheet has no peek step even when its one state is
+    ///     Peek, and a fit-to-content sheet expresses its single height AS the collapsed height, so
+    ///     neither may claim one: for both, a downward drag is a dismissal, not a step down.
+    /// </summary>
+    private static bool HasPeekDetent(G9BottomSheetOptions options)
+    {
+        return options.SizeMode == G9BottomSheetSizeMode.States &&
+               options.States.Contains(G9BottomSheetState.Peek) &&
+               options.States.Distinct().Count() > 1;
+    }
+
     private static SfG9BottomSheetAllowedState MapAllowedState(IList<G9BottomSheetState> states)
     {
         var hasMedium = states.Contains(G9BottomSheetState.Medium);
@@ -5627,6 +5978,13 @@ public static class G9BottomSheetHelper
 
         // Coalesces provider-driven (tab switch / data load) height changes into one animated resize.
         public bool IsProviderRefreshScheduled { get; set; }
+
+        // The vertical scroll viewport the HELPER wrapped around an ExpandedFitsContent body (null
+        // when the body already scrolls itself, or for every other sizing mode). Kept because two
+        // things need to tell it apart from a caller-owned scroller: the sizing engine measures
+        // THROUGH it (a caller's scroller is capped instead, being unmeasurable), and the sheet
+        // rewinds it when it leaves its top detent.
+        public ScrollView? BodyScrollViewport { get; set; }
     }
 
     // Tracks the content view whose MeasureInvalidated event we listen to so a fit-to-content

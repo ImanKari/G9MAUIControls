@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.5</G9FamilyVersion>
+    <G9FamilyVersion>1.0.6</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,41 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.6
+      - G9SheetView / G9BottomSheetHelper: a multi-detent sheet now behaves like a platform sheet.
+
+      Three defects, one shape. A sheet opened with States = [Peek, Medium] could be dragged past
+      its own largest detent all the way to the top of the window, was then snapped back down to
+      whatever ratio the caller had guessed for Medium (leaving a band of empty sheet under the
+      content), and a downward drag from Medium raised a CLOSE request instead of stepping back to
+      Peek. All three came from the same place: the control derived its drag limits from the state
+      it happened to be IN, and AllowedState could not express "there is a peek step below this".
+
+        * The drag is clamped to the largest ALLOWED detent (and, for a non-cancelable sheet, to the
+          smallest). Below the smallest detent of a cancelable sheet the body now slides off instead
+          of shrinking, so a dismiss drag no longer re-lays the content out per frame.
+        * G9BottomSheetOptions.ExpandedFitsContent (new, default off) sizes the largest detent to the
+          MEASURED content, capped by MaxFitToContentHeightRatio — Material's fitToContents applied
+          to the top detent. Content taller than the cap stops at the cap and scrolls inside a
+          viewport the helper hosts for it; content shorter than PeekHeight also lowers the peek, so
+          neither step can show dead space.
+        * G9BottomSheetOptions.ScrollingExpandsSheet (new, default ON) makes a drag on a scrollable
+          body expand the sheet before the content scrolls — UIKit's
+          prefersScrollingExpandsWhenScrolledToEdge, whose default is likewise on, and Material's
+          nested-scroll contract. It is a NO-OP for every single-detent sheet by construction (they
+          are always at their maximum detent), so full-screen, single-state and fit-to-content sheets
+          scroll exactly as before. Turn it off for a multi-detent sheet whose body must scroll at
+          every step.
+
+      Also: the helper now applies IsCancelable / DragCloseThreshold to the control, which it had
+      always been documented to do; and the iOS / Windows handlers skip horizontal-only scrollers
+      when resolving the scroller under the finger, so a side-scrolling row inside a body can no
+      longer swallow that body's vertical scrolling.
+
+      CONSUMER ACTION: none for a single-detent sheet. A multi-detent sheet gains the clamp and the
+      scroll-expands behaviour; both are what the platforms do, and ScrollingExpandsSheet = false
+      restores the previous gesture priority if a call site depended on it.
+
       1.0.5
       - G9TabBar: new FabTapped event, raised BEFORE the control acts on a centre-FAB tap. Setting
         G9TabBarFabTappedEventArgs.Handled suppresses the built-in sub-menu fan-out (and the implicit

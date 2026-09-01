@@ -106,7 +106,10 @@ internal sealed class G9SheetViewBorderHandler : BorderHandler
 
         if (_insideScrollable && _activeScrollViewer is { } scroll)
         {
-            if (CanInnerScroll(scroll, dy))
+            // The sheet outranks the scroller while there is still a larger detent to reach — see
+            // G9SheetView.ScrollingExpandsSheet. Always true for a single-detent sheet, so the
+            // classic edge-handoff behaviour is unchanged for every fixed sheet.
+            if (Border.ShouldInnerScrollerConsumeDrag() && CanInnerScroll(scroll, dy))
             {
                 _lastPointerY = point.Y;
                 return;
@@ -174,12 +177,17 @@ internal sealed class G9SheetViewBorderHandler : BorderHandler
         _isTouchHandled = false;
     }
 
+    /// <summary>
+    ///     Nearest ancestor scroll viewer that can actually scroll VERTICALLY. Horizontal-only
+    ///     scrollers are skipped so a side-scrolling row inside the body cannot swallow the body's
+    ///     own vertical scrolling — see the iOS handler for the same rule.
+    /// </summary>
     private static ScrollViewer? ResolveScrollViewerAncestor(DependencyObject? start)
     {
         var current = start;
         while (current is not null)
         {
-            if (current is ScrollViewer sv)
+            if (current is ScrollViewer sv && sv.ScrollableHeight > 0.5)
             {
                 return sv;
             }

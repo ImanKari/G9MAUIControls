@@ -655,12 +655,74 @@ public sealed record G9BottomSheetOptions
     public Func<G9BottomSheetBackRequestSource, Task<G9BottomSheetBackAction>>? OnBackRequested { get; init; }
 
     /// <summary>
-    ///     Upper bound, as a fraction of the screen height, that a <see cref="G9BottomSheetSizeMode.FitToContent" />
-    ///     sheet may grow to before it stops growing and lets its content scroll inside the now
-    ///     bounded body. Default <c>0.75</c> (75%). Short content still fits exactly; only tall
-    ///     content (a long list) hits this cap. Ignored for non-fit-to-content sheets.
+    ///     Upper bound, as a fraction of the screen height, that a CONTENT-SIZED sheet may grow to
+    ///     before it stops growing and lets its content scroll inside the now bounded body. Default
+    ///     <c>0.75</c> (75%). Short content still fits exactly; only tall content (a long list) hits
+    ///     this cap.
+    ///     <para>
+    ///         Applies to both content-sizing modes: a whole
+    ///         <see cref="G9BottomSheetSizeMode.FitToContent" /> sheet, and the largest detent of a
+    ///         <see cref="G9BottomSheetSizeMode.States" /> sheet that set
+    ///         <see cref="ExpandedFitsContent" />. Ignored by every other sheet.
+    ///     </para>
     /// </summary>
     public double MaxFitToContentHeightRatio { get; init; } = 0.75;
+
+    /// <summary>
+    ///     For a multi-detent <see cref="G9BottomSheetSizeMode.States" /> sheet: size the LARGEST
+    ///     detent to the measured content instead of to a fixed ratio of the screen. Default
+    ///     <c>false</c>.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is Material's <c>BottomSheetBehavior.fitToContents</c> applied to the top detent:
+    ///         the sheet opens at its peek height, and dragging it up settles it exactly at the
+    ///         content's own height — never at a ratio that leaves a band of empty sheet background
+    ///         under the last element, and never past the content into dead space.
+    ///     </para>
+    ///     <para>
+    ///         Content taller than <see cref="MaxFitToContentHeightRatio" /> of the screen stops at
+    ///         that cap and SCROLLS inside the bounded body. To make that possible the helper hosts
+    ///         the body in its own vertical scroll viewport (skipped when the body is already a
+    ///         scroller / list, which would nest two scrollers). Combined with
+    ///         <see cref="ScrollingExpandsSheet" /> — on by default — the body does not scroll at the
+    ///         peek detent: a drag there expands the sheet, and only at full height does the same
+    ///         drag scroll.
+    ///     </para>
+    ///     <para>
+    ///         The peek height is also lowered to the content when the content turns out to be
+    ///         SHORTER than <see cref="PeekHeight" />, so a sheet whose rows vary per site (a
+    ///         permission-filtered group, an empty section) never opens with dead space either. It is
+    ///         only ever lowered — the peek stays the caller's "open short" answer.
+    ///     </para>
+    ///     <para>
+    ///         Requires more than one state. Ignored for <see cref="G9BottomSheetSizeMode.FitToContent" />
+    ///         (which already sizes to content) and for single-state / full-screen sheets.
+    ///     </para>
+    /// </remarks>
+    public bool ExpandedFitsContent { get; init; }
+
+    /// <summary>
+    ///     Whether a drag that starts on a SCROLLABLE part of the body expands the sheet to its next
+    ///     detent before the content is allowed to scroll. Default <c>true</c>.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The cross-platform equivalent of UIKit's
+    ///         <c>prefersScrollingExpandsWhenScrolledToEdge</c> (whose default is likewise <c>true</c>)
+    ///         and of Material's <c>BottomSheetBehavior</c> nested-scroll contract: while the sheet is
+    ///         below its largest detent the drag belongs to the SHEET; the inner scroller takes over
+    ///         once there is nowhere further to expand, and a further drag down from the scroller's
+    ///         top edge collapses the sheet again.
+    ///     </para>
+    ///     <para>
+    ///         <b>No-op for a single-detent sheet by construction</b> — full-screen, single-state and
+    ///         fit-to-content sheets are always AT their maximum detent, so their content scrolls
+    ///         exactly as it always has. Set it <c>false</c> on a multi-detent sheet whose body must
+    ///         scroll at every detent, resizing only from the grabber.
+    ///     </para>
+    /// </remarks>
+    public bool ScrollingExpandsSheet { get; init; } = true;
 
     // ---------------------------
     // Presets

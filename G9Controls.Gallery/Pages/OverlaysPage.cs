@@ -83,6 +83,18 @@ public sealed class OverlaysPage : G9PageBase
             return Task.CompletedTask;
         }));
 
+        stack.Add(Button("Sheet — peek, drag to FIT (short body)", () =>
+        {
+            ShowExpandingSheet(palette, groupCount: 3);
+            return Task.CompletedTask;
+        }));
+
+        stack.Add(Button("Sheet — peek, drag to CAP + scroll (tall body)", () =>
+        {
+            ShowExpandingSheet(palette, groupCount: 14);
+            return Task.CompletedTask;
+        }));
+
         stack.Add(Button("Sheet, then popup, then toast", async () =>
         {
             G9BottomSheetHelper.ShowG9BottomSheet(SheetBody(palette));
@@ -174,6 +186,82 @@ public sealed class OverlaysPage : G9PageBase
         stack.Add(Button("Dismiss everything", () => G9ToastHelper.DismissAllAsync()));
 
         return new ScrollView { Content = stack };
+    }
+
+    /// <summary>
+    ///     The two-detent sheet: opens at a peek, drags open to the CONTENT's own height, and stops
+    ///     at the cap with the body scrolling when the content is taller than the cap.
+    /// </summary>
+    /// <remarks>
+    ///     Run both buttons and check four things, because each one is a separate rule and three of
+    ///     them were broken before <c>ExpandedFitsContent</c> / <c>ScrollingExpandsSheet</c> existed:
+    ///     <list type="number">
+    ///         <item>SHORT body — dragging up settles exactly under the last row. No empty band, and
+    ///         the sheet cannot be dragged past it up to the status bar.</item>
+    ///         <item>TALL body — dragging up stops at 85% of the screen (the cap) and the body then
+    ///         scrolls inside it.</item>
+    ///         <item>At the PEEK step the body does not scroll at all: the same upward drag expands
+    ///         the sheet instead. That is <c>ScrollingExpandsSheet</c>.</item>
+    ///         <item>From the top, dragging down at the scroller's top edge steps back to the peek;
+    ///         dragging down again from the peek dismisses.</item>
+    ///     </list>
+    /// </remarks>
+    private static void ShowExpandingSheet(G9Palette palette, int groupCount)
+    {
+        var body = new VerticalStackLayout { Spacing = 12, Padding = new Thickness(16, 12, 16, 20) };
+
+        body.Add(new Label
+        {
+            Text = groupCount > 6 ? "Taller than the cap — scrolls at the top" : "Shorter than the cap — fits exactly",
+            FontSize = 16,
+            FontAttributes = FontAttributes.Bold,
+            HorizontalTextAlignment = TextAlignment.Center,
+            TextColor = palette.OnSurface
+        });
+
+        for (var i = 1; i <= groupCount; i++)
+        {
+            body.Add(new Label
+            {
+                Text = $"Group {i}",
+                FontSize = 12,
+                FontAttributes = FontAttributes.Bold,
+                TextColor = palette.OnSurfaceVariant
+            });
+
+            var row = new HorizontalStackLayout { Spacing = 8 };
+            for (var tile = 0; tile < 4; tile++)
+            {
+                row.Add(new Border
+                {
+                    WidthRequest = 72,
+                    HeightRequest = 72,
+                    StrokeThickness = 0,
+                    BackgroundColor = tile % 2 == 0 ? palette.SurfaceVariant : palette.Surface,
+                    Content = new Label
+                    {
+                        Text = $"{i}.{tile + 1}",
+                        HorizontalOptions = LayoutOptions.Center,
+                        VerticalOptions = LayoutOptions.Center,
+                        TextColor = palette.OnSurfaceVariant
+                    }
+                });
+            }
+
+            body.Add(row);
+        }
+
+        G9BottomSheetHelper.ShowG9BottomSheet(body, G9BottomSheetOptions.DefaultOptions() with
+        {
+            SizeMode = G9BottomSheetSizeMode.States,
+            CurrentState = G9BottomSheetState.Peek,
+            States = [G9BottomSheetState.Peek, G9BottomSheetState.Medium],
+            PeekHeight = 260,
+            CollapsedHeight = 260,
+            ExpandedFitsContent = true,
+            MaxFitToContentHeightRatio = 0.85,
+            DeferContent = false
+        });
     }
 
     private static View SheetBody(G9Palette palette) => new VerticalStackLayout

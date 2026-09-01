@@ -522,6 +522,62 @@ direction **and** an alignment that consumers depend on.
 
 ---
 
+## ADR-0019 — A bottom sheet's drag is governed by its DETENTS, and the top one may be measured
+
+**Status:** accepted, 1.0.6 (2026-09-01).
+
+**Context.** `G9SheetView` had three notions of size — `CollapsedHeight`, `HalfExpandedRatio`,
+`FullExpandedRatio` — plus `AllowedState`, which says which of the two LARGE ones exists. Nothing
+said whether the collapsed height was a real resting step or just where a fixed sheet happens to
+sit, and the drag limits were computed from the state the sheet was currently IN. A sheet declared
+`States = [Peek, Medium]` therefore had no upper limit short of the window, snapped back to a
+caller-guessed ratio on release, and treated a downward drag from its medium step as a dismissal.
+Every fix for one of those symptoms in isolation (clamp harder, tune the ratio, special-case the
+close) leaves the other two.
+
+**Decision.** Model the sheet as an ordered set of DETENTS and derive all three behaviours from it.
+
+1. `AllowCollapsedState` (bindable, default `false`) supplies the bit `AllowedState` cannot express.
+   The helper sets it only when the caller declared `Peek` alongside another state.
+2. The drag is clamped to `[smallest allowed detent (or 0 when cancelable), largest allowed detent]`.
+3. Release snaps to the NEAREST allowed detent, ties going to the current state.
+4. `ExpandedFitsContent` lets the largest detent be the measured content height instead of a ratio,
+   capped by `MaxFitToContentHeightRatio`.
+5. `ScrollingExpandsSheet` (default `true`) gives the sheet gesture priority over an inner scroller
+   until the sheet is at its largest detent.
+
+**Alternatives rejected.**
+
+- *Just clamp the drag and leave the ratio to callers.* Fixes the over-drag and nothing else. The
+  empty band is not a tuning failure: the layers sheet's group count varies with the site, the
+  operator's permissions and the office's authored attributes, so no constant is right twice. The
+  caller cannot compute it either — it does not know the helper's chrome (that is the same reason the
+  chrome contract exists for fit-to-content).
+- *Make the caller wrap its body in a `ScrollView` and enable/disable it per state.* This is what the
+  consuming app was doing, and it is why the work started: `CanChildScrollVertically` measures
+  content against viewport and never asks whether scrolling is switched on, so a disabled scroller
+  still wins the gesture and then does nothing — a dead drag. Attaching and DETACHING the scroller
+  does work, but it re-parents the body on every state change (a native detach/re-attach, i.e. the
+  glyph-race the reveal machinery exists to avoid) and every future multi-detent sheet has to copy it.
+- *A new `SizeMode` (e.g. `PeekThenFit`).* `SizeMode` selects an ENGINE; this is a property of one
+  detent within the existing States engine, and expressing it as a mode would have forced a third
+  measuring path beside `FitToContent` and `States` instead of reusing the fit engine's tiers.
+- *`ScrollingExpandsSheet` default `false` (opt-in).* Safer-sounding and wrong: it is the platform
+  default on both iOS and Android, and it is a no-op for single-detent sheets by construction, so
+  opt-in would mean every new multi-detent sheet ships the backwards behaviour until someone notices.
+- *Rubber-band overshoot past the top detent.* Neither platform does it — `UISheetPresentationController`
+  and `BottomSheetBehavior` both stop dead at the largest detent — and it would have re-introduced
+  exactly the "it moved past and snapped back" reading the change exists to remove.
+
+**Consequences.** Two new options and two new bindable properties, all additive. Multi-detent sheets
+change behaviour (that is the point); single-detent sheets do not, and the "no-op by construction"
+property of `IsAtMaximumDetent` is load-bearing for that — see the Do-Not-Regress list in
+`BottomSheet/G9BottomSheetGuide.md`. `ExpandedFitsContent` inherits the fit engine's cold-measure
+reality: the top detent is only correct once the platform can measure, so it is re-resolved by the
+same settle passes rather than trusted on the first frame.
+
+---
+
 ## ADR-0018 — The canonical GUID case is LOWER, and `UseCanonicalIdCase` is honoured
 
 **Decision.** `G9SqliteOptions.CanonicalIdCase` defaults to `G9IdCase.Lower`, and
