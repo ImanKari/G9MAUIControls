@@ -1373,6 +1373,68 @@ other thread has just nulled. It is a torn read, not a null bug.
    "fixed" a site that was not the reported one while leaving `PositionPillNow` untouched. Routing
    all four call sites through `FindCell` removed both the bug and the class of mistake.
 
+## LES-0043 — A value with two writers has no owner
+
+**Symptom.** `G9SelectionItem.IconTintColor` was ignored by the picker LIST. The fix — make
+`G9SelectionSheet.CreateRow` honour it — was correct, shipped, verified in the built assembly, and
+changed **nothing** on screen.
+
+**Root cause.** A second writer. Rows are built once by `CreateRow` and then re-styled in place by
+`UpdateRowVisuals` (which exists to avoid a rebuild "blink" on every selection toggle), and that
+method contained its own copy of the colour rule:
+
+```csharp
+mauiIcon.Color = selected ? palette.Primary : palette.TextSecondary;
+```
+
+It runs after the build and on every toggle, so whatever it writes is what the user sees. The first
+fix was invisible because it was being overwritten microseconds later.
+
+**Rule.** When a rendered property can be set in more than one place, extract the rule into ONE
+resolver both call — do not fix the writer you happened to find. The cheap way to find the others
+before shipping: grep for the PROPERTY being assigned (`\.Color = `), not for the method you were
+told about. Two hits is the bug.
+
+**Diagnostic lesson, worth more than the fix.** When a change that is provably in the binary has no
+visible effect, the hypothesis "my change did not deploy" is seductive and was wrong twice here. Cost
+a whole round of build/deploy archaeology. Check for a SECOND writer before re-examining the
+toolchain: verify the deployed artifact once, and after that treat "compiled but no effect" as
+evidence about the CODE, not about the build.
+
+---
+
+## LES-0042 — A direction ternary on alignment is always half wrong
+
+**Symptom.** In a Persian (RTL) app, the combobox's selected value sat against the LEFT edge of the
+trigger while its own icon sat against the right — the whole width of the field between a glyph and
+the label it introduces.
+
+**Root cause.** One line:
+
+```csharp
+HorizontalTextAlignment = flow == FlowDirection.RightToLeft ? TextAlignment.End : TextAlignment.Start,
+FlowDirection = flow,
+```
+
+`Start` and `End` are already direction-relative, and the label was being given the flow direction on
+the very next line. So the ternary did not select the reading edge — it INVERTED it: under RTL,
+`End` is the physical left. Under LTR the ternary picked `Start`, which was correct, so the bug was
+invisible in half the tests anyone ran.
+
+**Both triggers had it** — `G9ComboBox` and `G9Picker` — which is the tell that it is a habit rather
+than a slip: two authors reached for the same ternary because "RTL means align right" sounds true.
+
+**Rule.** Never branch on flow direction to choose `Start`/`End`. If a view carries a
+`FlowDirection`, logical alignment is already mirrored for you; a ternary can only undo that. The one
+legitimate reason to touch direction is to fix character ORDER inside a string, and that is done by
+wrapping the text in a Unicode embedding — never by pinning the view's direction (LES-0037, the
+`G9CultureDateTimeLabel` fix, which is the same lesson from the other side).
+
+**How to spot it:** grep for `FlowDirection.RightToLeft ?` and `IsRtl ?` near an alignment property.
+Every hit is either this bug or wants a comment saying why it is not.
+
+---
+
 ## LES-0041 — A gesture limit derived from the CURRENT state is not a limit
 
 **Symptom.** A bottom sheet opened with `States = [Peek, Medium]` could be dragged to the top of the

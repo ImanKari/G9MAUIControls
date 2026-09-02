@@ -43,7 +43,11 @@ public partial class G9Picker : G9OutlinedFieldBase
             LineBreakMode = LineBreakMode.TailTruncation,
             MaxLines = 1,
             VerticalTextAlignment = TextAlignment.Center,
-            HorizontalOptions = LayoutOptions.Fill
+
+            // Start, not Fill: _content is a HorizontalStackLayout carrying [icon][value], and a
+            // Fill label claims the leftover width so the value drifts to the far edge of the field
+            // away from its own icon. Sized to its text, the pair stays together on the reading edge.
+            HorizontalOptions = LayoutOptions.Start
         };
 
         _content = new HorizontalStackLayout
@@ -108,7 +112,12 @@ public partial class G9Picker : G9OutlinedFieldBase
             _valueLabel.Text = string.Empty;
         }
 
-        _valueLabel.HorizontalTextAlignment = G9Visuals.IsRtl ? TextAlignment.End : TextAlignment.Start;
+        // ⛔ ALWAYS Start, never a direction ternary. _content below is given the culture's
+        // FlowDirection, so Start is already mirrored — right under RTL, left under LTR. Asking for
+        // `End` under RTL requested the physical LEFT edge of a right-to-left box, which is how the
+        // selected value ended up on the opposite side of the field from its own icon. Same defect
+        // the G9ComboBox trigger carried; see the library engineering log, LES-0042.
+        _valueLabel.HorizontalTextAlignment = TextAlignment.Start;
 
         // _content sits inside G9OutlinedFieldBase's Box, which is HARD-LOCKED to
         // FlowDirection.LeftToRight (see that class — the icon/trailing columns are

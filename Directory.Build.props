@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.6</G9FamilyVersion>
+    <G9FamilyVersion>1.0.7</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,37 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.7
+      - Selection lists and picker triggers: honour a per-item icon colour, and stop the value text
+        drifting away from its own icon.
+
+      G9SelectionItem.IconTintColor was ignored by the picker/combobox LIST. The trigger honoured it and
+      always had, so an item that carries its own colour — a soil type, a health state, an option a back
+      office coloured on purpose — rendered grey in the list and then snapped to its real colour the
+      moment it was chosen. The tint now wins in BOTH states, because an item that carries a colour
+      carries it as its MEANING, not as decoration.
+
+      ⛔ That took TWO edits, and the first one alone was invisible. Rows are BUILT by
+      G9SelectionSheet.CreateRow and then RE-STYLED in place by UpdateRowVisuals on every selection
+      change (which exists to avoid a rebuild blink), and the second carried its own copy of the rule —
+      writing `selected ? Primary : TextSecondary` straight over the colour the first had just set.
+      Both now call one ResolveRowIconColor. A rendered value with two writers has no owner; see
+      LES-0043 for the diagnostic lesson, which is the part worth reading.
+
+      G9ComboBox and G9Picker triggers: the value label no longer picks its alignment with a direction
+      ternary, and no longer stretches. It carried
+      `HorizontalTextAlignment = IsRtl ? End : Start` while ALSO being given the culture's
+      FlowDirection — so under RTL it asked for the physical LEFT edge of a box that had just been told
+      to read right-to-left. Combined with a Fill/Grow label claiming all the leftover width, the
+      selected value ended up on the opposite side of the field from its own leading icon. Alignment is
+      Start in both controls now (direction-relative, so the flow mirrors it), and the label is sized to
+      its text so the glyph and its label stay one block on the reading edge. Same defect class as the
+      G9CultureDateTimeLabel fix in 1.0.2; see LES-0042.
+
+      No API change — all of it is rendering behaviour inside the shared selection row and the two
+      triggers. A consumer that had compensated for the old alignment with a PHYSICAL alignment should
+      re-check those call sites, exactly as in 1.0.2.
+
       1.0.6
       - G9SheetView / G9BottomSheetHelper: a multi-detent sheet now behaves like a platform sheet.
 

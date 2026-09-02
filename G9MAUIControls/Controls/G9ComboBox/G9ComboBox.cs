@@ -270,14 +270,30 @@ public partial class G9ComboBox : G9OutlinedFieldBase
             TextColor = textColor,
             FontSize = 15,
             VerticalTextAlignment = TextAlignment.Center,
-            HorizontalTextAlignment = flow == FlowDirection.RightToLeft ? TextAlignment.End : TextAlignment.Start,
+
+            // ⛔ ALWAYS Start, never a direction ternary. The label carries `flow` itself, so Start is
+            // already mirrored: right under RTL, left under LTR. Picking `End` for RTL asked for the
+            // physical LEFT edge of a label that had just been told to read right-to-left — so the
+            // value text was pushed to the far side of the trigger while its own icon stayed on the
+            // reading edge, with the whole field's width between them. Same defect class as the one
+            // G9CultureDateTimeLabel shipped in 1.0.1: express alignment LOGICALLY and let the flow
+            // direction resolve it (see the consuming app's design guide §4z).
+            HorizontalTextAlignment = TextAlignment.Start,
             FlowDirection = flow,
             LineBreakMode = LineBreakMode.TailTruncation,
-            HorizontalOptions = LayoutOptions.Fill,
+
+            // ⛔ Start, and NOT Fill. The host is a FlexLayout whose main-axis direction is Row; how it
+            // resolves that against FlowDirection is not something a label should be betting on. With
+            // Fill + Grow the label claimed all the leftover width, so which EDGE of the trigger the
+            // value landed on depended on that resolution — and the value drifted away from its own
+            // leading icon, with the width of the field between them. Sized to its text and packed at
+            // the host's start, the glyph and its label are one block on the reading edge whatever the
+            // flex does. Shrink is kept so a long value still truncates instead of pushing the icon out.
+            HorizontalOptions = LayoutOptions.Start,
             MaxLines = 1
         };
 
-        FlexLayout.SetGrow(label, 1);
+        FlexLayout.SetGrow(label, 0);
         FlexLayout.SetShrink(label, 1);
         return label;
     }

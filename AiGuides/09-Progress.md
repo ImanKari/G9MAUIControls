@@ -474,6 +474,36 @@ but the three handler edits are per-platform and unrendered. See ADR-0019, LES-0
 
 ---
 
+# 1.0.7 — a per-item icon colour, and a value that stays next to its icon (2026-09-02)
+
+Two rendering defects, both reported by a consumer's dynamic-attribute option pickers, both verified on
+Android before and after.
+
+**The list ignored `G9SelectionItem.IconTintColor`.** The triggers honoured it, so a consumer projecting
+coloured options got grey rows and a correctly-coloured trigger and read it as the colours simply not
+being applied.
+
+The fix is one line; **finding the second writer is the story.** `CreateRow` builds a row and
+`UpdateRowVisuals` re-styles it in place on every selection change — and the second carried its own copy
+of the colour rule, overwriting what the first had just set. Fixing only `CreateRow` was provably
+present in the built assembly and changed nothing on screen, which sent the investigation into the
+toolchain (was it deployed? was it source mode?) rather than into the code. Both now call one
+`ResolveRowIconColor`. Full lesson in **LES-0043** — including the diagnostic rule, which is worth more
+than the fix: when a change that is provably in the binary has no effect, look for a second writer
+before re-examining the build.
+
+**Both triggers pushed the value away from its own icon under RTL.** `G9ComboBox` and `G9Picker` each
+had `HorizontalTextAlignment = IsRtl ? End : Start` on a label that was ALSO being given the culture's
+flow direction — so the ternary did not select the reading edge, it inverted it — and each label was
+`Fill` + `Grow`, claiming the leftover width so the text landed on whichever edge the layout resolved.
+Alignment is `Start` in both now and the labels are sized to their text. Two controls with the same
+mistake is a habit rather than a slip ("RTL means align right" sounds true and is not), which is the
+point of **LES-0042**.
+
+---
+
+# Known risks
+
 # Known risks
 
 | Risk | Note |

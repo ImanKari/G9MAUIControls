@@ -435,9 +435,16 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         var hasIcon = G9IconFactory.HasIcon(item.Emoji, item.Icon, item.IconPath, item.IconSource);
         if (hasIcon)
         {
+            // ⛔ item.IconTintColor WINS in both states, exactly as it does on the ComboBox / Picker
+            // trigger. An item that carries its own colour carries it BECAUSE the colour is the
+            // meaning — a soil type, a health state, an attribute option the office coloured on
+            // purpose — so repainting it Primary when selected, or TextSecondary when not, throws
+            // that meaning away. This row ignored the tint until 2026-09, which is why a coloured
+            // option list rendered grey here and then snapped to its real colour the moment it was
+            // chosen: the LIST was the only surface in the suite not honouring the field.
             row.Add(G9IconFactory.Create(
                 item.Emoji, item.Icon, item.IconPath, item.IconSource,
-                selected ? palette.Primary : palette.TextSecondary,
+                ResolveRowIconColor(item, selected, palette),
                 G9Metrics.SelectionIconSize), 0);
         }
         else if (G9Visuals.HasSwatch(item.SwatchFirstColor, item.SwatchSecondColor))
@@ -446,13 +453,19 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
                 item.SwatchFirstColor, item.SwatchSecondColor, G9Metrics.SelectionIconSize), 0);
         }
 
-        // Text
+        // Text. HorizontalOptions/HorizontalTextAlignment are pinned to START rather than left to
+        // their defaults: the label owns a Star column, so "Fill + whatever the default alignment is"
+        // decides which EDGE of that column the text lands on, and the icon sits at the row's start.
+        // Stating Start keeps the glyph and its label together as one block on the reading edge —
+        // right in RTL, left in LTR — instead of the text drifting away from its own icon.
         row.Add(new Label
         {
             Text = item.Text,
             FontSize = G9Metrics.SelectionRowFontSize,
             FontAttributes = selected ? FontAttributes.Bold : FontAttributes.None,
             TextColor = selected ? palette.Primary : palette.TextPrimary,
+            HorizontalOptions = LayoutOptions.Start,
+            HorizontalTextAlignment = TextAlignment.Start,
             VerticalTextAlignment = TextAlignment.Center,
             FlowDirection = _itemFlowDirection,
             LineBreakMode = LineBreakMode.TailTruncation
@@ -492,6 +505,28 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         rowBorder.GestureRecognizers.Add(tap);
         return rowBorder;
     }
+
+    /// <summary>
+    ///     The colour ONE row's leading icon is drawn in. The single source of truth for it — both the
+    ///     build (<see cref="CreateRow" />) and the re-style (<see cref="UpdateRowVisuals" />) call this.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b><see cref="G9SelectionItem.IconTintColor" /> wins in BOTH states</b>, exactly as it does
+    ///         on the ComboBox / Picker trigger. An item that carries its own colour carries it BECAUSE
+    ///         the colour is the meaning — a soil type, a health state, an option a back office coloured
+    ///         on purpose — so repainting it Primary when selected, or TextSecondary when not, throws
+    ///         that meaning away.
+    ///     </para>
+    ///     <para>
+    ///         ⛔ Do not inline this back into either caller. The field was ignored here until 2026-09,
+    ///         and the first attempt to fix it changed only <see cref="CreateRow" /> — which had no
+    ///         visible effect at all, because <see cref="UpdateRowVisuals" /> runs afterwards and
+    ///         overwrote the colour it had just set. A value with two writers has no owner.
+    ///     </para>
+    /// </remarks>
+    private static Color ResolveRowIconColor(G9SelectionItem item, bool selected, G9Palette palette) =>
+        item.IconTintColor ?? (selected ? palette.Primary : palette.TextSecondary);
 
     /// <summary>Subtle primary-tint fill marking a selected row (no border).</summary>
     private static Color SelectedRowTint(G9Palette palette) => palette.Primary.WithAlpha(0.10f);
@@ -590,7 +625,12 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
                     }
                     else if (iconView is G9IconView mauiIcon)
                     {
-                        mauiIcon.Color = selected ? palette.Primary : palette.TextSecondary;
+                        // ⛔ Through the SAME resolver CreateRow uses. This line is why fixing CreateRow
+                        // alone changed nothing: rows are built once and then re-styled here on every
+                        // selection change (and after the first filter pass), so whatever this writes is
+                        // what the operator sees. Two writers for one colour is the bug; the shared
+                        // resolver is the fix.
+                        mauiIcon.Color = ResolveRowIconColor(item, selected, palette);
                     }
                 }
             }
