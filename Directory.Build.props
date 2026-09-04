@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.7</G9FamilyVersion>
+    <G9FamilyVersion>1.0.8</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,39 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.8
+      - G9Diagnostics: one observation seam, so a host can tell when its app is busy.
+
+      New static hooks in Helpers/G9Diagnostics.cs — OperationStarted, OperationCompleted and
+      ActivityChanged, plus an Activity(name) scope helper. G9SafeCommand raises the first two from the
+      trace markers it already emitted.
+
+      Why it belongs here rather than in the consumer: a host that wants to wait for the app to settle
+      instead of sleeping, or to record what a user actually did as semantic actions rather than raw
+      touches, has to observe the choke points — and in an app built on this suite those choke points
+      are G9SafeCommand, G9TabBar, DeferredContentView and G9PageBase, which live in the library. The
+      first consumer has 462 G9SafeCommand call sites. Wrapping them host-side would be a week of work
+      that decays the moment somebody writes the 463rd; one hook where they already funnel covers every
+      existing site and every future one.
+
+      This is NOT a testing feature and must not become one. The library raises two events and decides
+      nothing: it never references a test framework, never decides that a build is a test build, and
+      never collects anything on its own. What counts as busy, what is worth recording, and whether any
+      of it happens at all are the host's decisions, in the host's code and build configuration. The
+      moment this file grows a policy, every consumer inherits somebody else's opinions about testing.
+
+      Three details are load-bearing. Both hooks are plain static delegate fields that are null until
+      somebody assigns them, so a build that never subscribes pays one predictable branch per operation
+      — which is what makes it acceptable to ship in every configuration rather than behind a
+      conditional. Every invocation is guarded, because an observer that throws must not be able to
+      break the operation it was observing; a diagnostics hook taking down a user's save is the failure
+      that would end the feature. And OperationCompleted is raised from G9SafeCommand's finally, so a
+      host counting in-flight work can never leak a count when an operation throws and then wait
+      forever for an app that is already idle. Anything added to these hooks must preserve that pairing.
+
+      No behaviour change for existing consumers: nothing subscribes by default, and no existing API,
+      signature or rendering is touched.
+
       1.0.7
       - Selection lists and picker triggers: honour a per-item icon colour, and stop the value text
         drifting away from its own icon.

@@ -883,6 +883,12 @@ public static class G9SafeCommand
     /// </summary>
     private static void LogTraceStarted(string source, string key)
     {
+        // The host's observation seam. Placed here rather than at the call sites because
+        // this is the ONE place every safe-run path already funnels through, so a host that
+        // wants to know when the app is busy does not have to wrap several hundred callers —
+        // and cannot miss the next one somebody writes. Null unless a host opted in.
+        G9Diagnostics.RaiseOperationStarted(source, key);
+
         try
         {
             var logger = ResolveLogger();
@@ -900,6 +906,10 @@ public static class G9SafeCommand
     /// <summary>High-performance Trace marker emitted when an operation completes, with duration.</summary>
     private static void LogTraceCompleted(string source, string key, long elapsedMs)
     {
+        // Both call sites emit this from a finally, so a host counting in-flight operations
+        // can never leak a count when an operation throws.
+        G9Diagnostics.RaiseOperationCompleted(source, key, elapsedMs);
+
         try
         {
             var logger = ResolveLogger();

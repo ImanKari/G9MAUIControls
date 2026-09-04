@@ -1506,3 +1506,42 @@ assigning `G9Glyph.X` directly, so no consumer could have themed around them eve
 4. **Verify each mapping against the original, do not infer it from the name.** `CloudOff` looked
    like an offline-notice icon; in the original it was the CANCELLED-sync toast. The restoration was
    only correct because the pre-extraction source was read rather than reasoned about.
+
+---
+
+## 2026-09-04 — `G9Diagnostics`: one observation seam, no opinions (ships in 1.0.8)
+
+**What.** `Helpers/G9Diagnostics.cs`: three static hooks — `OperationStarted`,
+`OperationCompleted`, `ActivityChanged` — plus an `Activity(name)` scope helper.
+`G9SafeCommand.LogTraceStarted` / `LogTraceCompleted` raise the first two.
+
+**Why it belongs in the library.** A host wanting to know when its app is busy — to wait for
+quiescence instead of sleeping, or to record semantic actions rather than raw touches — has to
+observe the choke points. In an app built on this suite those choke points are *here*:
+`G9SafeCommand`, `G9TabBar`, `DeferredContentView`, `G9PageBase`. The first consumer (AgriPad)
+has **462 `G9SafeCommand` call sites**; wrapping them host-side would be a week of work that decays
+the moment somebody writes the 463rd. One hook in the one place they all funnel through covers
+every existing site and every future one.
+
+**Why it is not a testing feature, and must not become one.** The library raises two events and
+decides nothing. It never references a test framework, never decides that a build is a test build,
+and never collects anything on its own. What counts as busy, what is worth recording, and whether
+any of it happens at all are the host's decisions, in the host's code and build configuration. The
+moment this file grows a policy, every consumer inherits somebody else's testing opinions.
+
+**Three details worth keeping.**
+
+1. **Null until subscribed.** Both hooks are plain static delegate fields and every call site is a
+   null check, so a build that never subscribes pays a predictable branch per operation. That is
+   what makes it acceptable to ship in every configuration rather than behind a conditional.
+2. **Every invocation is guarded.** A subscriber that throws must not be able to break the
+   operation it was observing — the alternative is a diagnostics hook taking down a user's save.
+3. **`OperationCompleted` is raised from `G9SafeCommand`'s `finally`.** A host counting in-flight
+   work can therefore never leak a count when an operation throws, which would leave it waiting
+   forever for an app that is actually idle. Anything added to these hooks must preserve that
+   pairing.
+
+**Consumer.** AgriPad's QA automation layer —
+`Agriculture.AgriPad.App/AiGuides/28-QA-Automation.md`. Note that the seam post-dates published
+package 1.0.6, so that app currently builds with `-p:UseG9Source=true` until a package carrying it
+ships.

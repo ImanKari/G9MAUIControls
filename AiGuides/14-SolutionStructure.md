@@ -57,7 +57,7 @@ G9MAUIControls/
 │   ├── Toast/                    # G9ToastHelper, options, IG9BottomAnchoredOverlay
 │   ├── TabBar/                   # G9TabBar + drawables + Skia FAB-notch silhouette
 │   ├── EdgePanel/                # G9EdgePanel + items/header/metrics
-│   ├── Helpers/                  # G9SafeCommand, G9ColorHelper, G9ModalHostRegistry, …
+│   ├── Helpers/                  # G9SafeCommand, G9Diagnostics, G9ColorHelper, G9ModalHostRegistry, …
 │   └── Platforms/Android/Resources/   # shimmer AVD drawables (g9_shimmer_*)
 │
 ├── G9MauiLibrary.props           # the shared MAUI-library shape; imported EXPLICITLY (LES-0007)
