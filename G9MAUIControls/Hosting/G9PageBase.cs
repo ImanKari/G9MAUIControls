@@ -50,6 +50,7 @@ public abstract partial class G9PageBase : ContentPage
     // Typed as VisualElement (not View) to avoid the Android #if alias `View = Android.Views.View`
     // that shadows Microsoft.Maui.Controls.View in this file.
     private VisualElement? _pageLoadingOverlay;
+    private IDisposable? _pageLoadingActivity;
     private bool _overlayDismissed;
     private CancellationTokenSource? _pageLoadingCts;
 
@@ -151,6 +152,15 @@ public abstract partial class G9PageBase : ContentPage
         _appG9Popup = (GetTemplateChild("G9PopupView") as G9PopupView)!;
         _appG9BottomSheet = (GetTemplateChild("G9SheetView") as G9SheetView)!;
         _pageLoadingOverlay = GetTemplateChild("PageLoadingHost") as VisualElement;
+
+        // The page-loading overlay IS the "this page is not ready" signal, so it is reported as a
+        // busy activity for exactly as long as it is on screen. Held open here and released in
+        // DismissPageLoadingOverlayAsync, which is one-shot — so the token cannot leak even if the
+        // page is torn down mid-dismissal.
+        if (_pageLoadingOverlay is not null)
+        {
+            _pageLoadingActivity = Helpers.G9Diagnostics.Activity("page:" + GetType().Name);
+        }
 
         // BackdropHost is a BoxView painted between the page background and ContentHost so the
         // bottom-sheet "card recede" effect doesn't expose the light theme background. The color
@@ -536,6 +546,12 @@ public abstract partial class G9PageBase : ContentPage
         }
 
         _overlayDismissed = true;
+
+        // Released BEFORE the exit animation, not after: the page is usable the moment the
+        // dismissal starts, and holding the busy token through a 200 ms fade would make every
+        // page transition look like work that is still in flight.
+        _pageLoadingActivity?.Dispose();
+        _pageLoadingActivity = null;
 
         var overlay = _pageLoadingOverlay;
         _pageLoadingOverlay = null;

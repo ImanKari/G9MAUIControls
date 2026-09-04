@@ -1509,6 +1509,35 @@ assigning `G9Glyph.X` directly, so no consumer could have themed around them eve
 
 ---
 
+## 2026-09-04 (later) — the seam gets its first call sites
+
+`G9Diagnostics.Activity` was added in 1.0.8 and nothing in the library raised it — only
+`G9SafeCommand` used the operation hooks. Three call sites now do, each one `using` scope:
+
+| Where | Scope | Why it is a busy period |
+|---|---|---|
+| `G9PageBase` | `page:<PageType>` | The page-loading overlay IS the "this page is not ready" signal. Held from template capture until dismissal. |
+| `DeferredContentView.LoadContentAsync` | `deferred:<name>` | The classic "looks ready but is not": the sheet is open, the spinner is up, and the real content has not been constructed. Spans build AND reveal, because a waiter cares when the content is actually there, not about the internal phases. |
+| `G9BottomSheetHelper.ShowFullScreenAsync` | `sheet:open` | The open animation is running, the backdrop is receding, and a factory sheet has not built its body. Acting here acts on a half-open surface. |
+
+**One decision worth keeping: the page token is released BEFORE the exit animation, not after.**
+The page is usable the moment dismissal starts; holding the token through a 200 ms fade would make
+every page transition look like work still in flight to anything waiting for quiescence.
+
+**And one that is easy to get wrong:** the sheet scope is released in a continuation, not a
+`finally`, because the work it covers is asynchronous — a `using` around the synchronous call would
+release before the sheet had opened, which is worse than not reporting at all.
+
+Verified on an Android emulator: subscribing to the seam for a session and opening the site-selector
+sheet produced `activity:sheet:open` and `activity:deferred:DeferredContentView` alongside the
+command hooks. The consumer's account is in
+`Agriculture.AgriPad.App/AiGuides/28-QA-Automation.md` §11.
+
+These ship in **1.0.9**. AgriPad built against them with `UseG9Source=true` while they were
+unpublished; once 1.0.9 restores, that switch goes back to `false`.
+
+---
+
 ## 2026-09-04 — `G9Diagnostics`: one observation seam, no opinions (ships in 1.0.8)
 
 **What.** `Helpers/G9Diagnostics.cs`: three static hooks — `OperationStarted`,

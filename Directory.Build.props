@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.8</G9FamilyVersion>
+    <G9FamilyVersion>1.0.9</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,33 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.9
+      - G9Diagnostics gets its first call sites: three periods the suite already knew about, now
+        reported as busy activities.
+
+      1.0.8 added the seam and only G9SafeCommand raised it, so a host could see commands and nothing
+      else. Three `using` scopes now cover the windows where the UI looks ready and is not:
+      G9PageBase reports `page:` + the page type name for as long as the page-loading overlay is on screen,
+      DeferredContentView reports `deferred:` + the view name across build AND reveal, and
+      G9BottomSheetHelper.ShowFullScreenAsync reports `sheet:open` while the open animation runs and a
+      factory sheet builds its body.
+
+      Why the library and not the consumer: these three windows are the library's own — it owns the
+      overlay, the deferred build and the sheet animation, and it is the only code that knows when each
+      one ends. A host can observe that a command started; it cannot observe that a sheet has finished
+      opening without reaching into internals that are deliberately private.
+
+      Two details are load-bearing. The page token is released BEFORE the exit animation, not after:
+      the page is usable the moment dismissal begins, and holding it through a 200 ms fade would make
+      every page transition look like work still in flight. And the sheet scope is released in a
+      continuation rather than a `finally`, because the work it covers is asynchronous — a `using`
+      around the synchronous call would release before the sheet had opened, which is worse than not
+      reporting at all.
+
+      Unchanged from 1.0.8 and still true: nothing subscribes by default, both hooks are null until a
+      host assigns them, every invocation is guarded, and the library still decides nothing about what
+      busy means. No API, signature or rendering changes.
+
       1.0.8
       - G9Diagnostics: one observation seam, so a host can tell when its app is busy.
 

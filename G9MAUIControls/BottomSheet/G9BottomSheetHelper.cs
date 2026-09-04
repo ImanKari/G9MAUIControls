@@ -417,6 +417,13 @@ public static class G9BottomSheetHelper
     {
         var resolvedOptions = options ?? G9BottomSheetOptions.FullScreenModalOptions();
 
+        // A sheet that is opening is a period during which the UI is not settled: the open
+        // animation is running, the backdrop is receding, and (for a factory sheet) the body has
+        // not been built. A harness that acted here would act on a half-open surface. Released
+        // when the show completes, in a continuation rather than a finally, because the work this
+        // covers is asynchronous.
+        var openActivity = Helpers.G9Diagnostics.Activity("sheet:open");
+
         return MainThread.InvokeOnMainThreadAsync(() =>
         {
             var host = G9ModalHostRegistry.GetCurrentHostOrThrow();
@@ -429,7 +436,11 @@ public static class G9BottomSheetHelper
 
             return OpenPrimarySheet(host.OverlayHost,
                 new PendingPrimarySheetRequest(contentRequest, resolvedOptions, host.Page.FlowDirection));
-        });
+        }).ContinueWith(task =>
+        {
+            openActivity.Dispose();
+            return task;
+        }, TaskScheduler.Default).Unwrap();
     }
 
     private static string Sanitize(string? value)

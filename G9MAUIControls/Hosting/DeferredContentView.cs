@@ -197,6 +197,12 @@ public sealed class DeferredContentView : ContentView
             linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_loadCts.Token, ct);
         }
 
+        // A deferred build is the classic "the screen looks ready but is not" window: the sheet is
+        // open, the spinner is up, and the real content has not been constructed yet. Reported as
+        // ONE activity spanning build + reveal, because a host waiting for quiescence cares about
+        // when the content is actually there, not about the internal phases.
+        using var buildActivity = Helpers.G9Diagnostics.Activity("deferred:" + (AutomationId ?? GetType().Name));
+
         IsRevealSettled = false;
 
 
