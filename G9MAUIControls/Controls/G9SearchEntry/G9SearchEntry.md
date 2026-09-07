@@ -18,6 +18,12 @@ one visual style across every input on the page).
 
 ### Inherited from `G9TextEntry`
 
+> The voice members — `VoiceEnabled`, `VoiceCulture`, `IsListening`, `Start`/`Stop`/`ToggleVoiceAsync`,
+> `VoiceListeningStarted`, `VoiceListeningEnded`, `VoiceFailed` — moved to `G9TextEntry` when
+> `G9Editor` gained dictation too. They are unchanged for consumers; only their declaring type moved,
+> and `G9SearchEntry` still defaults `VoiceEnabled` to `true`.
+
+
 Everything in `G9TextEntry.md` applies. The notable inherited defaults pre-set by
 `G9SearchEntry`:
 
@@ -47,8 +53,6 @@ for the private state resolution.
 | Property | Type | Default | Description |
 |---|---|---|---|
 | `DebounceMs` | `int` | `250` | Delay between the last keystroke and `DebouncedTextChanged` / `SearchCommand` firing. Set to `0` to fire on every keystroke. |
-| `VoiceEnabled` | `bool` | `true` | When false, suppresses the trailing voice-mic affordance. |
-| `VoiceCulture` | `CultureInfo?` | `null` | Override for the speech-recognition culture. When null, the active `CultureInfo.CurrentUICulture` is used (so a Persian-language UI naturally recognizes Persian). |
 | `SearchCommand` | `ICommand?` | `null` | Fired with the current `Text` when the debounce window elapses, or immediately when `DebounceMs == 0`. |
 
 ## Events
@@ -56,70 +60,26 @@ for the private state resolution.
 | Event | Payload | Fired when |
 |---|---|---|
 | `DebouncedTextChanged` | `string?` (current `Text`) | Debounce window elapses (or instantly when `DebounceMs == 0`). |
-| `VoiceListeningStarted` | — | Voice session begins. |
-| `VoiceListeningEnded` | — | Voice session ends (final transcript, cancellation, or error). |
-| `VoiceFailed` | `string` (reason) | Voice session can't proceed (permission denied, recognizer unavailable, locale not supported). |
 
 ## Methods
 
 | Method | Description |
 |---|---|
 | `Submit()` | Bypass the debounce window and fire `DebouncedTextChanged` + `SearchCommand` with the current `Text` immediately. Use for explicit commit (Enter key, search button, etc.). |
-| `StartVoiceAsync()` | Request permissions and start a voice session in the active culture. |
-| `StopVoiceAsync()` | Cancel an in-flight voice session and reset the trailing icon. |
-| `ToggleVoiceAsync()` | Start a session if none is running, otherwise stop. The trailing mic icon calls this on tap. |
 
-## Voice Recognition
+## Voice dictation
 
-Voice support is built in — no consumer wiring required for the recognizer itself. The
-mic icon shows in the trailing slot only when the field is empty (so it never collides
-with the clear "×" affordance) and the actionable-gate logic in
-`G9OutlinedFieldBase` plays the ink-ripple press animation only when voice is
-enabled.
+**The microphone is not this control's — it is `G9TextEntry`'s, and `G9SearchEntry` only turns it
+ON.** `VoiceEnabled`, `VoiceCulture`, `IsListening`, `Start`/`Stop`/`ToggleVoiceAsync` and the three
+voice events are all inherited; the canonical description — the mic rule, the session flow, the
+per-platform Persian reality and the required manifest entries — lives in
+[`G9TextEntry.md` → Voice dictation](../G9TextEntry/G9TextEntry.md#voice-dictation), and the engine
+behind all of it is [`G9VoiceDictation`](../../Localization/G9VoiceDictation.cs).
 
-When the user taps the mic:
-
-1. `Permissions.Microphone` is checked / requested.
-2. `SpeechToText.Default.RequestPermissions(...)` is called — covers the Apple-platform
-   speech-recognition permission separately from microphone access.
-3. `StartListenAsync(SpeechToTextOptions { Culture, ShouldReportPartialResults = true })`
-   starts the recognizer.
-4. The trailing icon swaps to a red "MicOff" glyph so the user can tap again to cancel.
-5. `RecognitionResultUpdated` partials are appended to whatever the user had typed
-   before tapping the mic — voice ADDS to the query, doesn't clobber it.
-6. `RecognitionResultCompleted` writes the final transcript and fires the normal
-   debounced search pipeline.
-
-### Platform reality
-
-| Platform | Persian (`fa-IR`) support | Notes |
-|---|---|---|
-| Android | **Yes** | Uses `android.speech.SpeechRecognizer` via Google Voice Search. Persian has been an officially supported language since Voice Search's 2016 expansion. Requires `RECORD_AUDIO` permission and an `<intent>` query for `android.speech.RecognitionService` (both already in our manifest). |
-| iOS | **No** | `SFSpeechRecognizer` does not include `fa-IR` in its supported locales (verified through iOS 18). The recognizer will fail and surface the error via `VoiceFailed`. Persian users on iOS should rely on the keyboard's dictation mic instead — that's a system-keyboard feature we can't trigger from C#. |
-| MacCatalyst | **No** | Same Speech Framework as iOS; same limitation. |
-| Windows | **Pack-dependent** | `Windows.Media.SpeechRecognition` supports Persian only when the Persian language pack is installed via Settings → Time & Language → Language. |
-
-### Required platform permissions
-
-Already wired in the project's manifests (see commit history for the G9SearchEntry
-introduction):
-
-- **Android** (`Platforms/Android/AndroidManifest.xml`):
-  - `<uses-permission android:name="android.permission.RECORD_AUDIO" />`
-  - `<intent><action android:name="android.speech.RecognitionService" /></intent>` inside `<queries>` — required for Android 11+ to resolve the recognizer service.
-- **iOS** (`Platforms/iOS/Info.plist`):
-  - `NSMicrophoneUsageDescription`
-  - `NSSpeechRecognitionUsageDescription`
-- **MacCatalyst** (`Platforms/MacCatalyst/Info.plist`):
-  - `NSMicrophoneUsageDescription`
-  - `NSSpeechRecognitionUsageDescription`
-- **Windows** (`Platforms/Windows/Package.appxmanifest`):
-  - `<DeviceCapability Name="microphone" />`
-
-If `VoiceFailed` fires with "Microphone permission denied", the user has refused the
-permission via the OS dialog. Consumers should toast the message so the user can
-reopen the system permission prompt manually.
-
+What is specific here is the DEFAULT: a search box sets `VoiceEnabled = true` in its constructor,
+because dictating a query is what every system search bar offers. Set `VoiceEnabled="False"` where it
+does not belong — a typed barcode lookup, or a height-matched lane where the extra trailing glyph is
+noise.
 ## Usage
 
 ### Plain search bar with debounced query

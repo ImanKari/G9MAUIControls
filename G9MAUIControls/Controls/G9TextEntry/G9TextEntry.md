@@ -54,6 +54,8 @@ outline + notched-label + icon-padding architecture from `G9OutlinedFieldBase`.
 | `CustomFont` | `string?` | `null` | Override `FontFamily` on the inner `Entry`. |
 | `Validator` | `IG9TextValidator?` | `null` | Custom validator invoked on `Validate()`. |
 | `ValidateOnTextChanged` | `bool` | `false` | Auto-runs `Validate()` on every text change. |
+| `VoiceEnabled` | `bool` | `false` | Shows a dictation microphone in the trailing slot. Off by default — a microphone costs an OS permission and a store privacy declaration, so a field opts in. `G9SearchEntry` turns it on for itself. |
+| `VoiceCulture` | `CultureInfo?` | `null` | Locale to recognize in. Null follows the app's active language. |
 
 ## Methods
 
@@ -160,18 +162,26 @@ multi-line input (no password types).
 
 ## Built-in Trailing Affordances
 
-The trailing icon slot has built-in logic for two common patterns. They run before any
-`TrailingCommand` you set:
+The trailing icon slot has built-in logic for three common patterns, resolved **in this order**.
+They all run before any `TrailingCommand` you set:
 
-1. **`PasswordToggle`** → the trailing icon becomes a `Visibility` / `VisibilityOff` glyph.
-   Tapping it toggles `_passwordVisible` so the user sees the actual characters while
-   the bindable `IsPassword` stays `true`.
-2. **`ClearButton`** → the trailing icon becomes a `Close` glyph. Tapping it clears `Text`.
+1. **`PasswordToggle`** (with a value) → the trailing icon becomes a `Visibility` / `VisibilityOff`
+   glyph. Tapping it toggles `_passwordVisible` so the user sees the actual characters while the
+   bindable `IsPassword` stays `true`.
+2. **`VoiceEnabled`** (see [Voice dictation](#voice-dictation)) → a microphone, while the field is
+   empty **or** a session is running. Tapping it focuses the field and starts or stops dictation.
+3. **`ClearButton`** (with a value) → the trailing icon becomes a `Close` glyph. Tapping it clears
+   `Text`.
 
-If neither applies, your `TrailingCommand` runs on tap.
+The order is what makes them coexist: the eye is the more urgent affordance on a password that has
+one, the microphone owns the slot only while there is nothing to clear (or a session to stop), and
+the clear button takes it back the moment there is a value.
 
-**Both are VALUE-GATED (2026-07-29): an empty field renders neither icon AND reserves no room for
-one.** The gate is `HasExtraTrailingAffordance()`, which is the same predicate the layout uses to
+If none applies, your `TrailingCommand` runs on tap.
+
+**The password and clear affordances are VALUE-GATED (2026-07-29): an empty field renders neither
+icon AND reserves no room for one.** (The microphone is the deliberate exception — it is an
+EMPTY-field affordance, so it occupies exactly the slot the other two leave free.) The gate is `HasExtraTrailingAffordance()`, which is the same predicate the layout uses to
 reserve trailing room — so the two can never disagree and produce a blank reserved slot.
 
 - Why it matters beyond tidiness: **in RTL the placeholder sits on the trailing side**, so a
@@ -212,6 +222,83 @@ The motion is destruction-free:
   of the previous 0.78. The ripple does the heavier visual lifting; the scale just adds
   a subtle tactile cue. The release uses a `SpringOut` ease for a slightly bouncy
   feel that distinguishes "press accepted" from a flat scale return.
+
+## Voice dictation
+
+**This is the canonical description for the whole suite.** The session engine is
+[`G9VoiceDictation`](../../Localization/G9VoiceDictation.cs), which `G9TextEntry`, `G9SearchEntry` and
+[`G9Editor`](../G9Editor/G9Editor.md) all drive — each control owns only its own microphone
+*affordance*. The three used to be one copy in `G9SearchEntry`; a second and a third copy is how the
+permission re-check, the cancellation contract and the append semantics drift apart.
+
+Voice support is built in — no consumer wiring required for the recognizer itself. The
+mic icon shows in the trailing slot while the field is empty (so it never collides
+with the clear "×" affordance) **and for as long as a session is running** — a live
+transcript writes into the field, so a strictly empty-only rule made the microphone
+vanish under the user's finger the moment the first word landed, leaving nothing to
+stop it with. A password field with a value keeps its eye instead.
+
+The affordance also requires a registered `G9Speech.Provider`: with none, the microphone
+stays hidden rather than offering a control that can only fail. The actionable-gate logic
+in `G9OutlinedFieldBase` plays the ink-ripple press animation only while the microphone is
+actually shown, so an empty trailing slot never flashes a ripple.
+
+When the user taps the mic:
+
+1. `Permissions.Microphone` is checked / requested.
+2. `SpeechToText.Default.RequestPermissions(...)` is called — covers the Apple-platform
+   speech-recognition permission separately from microphone access.
+3. `StartListenAsync(SpeechToTextOptions { Culture, ShouldReportPartialResults = true })`
+   starts the recognizer.
+4. The trailing icon swaps to a red "MicOff" glyph so the user can tap again to cancel.
+5. `RecognitionResultUpdated` partials are appended to whatever the user had typed
+   before tapping the mic — voice ADDS to the query, doesn't clobber it.
+6. `RecognitionResultCompleted` writes the final transcript and fires the normal
+   debounced search pipeline.
+
+### Platform reality
+
+| Platform | Persian (`fa-IR`) support | Notes |
+|---|---|---|
+| Android | **Yes** | Uses `android.speech.SpeechRecognizer` via Google Voice Search. Persian has been an officially supported language since Voice Search's 2016 expansion. Requires `RECORD_AUDIO` permission and an `<intent>` query for `android.speech.RecognitionService` (both already in our manifest). |
+| iOS | **No** | `SFSpeechRecognizer` does not include `fa-IR` in its supported locales (verified through iOS 18). The recognizer will fail and surface the error via `VoiceFailed`. Persian users on iOS should rely on the keyboard's dictation mic instead — that's a system-keyboard feature we can't trigger from C#. |
+| MacCatalyst | **No** | Same Speech Framework as iOS; same limitation. |
+| Windows | **Pack-dependent** | `Windows.Media.SpeechRecognition` supports Persian only when the Persian language pack is installed via Settings → Time & Language → Language. |
+
+### Required platform permissions
+
+Already wired in the project's manifests (see commit history for the G9SearchEntry
+introduction):
+
+- **Android** (`Platforms/Android/AndroidManifest.xml`):
+  - `<uses-permission android:name="android.permission.RECORD_AUDIO" />`
+  - `<intent><action android:name="android.speech.RecognitionService" /></intent>` inside `<queries>` — required for Android 11+ to resolve the recognizer service.
+- **iOS** (`Platforms/iOS/Info.plist`):
+  - `NSMicrophoneUsageDescription`
+  - `NSSpeechRecognitionUsageDescription`
+- **MacCatalyst** (`Platforms/MacCatalyst/Info.plist`):
+  - `NSMicrophoneUsageDescription`
+  - `NSSpeechRecognitionUsageDescription`
+- **Windows** (`Platforms/Windows/Package.appxmanifest`):
+  - `<DeviceCapability Name="microphone" />`
+
+If `VoiceFailed` fires with "Microphone permission denied", the user has refused the
+permission via the OS dialog. Consumers should toast the message so the user can
+reopen the system permission prompt manually.
+
+
+### Events and methods
+
+| Member | Kind | Description |
+|---|---|---|
+| `IsListening` | `bool` | True while this field is dictating. |
+| `ToggleVoiceAsync()` | `Task` | Start a session, or stop the running one. The trailing microphone calls this. |
+| `StartVoiceAsync()` | `Task` | Begin a session. Appends to whatever the field already holds. |
+| `StopVoiceAsync()` | `Task` | Stop an in-flight session. Safe when none is running. |
+| `VoiceListeningStarted` | event | A session begins. |
+| `VoiceListeningEnded` | event | A session ends (result, cancellation, or failure). |
+| `VoiceFailed` | `event EventHandler<string>` | A session could not run or did not finish. Carries an already-localized reason; WHERE to show it is the app's decision, so the control shows nothing itself. |
+
 
 ## Usage
 

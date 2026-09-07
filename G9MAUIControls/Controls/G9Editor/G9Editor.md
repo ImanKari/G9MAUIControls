@@ -31,6 +31,40 @@ CommandParameter.
 | `KeyboardType` | `G9KeyboardType` | `Default` | Keyboard layout. |
 | `InputTextDirection` | `G9TextInputDirection` | `MatchParent` | Force LTR / RTL on the inner `Editor` only. With `MatchParent`, numeric / email / URL / phone `InputType` values default to LTR even on RTL pages — see [G9TextEntry's RTL section](../G9TextEntry/G9TextEntry.md). |
 | `CustomFont` | `string?` | `null` | Override `FontFamily` on the inner `Editor`. When unset, the inner Editor resolves its font from `G9Visuals.ResolveCulturalFont()` — Persian face for Fa, Latin face for En. |
+| `VoiceEnabled` | `bool` | `false` | Shows a dictation microphone in the trailing slot. See below. |
+| `VoiceCulture` | `CultureInfo?` | `null` | Locale to recognize in. Null follows the app's active language. |
+
+
+## Voice dictation
+
+Set `VoiceEnabled` and the editor grows a microphone in its trailing slot. The engine, the events
+(`VoiceListeningStarted` / `VoiceListeningEnded` / `VoiceFailed`), the methods (`ToggleVoiceAsync`,
+`StartVoiceAsync`, `StopVoiceAsync`), `IsListening`, the session flow, the per-platform Persian
+reality and the required manifest entries are all shared with `G9TextEntry` — read
+[`G9TextEntry.md` → Voice dictation](../G9TextEntry/G9TextEntry.md#voice-dictation) once; it is the
+canonical description, and [`G9VoiceDictation`](../../Localization/G9VoiceDictation.cs) is the engine
+all three input controls drive.
+
+**Two things are deliberately different here.**
+
+1. **The microphone is NOT value-gated.** On `G9TextEntry` the mic hands the trailing slot to the
+   clear button as soon as there is a value; an editor has no clear button to hand it to, and a long
+   description is exactly the thing a user wants to keep dictating into. So it stays visible whether
+   or not the field has content, and every transcript APPENDS.
+2. **It is pinned to the BOTTOM of the box, not centred.** `TrailingHost.VerticalOptions` is set to
+   `End` in the constructor. The base defaults to centred, which is right for a one-line entry and
+   wrong for a text area: an affordance floating beside the middle of a paragraph reads as part of
+   the text. Level with the last line is where "finish this thought out loud" belongs.
+
+```xml
+<newControls:G9Editor
+    Label="Description"
+    MinimumEditorHeight="128"
+    VoiceEnabled="True" />
+```
+
+> A microphone needs a registered `G9Speech.Provider`. With none, it stays hidden — the control never
+> offers an affordance that can only fail.
 
 ## Usage
 

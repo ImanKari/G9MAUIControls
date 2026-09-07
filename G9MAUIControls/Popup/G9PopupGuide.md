@@ -102,6 +102,10 @@ var result = await G9PopupHelper.ShowInputG9PopupAsync(new G9PopupInputOptions
     ]
 });
 
+// Dictation on a text / text-area field. Needs a registered G9Speech.Provider; with none the
+// microphone stays hidden. Never offered on a Password field.
+G9PopupInputField.TextArea(key: "notes", label: "Notes", enableVoice: true);
+
 // Confirm: returns bool. Wraps OK/Cancel + tcs in one call.
 // Cancel is the OUTLINE button and only OK carries the accent (design guide §4c) — do not pass
 // IsPrimary-style overrides to "restore" two solid buttons.
@@ -117,6 +121,25 @@ G9PopupHelper.ConfigureG9PopupDefaults(new G9PopupSettings { CloseOnBackgroundCl
 await G9PopupHelper.ClearG9PopupQueueAsync();
 await G9PopupHelper.DismissAllG9PopupsAsync();
 ```
+
+
+### ⛔ `G9PopupInputField.Text` follows the CULTURE; the other factories are pinned LTR
+
+`Text(...)` and `TextArea(...)` leave `FlowDirection` null, which the builder resolves to
+`G9TextInputDirection.MatchParent` — the caret and the typed value follow the app's language.
+
+`Text(...)` did NOT always do this: it defaulted to `LeftToRight`, copied from the sibling factories.
+On those the pin is correct for a real reason — a phone number, an email address and a password ARE
+written left-to-right in every language, and mirroring one corrupts the visible string. Prose is not:
+it is written in the language the user is reading the form in. The symptom in a Persian app was a
+"Title" box whose caret sat on the left and whose text ran away from its own label, which is how it
+was reported.
+
+`Phone`, `Email` and `Password` keep the LTR default deliberately. Note that they must, because the
+popup builder sets `KeyboardType` and `IsPassword` but never `InputType` — so
+`G9TextEntry`'s own `PrefersLeftToRight(InputType)` rule would not fire for them under
+`MatchParent`. Pass `flowDirection:` explicitly on a `Text` field that carries
+universally-LTR content.
 
 ## App Startup Defaults
 

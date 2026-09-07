@@ -1531,7 +1531,7 @@ release before the sheet had opened, which is worse than not reporting at all.
 Verified on an Android emulator: subscribing to the seam for a session and opening the site-selector
 sheet produced `activity:sheet:open` and `activity:deferred:DeferredContentView` alongside the
 command hooks. The consumer's account is in
-`Agriculture.AgriPad.App/AiGuides/28-QA-Automation.md` §11.
+`Agriculture.AgriPad.App/AiGuides/30-QA-Automation.md` §11.
 
 These ship in **1.0.9**. AgriPad built against them with `UseG9Source=true` while they were
 unpublished; once 1.0.9 restores, that switch goes back to `false`.
@@ -1571,6 +1571,41 @@ moment this file grows a policy, every consumer inherits somebody else's testing
    pairing.
 
 **Consumer.** AgriPad's QA automation layer —
-`Agriculture.AgriPad.App/AiGuides/28-QA-Automation.md`. Note that the seam post-dates published
+`Agriculture.AgriPad.App/AiGuides/30-QA-Automation.md`. Note that the seam post-dates published
 package 1.0.6, so that app currently builds with `-p:UseG9Source=true` until a package carrying it
 ships.
+
+---
+
+## LES-0044 — An affordance whose visibility depends on the state it CONTROLS can lock the user out
+
+**Symptom.** Tap the microphone on an empty search box; say a word; the microphone disappears and the
+session cannot be stopped. It ends on the recognizer's own timeout, and until then the field keeps
+receiving speech.
+
+**Cause.** One line:
+
+```csharp
+private bool ShouldShowVoiceMic() => VoiceEnabled && string.IsNullOrEmpty(Text);
+```
+
+The rule is right — the clear button owns the trailing slot once there is a value — and it was written
+before there was a session to stop. But a dictation session WRITES INTO `Text`. So the affordance's
+visibility was a function of the very state its own action produces, and the first recognized word
+removed the only control that could end it.
+
+**Fix.** `IsListening || !HasContentValue`. While a session runs the microphone stays, and it is what
+the user taps to stop.
+
+**The general rule.** *Before hiding a control, ask what happens if the thing it starts is still
+running.* A start/stop control that is hidden by its own side effects is not a toggle, it is a
+one-way door. This applies to more than a microphone: a Cancel that disappears once progress begins, a
+Stop that is gated on "is idle", a Disconnect hidden while connecting. The tester-facing sibling of
+this rule is already in the AgriPad guides — the QA screen recorder deliberately keeps its Stop button
+on screen DURING the recording it is spoiling, for exactly this reason.
+
+**Second finding from the same file.** `IG9SpeechToText`'s documentation, and the gallery page's own
+label, both promise the microphone is hidden unless a provider is registered. Nothing checked. A
+documented behaviour with no code behind it survives review indefinitely, because the reviewer reads
+the paragraph and believes it; it is now `G9VoiceDictation.IsAvailable`, checked at the one place the
+affordance is resolved.

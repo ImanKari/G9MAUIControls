@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.9</G9FamilyVersion>
+    <G9FamilyVersion>1.0.10</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,35 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+      1.0.10
+      - Voice dictation is now a suite capability, not a search-box feature.
+
+      The session engine moved out of G9SearchEntry into G9VoiceDictation (Localization/), a small
+      control-agnostic class driven through three delegates. G9TextEntry declares the public surface —
+      VoiceEnabled, VoiceCulture, IsListening, Start/Stop/ToggleVoiceAsync and the three voice events —
+      and G9Editor gained the same. G9SearchEntry keeps only its default (VoiceEnabled = true) and
+      inherits the rest, so nothing a consumer wrote against it changes. Why a class and not a shared
+      base: G9Editor is a SIBLING of G9TextEntry under G9OutlinedFieldBase, whose job is outline and
+      notch geometry — see ADR-0020.
+
+      Two fixes came with it. The microphone no longer disappears mid-session: its visibility was
+      keyed on the field being EMPTY, and a live transcript writes into Text, so the first
+      recognized word removed the only control that could stop the session (LES-0044). And a missing
+      G9Speech.Provider now really does hide the affordance, which the interface documentation had
+      promised since it was written and no code checked.
+
+      On G9Editor the microphone is deliberately NOT value-gated (no clear button competes for the slot,
+      and a long description is what people dictate) and it is pinned to the bottom of the box rather
+      than centred.
+
+      - G9PopupInputField.Text no longer forces LeftToRight.
+
+      It defaulted to LTR because its sibling factories do, where the pin is correct for a real reason:
+      a phone number, an email and a password are written left-to-right in every language. Prose is
+      not. In an RTL app the symptom was a "Title" box whose caret sat on the left and whose text ran
+      away from its own label. Phone / Email / Password keep the pin. Text and TextArea also gained an
+      `enableVoice:` parameter.
+
       1.0.9
       - G9Diagnostics gets its first call sites: three periods the suite already knew about, now
         reported as busy activities.

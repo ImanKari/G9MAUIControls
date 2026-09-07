@@ -21,6 +21,27 @@ public sealed record G9PopupInputField
     public Microsoft.Maui.Keyboard? Keyboard { get; init; }
     public Func<string?, string?>? Validator { get; init; }
 
+    /// <summary>
+    ///     Offers a dictation microphone on this field. Applies to <see cref="G9PopupInputFieldType.Text" />
+    ///     and <see cref="G9PopupInputFieldType.TextArea" /> only, and needs a registered
+    ///     <c>G9Speech.Provider</c> — with none, the microphone stays hidden.
+    /// </summary>
+    public bool EnableVoice { get; init; }
+
+    /// <summary>
+    ///     A free-text field.
+    ///     <para>
+    ///         <b><paramref name="flowDirection" /> defaults to null = follow the app's culture</b>,
+    ///         which is the fix for a Persian UI whose "Title" box put the caret on the LEFT and
+    ///         typed away from the label. It used to default to
+    ///         <see cref="Microsoft.Maui.FlowDirection.LeftToRight" />, copied from the sibling
+    ///         factories where LTR is correct for a real reason — a phone number, an email address
+    ///         and a password ARE written left-to-right in every language, and mirroring one
+    ///         corrupts the visible value. Prose is not: it is written in the language the user is
+    ///         reading the form in. Pass a direction explicitly when a specific field carries
+    ///         universally-LTR content.
+    ///     </para>
+    /// </summary>
     public static G9PopupInputField Text(
         string key,
         string label,
@@ -28,8 +49,9 @@ public sealed record G9PopupInputField
         bool isRequired = false,
         string? initialValue = null,
         int? maxLength = null,
-        FlowDirection flowDirection = Microsoft.Maui.FlowDirection.LeftToRight,
-        string? fontFamily = null)
+        FlowDirection? flowDirection = null,
+        string? fontFamily = null,
+        bool enableVoice = false)
     {
         return new G9PopupInputField
         {
@@ -41,7 +63,8 @@ public sealed record G9PopupInputField
             MaxLength = maxLength,
             Type = G9PopupInputFieldType.Text,
             FlowDirection = flowDirection,
-            FontFamily = fontFamily
+            FontFamily = fontFamily,
+            EnableVoice = enableVoice
         };
     }
 
@@ -148,9 +171,10 @@ public sealed record G9PopupInputField
         bool isRequired = false,
         string? initialValue = null,
         int? maxLength = null,
-        string? fontFamily = null)
+        string? fontFamily = null,
+        bool enableVoice = false)
     {
-        return TextArea(key, label, placeholder, isRequired, initialValue, maxLength, fontFamily);
+        return TextArea(key, label, placeholder, isRequired, initialValue, maxLength, fontFamily, enableVoice);
     }
 
     public static G9PopupInputField TextArea(
@@ -160,7 +184,8 @@ public sealed record G9PopupInputField
         bool isRequired = false,
         string? initialValue = null,
         int? maxLength = null,
-        string? fontFamily = null)
+        string? fontFamily = null,
+        bool enableVoice = false)
     {
         return new G9PopupInputField
         {
@@ -171,7 +196,8 @@ public sealed record G9PopupInputField
             InitialValue = initialValue,
             MaxLength = maxLength,
             Type = G9PopupInputFieldType.TextArea,
-            FontFamily = fontFamily
+            FontFamily = fontFamily,
+            EnableVoice = enableVoice
         };
     }
 

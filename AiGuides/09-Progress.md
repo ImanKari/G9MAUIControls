@@ -474,6 +474,43 @@ but the three handler edits are per-platform and unrendered. See ADR-0019, LES-0
 
 ---
 
+# 1.0.10 — dictation is a SUITE capability, not a search-box feature (2026-09-07)
+
+A consumer needed a microphone on a title field and on a description text area. The suite had exactly
+one, welded into `G9SearchEntry`: ~180 lines of session state — permission re-check, cancellation,
+partial-result append, the listening visual — sitting in a control whose actual job is a debounced
+query.
+
+**The engine is now [`G9VoiceDictation`](../G9MAUIControls/Localization/G9VoiceDictation.cs)**, a small
+control-agnostic class holding one session against `G9Speech.Provider`. `G9TextEntry` owns the
+`VoiceEnabled` / `VoiceCulture` properties, the three events, `IsListening` and the three methods;
+`G9SearchEntry` keeps only its default (`VoiceEnabled = true`) and its search behaviour; `G9Editor`
+gained the same API. Consumers see no break — `G9SearchEntry` inherits every member it used to
+declare — and the reason for doing it this way rather than a shared base is ADR-0020: the two
+controls that needed it do not share one (`G9SearchEntry : G9TextEntry`, but `G9Editor` is a sibling
+under `G9OutlinedFieldBase`, whose job is outline and notch geometry, not speech).
+
+Two behaviour changes came with it, both fixes:
+
+- **The microphone no longer disappears mid-session.** `ShouldShowVoiceMic` was `VoiceEnabled &&
+  string.IsNullOrEmpty(Text)`, and a live transcript writes into `Text` — so the first recognized word
+  removed the only control that could stop the session. It is now `IsListening || !HasContentValue`.
+- **No provider, no microphone.** `IG9SpeechToText`'s own documentation says the mic is hidden unless
+  a provider is registered, and the gallery page says so on screen; the code never checked. It does
+  now (`G9VoiceDictation.IsAvailable`).
+
+On the editor the affordance is deliberately NOT value-gated (there is no clear button to hand the
+slot to, and a long description is what people dictate) and it is pinned to the BOTTOM of the box —
+a microphone floating beside the middle of a paragraph reads as part of the text.
+
+Also in this release: **`G9PopupInputField.Text` no longer forces `LeftToRight`.** It defaulted to LTR
+because its sibling factories do, where the pin is correct for a real reason — a phone number, an
+email and a password are written left-to-right in every language. Prose is not. In a Persian app the
+symptom was a "Title" box whose caret sat on the left and whose text ran away from its own label.
+`Phone` / `Email` / `Password` keep the pin. `Text` and `TextArea` also gained `enableVoice:`.
+
+---
+
 # 1.0.7 — a per-item icon colour, and a value that stays next to its icon (2026-09-02)
 
 Two rendering defects, both reported by a consumer's dynamic-attribute option pickers, both verified on

@@ -1067,7 +1067,8 @@ public static class G9PopupHelper
                         IsSpellCheckEnabled = field.IsSpellCheckEnabled,
                         AutoSize = EditorAutoSizeOption.TextChanges,
                         MinimumEditorHeight = 90,
-                        InputTextDirection = ResolveG9InputDirection(field)
+                        InputTextDirection = ResolveG9InputDirection(field),
+                        VoiceEnabled = field.EnableVoice
                     };
 
                     if (field.MaxLength is { } editorMaxLength)
@@ -1213,7 +1214,8 @@ public static class G9PopupHelper
                         IsPassword = isPassword,
                         PasswordToggle = isPassword,
                         ClearButton = true,
-                        InputTextDirection = ResolveG9InputDirection(field)
+                        InputTextDirection = ResolveG9InputDirection(field),
+                        VoiceEnabled = field.EnableVoice && !isPassword
                     };
 
                     if (field.MaxLength is { } maxLength)

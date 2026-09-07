@@ -1,5 +1,7 @@
+using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Maui.BindableProperty.Generator.Core;
+using System.Globalization;
 using G9MAUIControls.Icons;
 
 namespace G9MAUIControls.Controls;
@@ -71,6 +73,37 @@ public partial class G9TextEntry : G9OutlinedFieldBase
     [AutoBindable] private IG9TextValidator? _validator;
     [AutoBindable] private bool _validateOnTextChanged;
 
+    /// <summary>
+    ///     Offers a microphone in the trailing slot that dictates straight into
+    ///     <see cref="Text" />. <b>Off by default</b> on a general text entry — a microphone is a
+    ///     promise the app has to keep (a permission prompt, a privacy declaration), so a field
+    ///     opts in. <c>G9SearchEntry</c> turns it on for itself.
+    ///     <para>
+    ///         The affordance also needs a registered <see cref="G9Speech.Provider" />: with none,
+    ///         the microphone stays hidden rather than offering a control that can only fail. See
+    ///         <see cref="IG9SpeechToText" />.
+    ///     </para>
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVoiceEnabledChanged))] private bool _voiceEnabled;
+
+    /// <summary>
+    ///     Locale to recognize in. Null follows the app's active language, which is what a field
+    ///     normally wants; set it when the spoken language differs from the UI language (an
+    ///     English-only crop database inside a Persian app).
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVoiceCultureChanged))] private CultureInfo? _voiceCulture;
+
+    /// <summary>
+    ///     Stable, lazily-built microphone icon reused across every
+    ///     <see cref="ResolveTrailingIcon" /> call. Building a fresh <see cref="G9IconView" /> each
+    ///     time costs the platform a frame to load the glyph from the embedded font, which the user
+    ///     sees as a tofu-rectangle flash on tap. One instance, mutated in place — the same trick
+    ///     <c>G9ChipGroup</c> and <c>G9TabView</c> use (<c>G9Controls.md</c> principle 12).
+    /// </summary>
+    private G9IconView? _voiceIcon;
+
+    private G9VoiceDictation? _voice;
+
     public G9TextEntry()
     {
         _entry = new Entry
@@ -94,6 +127,63 @@ public partial class G9TextEntry : G9OutlinedFieldBase
 
     public Entry InnerEntry => _entry;
 
+    /// <summary>
+    ///     The dictation session this field drives, created on first use so a field that never
+    ///     shows a microphone allocates nothing.
+    /// </summary>
+    private G9VoiceDictation Voice
+    {
+        get
+        {
+            if (_voice is not null)
+            {
+                return _voice;
+            }
+
+            _voice = new G9VoiceDictation(
+                () => Text,
+                value => Text = value,
+                RequestVisualUpdate)
+            {
+                Culture = VoiceCulture
+            };
+
+            _voice.ListeningStarted += (_, _) => VoiceListeningStarted?.Invoke(this, EventArgs.Empty);
+            _voice.ListeningEnded += (_, _) => VoiceListeningEnded?.Invoke(this, EventArgs.Empty);
+            _voice.Failed += (_, message) => VoiceFailed?.Invoke(this, message);
+
+            return _voice;
+        }
+    }
+
+    /// <summary>Raised when a dictation session starts — hosts can show a "listening…" hint.</summary>
+    public event EventHandler? VoiceListeningStarted;
+
+    /// <summary>Raised when a dictation session ends (result, cancellation, or error).</summary>
+    public event EventHandler? VoiceListeningEnded;
+
+    /// <summary>
+    ///     Raised when dictation could not run or did not finish (no recognizer, refused
+    ///     permission, no acoustic model for the locale). Carries a localized message; the host
+    ///     decides where to show it — a toast, usually.
+    /// </summary>
+    public event EventHandler<string>? VoiceFailed;
+
+    /// <summary>True while this field is dictating.</summary>
+    public bool IsListening => _voice?.IsListening == true;
+
+    /// <summary>
+    ///     Starts dictation, or stops the running session. The trailing microphone calls this;
+    ///     exposed publicly so a hardware key or an external button can drive it too.
+    /// </summary>
+    public Task ToggleVoiceAsync() => Voice.ToggleAsync();
+
+    /// <summary>Begins a dictation session. Appends to whatever the field already holds.</summary>
+    public Task StartVoiceAsync() => Voice.StartAsync();
+
+    /// <summary>Stops an in-flight dictation session. Safe to call when none is running.</summary>
+    public Task StopVoiceAsync() => Voice.StopAsync();
+
     protected override View BuildInnerContent() => _entry;
 
     /// <summary>The platform-focusable inner element for the wrapper-level tap-to-focus.</summary>
@@ -112,8 +202,34 @@ public partial class G9TextEntry : G9OutlinedFieldBase
     ///         visual noise on the very first screen of the app.
     ///     </para>
     /// </summary>
-    protected override bool HasExtraTrailingAffordance() => (PasswordToggle || ClearButton) && HasContentValue;
+    protected override bool HasExtraTrailingAffordance()
+        => ((PasswordToggle || ClearButton) && HasContentValue) || ShouldShowVoiceMic();
+
     protected override int GetTextLength() => Text?.Length ?? 0;
+
+    /// <summary>
+    ///     Whether the trailing slot should currently show the microphone.
+    ///     <para>
+    ///         <b>The empty-field rule, plus one exception that matters.</b> The clear button owns
+    ///         the slot as soon as there is a value — "if I see ×, I can clear; if I see a mic, I
+    ///         can dictate" — so the microphone is an empty-field affordance. The exception is
+    ///         <see cref="IsListening" />: a live session writes its transcript into the field,
+    ///         which would make the microphone vanish under the user's finger the moment the first
+    ///         word landed, leaving nothing to stop it with. So while listening the microphone
+    ///         stays, and it is what the user taps to stop.
+    ///     </para>
+    ///     <para>
+    ///         A password field with a value keeps its eye — revealing a password is the more
+    ///         urgent affordance, and dictating one is not a thing.
+    ///     </para>
+    /// </summary>
+    protected virtual bool ShouldShowVoiceMic()
+    {
+        return VoiceEnabled
+               && G9VoiceDictation.IsAvailable
+               && !(PasswordToggle && HasContentValue)
+               && (IsListening || !HasContentValue);
+    }
 
     protected override void OnVisibilityLost()
     {
@@ -139,6 +255,16 @@ public partial class G9TextEntry : G9OutlinedFieldBase
             return;
         }
 
+        // Focus is handed to the inner Entry on a mic tap so the user can simply keep typing if
+        // they change their mind — no second tap on the field. Mirrors the system search bars,
+        // where one gesture both activates the field and starts listening.
+        if (ShouldShowVoiceMic())
+        {
+            try { _entry.Focus(); } catch { /* ignore */ }
+            _ = ToggleVoiceAsync();
+            return;
+        }
+
         if (ClearButton && !string.IsNullOrEmpty(Text))
         {
             Text = string.Empty;
@@ -159,6 +285,23 @@ public partial class G9TextEntry : G9OutlinedFieldBase
                 stateColor, G9Metrics.InputIconSize);
         }
 
+        if (ShouldShowVoiceMic())
+        {
+            // Built once, then recycled across every signature-driven rebuild so the platform
+            // handler stays attached. Listening-state visuals are mutated in OnRefresh, not here —
+            // see ResolveTrailingIconSignature.
+            _voiceIcon ??= new G9IconView
+            {
+                Icon = IsListening ? G9Glyphs.MicOff : G9Glyphs.Mic,
+                Color = IsListening ? G9Palette.Current.Error : G9Palette.Current.Primary,
+                Size = G9Metrics.InputIconSize,
+                HorizontalOptions = LayoutOptions.Center,
+                VerticalOptions = LayoutOptions.Center
+            };
+
+            return _voiceIcon;
+        }
+
         if (ClearButton && !string.IsNullOrEmpty(Text))
         {
             return G9IconFactory.Create(null, G9Glyphs.Clear, null, null, stateColor, G9Metrics.InputIconSize);
@@ -172,6 +315,15 @@ public partial class G9TextEntry : G9OutlinedFieldBase
         if (PasswordToggle && HasContentValue)
         {
             return $"pwd|{_passwordVisible}";
+        }
+
+        // CONSTANT across Mic ↔ MicOff on purpose. A changed signature makes the base detach the
+        // previous view and attach the freshly resolved one, and the Android handler then has to
+        // ship the new glyph through the typeface mapper before the next frame paints — the tofu
+        // rectangle the user sees on tap. The listening visual is mutated in place in OnRefresh.
+        if (ShouldShowVoiceMic())
+        {
+            return "voice";
         }
 
         if (ClearButton && !string.IsNullOrEmpty(Text))
@@ -311,6 +463,16 @@ public partial class G9TextEntry : G9OutlinedFieldBase
     }
     private void OnIsPasswordChanged() { ApplyEntryProperties(); RequestVisualUpdate(); }
     private void OnClearButtonChanged() => RequestVisualUpdate();
+    private void OnVoiceEnabledChanged() => RequestVisualUpdate();
+
+    private void OnVoiceCultureChanged()
+    {
+        // Only touch the session if one was ever created — reading the property would build it.
+        if (_voice is not null)
+        {
+            _voice.Culture = VoiceCulture;
+        }
+    }
     private void OnKeyboardTypeChanged() => ApplyEntryProperties();
     private void OnInputDirectionChanged() => ApplyEntryProperties();
     private void OnFontChanged() => ApplyEntryProperties();
@@ -395,6 +557,8 @@ public partial class G9TextEntry : G9OutlinedFieldBase
 
     protected override void OnRefresh()
     {
+        RefreshVoiceIcon();
+
         if (_entry is null) return;
 
         if (!_syncingText)
@@ -420,6 +584,29 @@ public partial class G9TextEntry : G9OutlinedFieldBase
         }
 
         ApplyEntryProperties();
+    }
+
+    /// <summary>
+    ///     Runs AFTER the base has refreshed the trailing icon colour, because
+    ///     <c>UpdateIconColor</c> writes the field's per-state colour over the microphone whenever
+    ///     the signature is unchanged — which, by design, it always is across a listen toggle. So
+    ///     the brand accent is re-asserted here (Primary idle, Error while listening) and the glyph
+    ///     is swapped in place, keeping the platform handler attached.
+    /// </summary>
+    private void RefreshVoiceIcon()
+    {
+        if (_voiceIcon is null || !ShouldShowVoiceMic())
+        {
+            return;
+        }
+
+        var palette = G9Palette.Current;
+        var listening = IsListening;
+        var targetIcon = listening ? G9Glyphs.MicOff : G9Glyphs.Mic;
+        var targetColor = listening ? palette.Error : palette.Primary;
+
+        if (!Equals(_voiceIcon.Icon, targetIcon)) _voiceIcon.Icon = targetIcon;
+        if (_voiceIcon.Color != targetColor) _voiceIcon.Color = targetColor;
     }
 
     private FlowDirection ResolveInputFlowDirection()

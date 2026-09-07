@@ -611,3 +611,56 @@ derive paths from ids must adopt the differently-cased directory on upgrade; the
 implementation is AgriPad's `UserDataPartitionService.TryAdoptDifferentlyCasedDirectory`, which
 RENAMES (atomic, no free space needed) rather than copying — the databases are routinely hundreds of
 MB, so a copy fails exactly on the devices holding the most data.
+
+---
+
+## ADR-0020 — A capability two controls need, and no shared base can hold, becomes a CLASS
+
+**Status:** accepted (2026-09-07, 1.0.10)
+
+### Context
+
+Voice dictation was implemented inside `G9SearchEntry` — roughly 180 lines of session state
+(permission re-check, cancellation token, partial-result append, the listening visual and its
+signature-stable icon). A consumer then needed the same microphone on a plain title field and on a
+multi-line description.
+
+The obvious move is to push it down into a base class. There is no base class that can hold it.
+`G9SearchEntry : G9TextEntry`, so a title field is reachable — but `G9Editor` is a SIBLING under
+`G9OutlinedFieldBase`, and that class's job is the outline, the notch, the floating label and the two
+icon slots. Speech recognition is not a property of a rectangle with a notch in it. Putting it there
+would have meant every future outlined control — a picker, a date field, a PIN entry — inheriting a
+microphone it can never use, plus the `G9Speech` dependency in the geometry layer.
+
+### Decision
+
+The SESSION becomes a class: `G9VoiceDictation`, in `Localization/` beside `G9Speech` and
+`IG9SpeechToText`. It is control-agnostic — it is constructed with three delegates (read the text,
+write the text, tell me to re-render) and owns everything else. Each control keeps only its own
+microphone *affordance*: when it is shown, where it sits, and what its glyph does.
+
+`G9TextEntry` declares the public members (`VoiceEnabled`, `VoiceCulture`, `IsListening`,
+`Start`/`Stop`/`ToggleVoiceAsync`, and the three events). `G9SearchEntry` inherits them and sets one
+default. `G9Editor` declares the same surface and drives the same engine.
+
+### Consequences
+
+- No consumer break: every member `G9SearchEntry` used to declare is still resolvable on it.
+- The permission re-check, the cancellation contract and the append-not-replace semantics have ONE
+  definition. Copying them a second and a third time is how they drift; the copy is the defect, not
+  the duplication of lines.
+- A control that should not dictate simply never sets `VoiceEnabled` — and, unlike a base-class
+  mixin, never carries the members at all.
+- The two behaviour fixes this refactor surfaced (the microphone vanishing mid-session, and the
+  missing provider check) were each present once, not three times, which is the argument in
+  miniature.
+
+### Rejected
+
+- **Voice on `G9OutlinedFieldBase`.** Above.
+- **An `IG9VoiceField` interface with default implementations.** Default interface methods cannot hold
+  the per-instance state (the token source, the base text), so each control would still carry the
+  fields — the duplication that mattered — with the ceremony added on top.
+- **Leave it in `G9SearchEntry` and let the app host a `G9SearchEntry` as a title field.** It is a
+  search box: it defaults to a search glyph, a debounce timer and a `SearchCommand`. Dressing one up
+  as a title field is how a design system stops meaning anything.
