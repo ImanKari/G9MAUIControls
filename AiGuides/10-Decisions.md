@@ -664,3 +664,56 @@ default. `G9Editor` declares the same surface and drives the same engine.
 - **Leave it in `G9SearchEntry` and let the app host a `G9SearchEntry` as a title field.** It is a
   search box: it defaults to a search glyph, a debounce timer and a `SearchCommand`. Dressing one up
   as a title field is how a design system stops meaning anything.
+
+---
+
+## ADR-0021 — A control reads its `G9Glyphs` slot for EVERY icon it draws, including the ones its own XAML declares
+
+**Status:** accepted (1.0.13, 2026-09-08)
+
+### Context
+
+`G9Glyphs` is the suite's icon indirection: about thirty settable `G9IconSource` slots
+(`G9Glyphs.Refresh`, `G9Glyphs.Close`, …) that default to the built-in vector `G9Glyph` set, so a
+consumer can re-point the whole suite at its own icon font with a handful of assignments at startup.
+
+`Icon="Refresh"` written inside a library view's XAML does **not** go through that indirection.
+`G9IconSourceTypeConverter` resolves the literal name against the built-in glyphs (and the registered
+default font) and produces a `G9IconSource` directly. That is correct for the converter — it is a
+value converter, not a theme lookup — but it means a control can end up drawing icons from two
+different sources at once: whatever its code passes through the slot, and whatever its markup names.
+
+That is not hypothetical. `G9ProgressOverlayView` set the failure banner's leading icon from
+`G9Glyphs.Refresh` (correct) while its retry button declared `Icon="Refresh"` in XAML. A consumer that
+had mapped `G9Glyphs.Refresh` onto its own font got its icon on one side of the banner and the
+library's built-in drawing on the other — two refresh marks, different weights, turning opposite ways,
+on one 48 dp strip. Reported as the refresh icon being drawn backwards, which is what it looked like.
+
+### Decision
+
+**If a control exposes an icon through a `G9Glyphs` slot anywhere, every icon of that kind it draws
+comes from that slot.** A literal `Icon="…"` in a library view's XAML is reserved for marks that
+deliberately have no slot.
+
+Slot-backed icons are assigned in **code**, not markup, because the slots are configured during
+consumer startup — after `InitializeComponent` has already run for any view constructed earlier, and
+the assignment has to happen at a point that observes the final value.
+
+### Consequences
+
+- A consumer's override applies completely or not at all. "Applies to some of this control's icons" is
+  no longer a reachable state, and it was the failure mode that is hardest to attribute: the consumer's
+  configuration is correct and the control still looks wrong.
+- Slot-backed icons cost a line of code per view rather than an attribute in markup. That is the price
+  of the indirection being real.
+- Where no slot exists, the literal stays. `G9Glyphs` has no `Close` slot — the nearest is `Clear`,
+  which means "empty this field" — so the overlay's ✕ keeps the built-in vector deliberately rather
+  than being routed through a slot whose meaning is different.
+
+### Rejected
+
+- **Make the type converter consult `G9Glyphs` by name.** It would fix this case and break the ability
+  to name a specific built-in glyph on purpose, silently, everywhere in the suite — and a converter
+  whose output depends on host startup state is not a converter.
+- **Leave it and document the mixing.** The defect is invisible until a consumer overrides a slot AND a
+  control happens to draw the same icon both ways. Nothing about the code shows it; only the screen does.

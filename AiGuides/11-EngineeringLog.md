@@ -1609,3 +1609,45 @@ label, both promise the microphone is hidden unless a provider is registered. No
 documented behaviour with no code behind it survives review indefinitely, because the reviewer reads
 the paragraph and believes it; it is now `G9VoiceDictation.IsAvailable`, checked at the one place the
 affordance is resolved.
+
+---
+
+## LES-0045 — The icon indirection was bypassed by the library's own markup, and only a screenshot showed it
+
+**Symptom.** A tester photographed the sync-failure banner with an arrow drawn at its retry button and
+the note «آیکون رفرش … برعکس شده» — the refresh icon is reversed. The banner carried **two** refresh
+icons: a solid, filled mark on the leading side and a thin, malformed open one on the button beside it,
+turning the other way.
+
+**First wrong theory: RTL mirroring.** A circular arrow is a directional glyph, the app runs
+right-to-left, and MAUI does mirror some drawables — so "the icon got flipped by the flow direction"
+fits the photograph perfectly. It is wrong, and the tell is in the same photograph: the two icons are
+not mirror images of each other, they are different *drawings*. A mirroring bug would have flipped both.
+
+**What it actually was.** `G9Glyphs.Refresh` is a settable slot, and the consumer had re-pointed it at
+its own icon font. `G9ProgressOverlayView` sets the banner's leading icon from that slot — so that one
+became the host's font. Its retry button declared `Icon="Refresh"` in the view's XAML, which
+`G9IconSourceTypeConverter` resolves straight to the built-in vector `G9Glyph.Refresh`, never touching
+the slot. Two sources, one control. See ADR-0021.
+
+**The technique that settled it.** Re-drawing the glyph's geometry offline from the source — the
+`DrawArc(3.6, 3.6, 16.8, 16.8, 55, -230, clockwise)` plus its two head lines, rasterised at 18 and 24 dp
+in a throwaway script — and putting it beside the crop from the tester's photo. The rendering matched
+the *broken* icon exactly and matched the other one not at all, which is what proved there were two
+sources rather than one bug. Reasoning about the coordinates on paper had suggested the head was
+"roughly right"; it was not, and a picture said so in seconds.
+
+**The second defect the picture exposed.** With the head drawn, the geometry was plainly wrong on its
+own terms: the apex sat 3.3 units clear of the arc's start and the legs opened away from the direction
+of travel, so it read as a flag pinned next to the ring, not an arrow on it. The head belongs at the
+END of the sweep, pointing along the tangent there.
+
+**Carry forward.**
+
+- **Two icons that disagree are two SOURCES, not one transform.** Mirroring, rotation and tinting are
+  all uniform — they cannot make two instances of "the same" icon differ in weight and shape.
+- **Rasterise the geometry when you suspect a drawn glyph.** A `DrawArc` plus two `DrawLine` calls is a
+  few minutes to reproduce in any 2D library, and it turns "does this look right?" into an image you can
+  put side by side with the report.
+- **A settable slot that some code paths bypass is worse than no slot**, because the consumer's
+  configuration is correct and the result is still wrong — so the investigation starts in the wrong repo.

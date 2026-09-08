@@ -168,9 +168,21 @@ public sealed class G9GlyphDrawable : IDrawable
             case G9Glyph.Refresh:
                 // An OPEN arc plus an arrow head. A closed circle would read as a "record" dot, and
                 // the gap is what makes the glyph legible as "go round again" at 16 dp.
+                //
+                // ⛔ The head must sit at the END of the sweep and point ALONG the tangent there.
+                // The first version hung a wide-open V off the arc's START instead — the apex was
+                // 3.3 units clear of the stroke, the two legs opened away from the direction of
+                // travel, and at 18 dp with a round-capped stroke it rendered as a broken flag beside
+                // the ring rather than an arrow on it. It was reported, correctly, as the refresh
+                // icon being drawn backwards.
+                //
+                // The arc runs CLOCKWISE from 55° to -230°, so travel ENDS at 130° (the left side of
+                // the top gap) heading up-and-right — tangent (sin θ, cos θ). The chevron below is
+                // that point pushed 2.2 along the tangent for the tip, with barbs at ±32°, so the
+                // arrow continues the stroke instead of sitting next to it.
                 canvas.DrawArc(3.6f, 3.6f, 16.8f, 16.8f, 55f, -230f, clockwise: true, closed: false);
-                canvas.DrawLine(16.6f, 3.2f, 17.6f, 8.4f);
-                canvas.DrawLine(17.6f, 8.4f, 12.4f, 7.6f);
+                canvas.DrawLine(3.7f, 4.8f, 8.3f, 4.2f);
+                canvas.DrawLine(8.3f, 4.2f, 6.9f, 8.5f);
                 break;
 
             case G9Glyph.Delete:

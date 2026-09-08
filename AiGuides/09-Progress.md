@@ -11,7 +11,34 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-09-01**
+Last updated: **2026-09-08**
+
+> **This list is not complete.** It jumps 1.0.3 → 1.0.13; 1.0.4 through 1.0.12 shipped without an entry
+> here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
+> drifted — read it, not this heading list, when you need to know what a version contained.
+
+## 1.0.13 — a G9Glyphs slot is honoured in the library's OWN XAML too, and `Refresh` is drawn right (2026-09-08)
+
+Two fixes, one report: a consumer's icon override reached some of a control's icons and not others.
+
+**The slot was bypassed by the library's own markup.** `G9Glyphs.X` exists so a consumer can point the
+suite at its own icon font, and `G9ProgressOverlayView` set the failure banner's LEADING icon from
+`G9Glyphs.Refresh` correctly. But the retry button beside it carried `Icon="Refresh"` written in the
+view's XAML, and `G9IconSourceTypeConverter` resolves that to the built-in vector `G9Glyph.Refresh`
+without ever consulting the slot. The banner therefore showed two refresh icons — the host's font on
+one side, the library's drawing on the other, in different styles and turning opposite ways.
+`ShowTerminalAsync` now assigns `TerminalRetryIcon.Icon = G9Glyphs.Refresh` in code. **It has to be
+code:** the slots are configured during consumer startup, which is after `InitializeComponent`.
+
+**And the built-in drawing was wrong anyway.** `G9Glyph.Refresh` hung its arrow head off the START of
+the arc — apex 3.3 units clear of the stroke, legs opening away from the direction of travel — so at
+18 dp with a round-capped stroke it rendered as a broken flag beside the ring rather than an arrow on
+it. The head is now a tangent-aligned chevron at the END of the sweep (130°).
+
+**Consumer-visible:** a control that offers a `G9Glyphs` slot now uses it for every icon it draws, so
+an override that used to apply patchily applies completely. A consumer that had NOT overridden
+`G9Glyphs.Refresh` gets the corrected glyph instead of the broken one. Nothing renamed, no API change.
+ADR-0021, LES-0045.
 
 ## 1.0.3 — G9TabView: fix a NullReferenceException when the tab bar rebuilds off the UI thread (2026-08-18)
 

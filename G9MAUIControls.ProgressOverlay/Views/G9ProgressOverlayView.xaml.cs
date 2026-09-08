@@ -644,6 +644,23 @@ public partial class G9ProgressOverlayView : ContentView
             var showClose = closeAction is not null;
             TerminalRetryButton.IsVisible = showRetry;
             TerminalCloseButton.IsVisible = showClose;
+
+            // ⛔ Resolve these through the G9Glyphs SLOTS, not from the XAML's literal
+            // Icon="Refresh"/Icon="Close". The literal form is converted to the built-in vector
+            // G9Glyph and therefore IGNORES a consumer's slot override — while the LEADING icon a few
+            // lines above takes whatever the caller passed, which for a failure terminal is
+            // G9Glyphs.Refresh. The two then disagree: an app that maps G9Glyphs.Refresh onto its own
+            // icon font got that icon on the left of the banner and the library's built-in vector on
+            // the retry button beside it, drawn in a different style AND spinning the opposite way.
+            // Reported as «آیکون رفرش … برعکس شده» — the refresh icon is reversed.
+            //
+            // Assigned here rather than in XAML because the slots are settable at runtime: a consumer
+            // configures them during startup, which is after this view's InitializeComponent.
+            //
+            // Only the REFRESH icon is re-slotted. The ✕ keeps the built-in vector deliberately:
+            // G9Glyphs has no Close slot (the nearest is Clear, which means "empty this field"), the
+            // built-in ✕ draws correctly, and nothing on the banner contradicts it.
+            TerminalRetryIcon.Icon = G9Glyphs.Refresh;
             TerminalRetryIcon.Color = foreground;
             TerminalCloseIcon.Color = foreground;
             TerminalRetryButton.BackgroundColor = foreground.WithAlpha(0.16f);

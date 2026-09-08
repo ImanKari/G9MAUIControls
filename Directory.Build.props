@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.12</G9FamilyVersion>
+    <G9FamilyVersion>1.0.13</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,27 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+
+        1.0.13
+        - A control that offers a G9Glyphs slot now reads that slot EVERYWHERE, including its own XAML.
+
+        G9Glyphs.X is a settable slot so a consumer can point the suite at its own icon font. But
+        Icon="Refresh" written in a library's own XAML is resolved by G9IconSourceTypeConverter to the
+        built-in vector G9Glyph and never consults the slot — so a consumer's override reached some of a
+        control's icons and not others. On the progress overlay's failure banner that was visible: the
+        leading icon came from G9Glyphs.Refresh (the host's own font) while the retry button beside it
+        carried the library's built-in drawing, in a different style and turning the opposite way. One
+        banner, two refresh icons, disagreeing. G9ProgressOverlayView now assigns
+        TerminalRetryIcon.Icon = G9Glyphs.Refresh in code — it has to be code rather than XAML, because
+        the slots are configured during consumer startup, after InitializeComponent has run.
+
+        - G9Glyph.Refresh is drawn correctly.
+
+        Its arrow head hung off the START of the arc: the apex sat 3.3 units clear of the stroke and the
+        two legs opened AWAY from the direction of travel, so at 18 dp with a round-capped stroke it
+        rendered as a broken flag beside the ring rather than an arrow on it. The head is now a chevron
+        at the END of the sweep, tangent-aligned, so the arrow continues the stroke. Only the glyph's
+        geometry changed; its size, weight and colour behaviour are untouched.
 
         1.0.12
         - Cleaning up the codebase, removing unused files and improving maintainability.
