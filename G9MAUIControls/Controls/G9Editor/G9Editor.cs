@@ -97,6 +97,32 @@ public partial class G9Editor : G9OutlinedFieldBase
     /// </summary>
     [AutoBindable(OnChanged = nameof(OnVoiceCultureChanged))] private CultureInfo? _voiceCulture;
 
+    /// <summary>
+    ///     Ceiling for the auto-growing editor, in device-independent units. <c>0</c> (the default)
+    ///     means no ceiling — the historical behaviour.
+    ///     <para>
+    ///         <b>What it is for.</b> <see cref="AutoSize" /> = <see cref="EditorAutoSizeOption.TextChanges" />
+    ///         grows the box with the text and never stops, which is right in a scrolling page and
+    ///         wrong in a form with anything BELOW the field: a long value pushes the footer buttons
+    ///         off the bottom of a bottom sheet, and the user is left typing into a control whose
+    ///         Save button they can no longer reach. Setting this keeps the "grows as you type"
+    ///         behaviour up to the ceiling, and then the field simply scrolls its own content — the
+    ///         platform text view does that natively once its height is constrained, so nothing here
+    ///         adds a <c>ScrollView</c>.
+    ///     </para>
+    ///     <para>
+    ///         Both the inner editor and the outlined <c>Box</c> are capped, the box by this value
+    ///         plus <see cref="InnerContentPadding" />, or the box would keep growing around a
+    ///         field that had already stopped.
+    ///     </para>
+    ///     <para>
+    ///         Ignored when <see cref="AutoSize" /> is <see cref="EditorAutoSizeOption.Disabled" />:
+    ///         that already pins the height to <see cref="MinimumEditorHeight" />, and a second
+    ///         ceiling below a fixed height would only fight it.
+    ///     </para>
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnEditorPropertyChanged))] private double _maxEditorHeight;
+
     public G9Editor()
     {
         _editor = new Editor
@@ -411,6 +437,17 @@ public partial class G9Editor : G9OutlinedFieldBase
             _editor.HeightRequest = targetEditorHeight;
         }
 
+        // The auto-grow ceiling. Constraining the MEASURE is what makes the platform text view
+        // scroll its own content instead of growing — it is already scrollable, it simply never had
+        // a reason to be. Only meaningful while the editor is auto-sizing; a Disabled AutoSize has
+        // already pinned the height above.
+        var capped = MaxEditorHeight > 0 && AutoSize != EditorAutoSizeOption.Disabled;
+        var targetEditorMax = capped ? MaxEditorHeight : double.PositiveInfinity;
+        if (!NearlyEqual(_editor.MaximumHeightRequest, targetEditorMax))
+        {
+            _editor.MaximumHeightRequest = targetEditorMax;
+        }
+
         if (_editor.IsSpellCheckEnabled != IsSpellCheckEnabled) _editor.IsSpellCheckEnabled = IsSpellCheckEnabled;
         if (_editor.IsTextPredictionEnabled != IsTextPredictionEnabled) _editor.IsTextPredictionEnabled = IsTextPredictionEnabled;
 
@@ -442,6 +479,33 @@ public partial class G9Editor : G9OutlinedFieldBase
         {
             Box.MinimumHeightRequest = MinimumEditorHeight;
         }
+
+        // The box has to be capped too, by the ceiling PLUS the inner padding it adds around the
+        // editor. Capping only the editor leaves the outline growing around a field that has
+        // already stopped, which reads as a stuck control with empty space under the last line.
+        var padding = InnerContentPadding;
+        var targetBoxMax = capped
+            ? MaxEditorHeight + padding.Top + padding.Bottom
+            : double.PositiveInfinity;
+        if (!NearlyEqual(Box.MaximumHeightRequest, targetBoxMax))
+        {
+            Box.MaximumHeightRequest = targetBoxMax;
+        }
+    }
+
+    /// <summary>
+    ///     Height comparison that treats two infinities as equal. <c>Math.Abs(inf - inf)</c> is
+    ///     <c>NaN</c>, and every comparison against <c>NaN</c> is false — so the plain form used for
+    ///     the finite heights above would rewrite the uncapped value on every single pass.
+    /// </summary>
+    private static bool NearlyEqual(double a, double b)
+    {
+        if (double.IsPositiveInfinity(a) && double.IsPositiveInfinity(b))
+        {
+            return true;
+        }
+
+        return Math.Abs(a - b) <= 0.5;
     }
 
     protected override void OnRefresh()

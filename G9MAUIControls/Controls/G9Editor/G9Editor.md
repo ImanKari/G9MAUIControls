@@ -25,6 +25,7 @@ CommandParameter.
 |---|---|---|---|
 | `Text` | `string?` | `""` | Two-way bindable. The current value. |
 | `MinimumEditorHeight` | `double` | `96` | Minimum height of the inner `Editor`. The outlined box grows together with the editor. |
+| `MaxEditorHeight` | `double` | `0` | Ceiling for the auto-growing editor; `0` means none. Past it the field scrolls its own content instead of growing. See below. |
 | `AutoSize` | `EditorAutoSizeOption` | `TextChanges` | Whether the editor auto-grows with content. |
 | `IsSpellCheckEnabled` | `bool` | `true` | Enables platform spell check. |
 | `IsTextPredictionEnabled` | `bool` | `true` | Enables platform text prediction. |
@@ -33,6 +34,39 @@ CommandParameter.
 | `CustomFont` | `string?` | `null` | Override `FontFamily` on the inner `Editor`. When unset, the inner Editor resolves its font from `G9Visuals.ResolveCulturalFont()` — Persian face for Fa, Latin face for En. |
 | `VoiceEnabled` | `bool` | `false` | Shows a dictation microphone in the trailing slot. See below. |
 | `VoiceCulture` | `CultureInfo?` | `null` | Locale to recognize in. Null follows the app's active language. |
+
+
+
+## Growing to a limit, then scrolling
+
+`AutoSize="TextChanges"` (the default) grows the box with the text and never stops. That is right in
+a scrolling page and **wrong in a form with anything below the field** — a long value pushes the
+footer buttons off the bottom, and the user ends up typing into a control whose Save button they can
+no longer reach.
+
+`MaxEditorHeight` is the ceiling. Up to it the field grows as you type; past it, it scrolls its own
+content:
+
+```xml
+<newControls:G9Editor
+    Label="Description"
+    MinimumEditorHeight="120"
+    MaxEditorHeight="220"
+    MaxLength="4000" />
+```
+
+**No `ScrollView` is involved, and you must not add one.** The property constrains the field's
+MEASURE, and a platform text view is already scrollable — it simply had no reason to be while
+nothing bounded it. Wrapping the editor in a `ScrollView` instead gives you two scrollers fighting
+for the same drag, which on Android means the outer one usually wins and the caret walks off screen.
+
+Notes:
+
+- The outlined box is capped along with the editor (ceiling + `InnerContentPadding`). Capping only
+  the inner control would leave the outline growing around a field that had already stopped.
+- Ignored when `AutoSize="Disabled"` — that already pins the height to `MinimumEditorHeight`.
+- Set `MinimumEditorHeight` below `MaxEditorHeight`, or the field opens at its ceiling and the
+  growth is invisible.
 
 
 ## Voice dictation

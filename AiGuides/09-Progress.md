@@ -474,6 +474,33 @@ but the three handler edits are per-platform and unrendered. See ADR-0019, LES-0
 
 ---
 
+# 1.0.11 — a text area that knows when to stop growing (2026-09-07)
+
+`G9Editor.MaxEditorHeight`. `AutoSize=TextChanges` grows the box with the text and never stops, which
+is correct in a scrolling page and wrong in a form with anything BELOW the field. The report form
+that shipped with 1.0.10 is the case: type a long description into a fit-to-content bottom sheet and
+the Cancel/Save row is pushed off the bottom of the screen — the user is left typing into a control
+whose Save button they can no longer reach, with no way back except deleting text.
+
+The fix is to constrain the MEASURE rather than to add a scroller. A platform text view is already
+scrollable; it simply never had a reason to be, because nothing was bounding it. `MaximumHeightRequest`
+on the inner editor gives it that reason, and the growth-then-scroll behaviour falls out.
+
+Two details worth keeping:
+
+- **The outlined box is capped too**, at the ceiling plus `InnerContentPadding`. Capping only the
+  editor leaves the outline growing around a field that has already stopped — empty space under the
+  last line, which reads as a stuck control.
+- **`Math.Abs(inf - inf)` is `NaN`**, and every comparison against `NaN` is false. The defensive
+  "has this actually changed?" guard that every other height write in `ApplyEditorProperties` uses
+  would therefore have rewritten the UNCAPPED value on every pass, so the uncapped case gets its own
+  equality helper.
+
+Default `0` = no ceiling, so every existing editor is untouched, and the property is ignored under
+`AutoSize=Disabled`, which already pins the height.
+
+---
+
 # 1.0.10 — dictation is a SUITE capability, not a search-box feature (2026-09-07)
 
 A consumer needed a microphone on a title field and on a description text area. The suite had exactly

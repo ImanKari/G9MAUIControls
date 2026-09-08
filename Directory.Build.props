@@ -66,7 +66,7 @@
   -->
   <PropertyGroup>
     <Authors>Iman Kari</Authors>
-    <Company>ByteOrbit</Company>
+    <Company>G9TM</Company>
     <Copyright>Copyright (c) Iman Kari 2026</Copyright>
     <NeutralLanguage>en</NeutralLanguage>
 
@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.10</G9FamilyVersion>
+    <G9FamilyVersion>1.0.12</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,238 +101,258 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
-      1.0.10
-      - Voice dictation is now a suite capability, not a search-box feature.
 
-      The session engine moved out of G9SearchEntry into G9VoiceDictation (Localization/), a small
-      control-agnostic class driven through three delegates. G9TextEntry declares the public surface —
-      VoiceEnabled, VoiceCulture, IsListening, Start/Stop/ToggleVoiceAsync and the three voice events —
-      and G9Editor gained the same. G9SearchEntry keeps only its default (VoiceEnabled = true) and
-      inherits the rest, so nothing a consumer wrote against it changes. Why a class and not a shared
-      base: G9Editor is a SIBLING of G9TextEntry under G9OutlinedFieldBase, whose job is outline and
-      notch geometry — see ADR-0020.
+        1.0.12
+        - Cleaning up the codebase, removing unused files and improving maintainability.
 
-      Two fixes came with it. The microphone no longer disappears mid-session: its visibility was
-      keyed on the field being EMPTY, and a live transcript writes into Text, so the first
-      recognized word removed the only control that could stop the session (LES-0044). And a missing
-      G9Speech.Provider now really does hide the affordance, which the interface documentation had
-      promised since it was written and no code checked.
+        1.0.11
+        - G9Editor.MaxEditorHeight: a text area that grows as you type, up to a ceiling, and then
+        scrolls its own content.
 
-      On G9Editor the microphone is deliberately NOT value-gated (no clear button competes for the slot,
-      and a long description is what people dictate) and it is pinned to the bottom of the box rather
-      than centred.
+        AutoSize=TextChanges grows the box with the text and never stops, which is right in a scrolling
+        page and wrong in a form with anything BELOW the field: a long description pushed a bottom
+        sheet's footer buttons off the screen, leaving the user typing into a control whose Save button
+        they could no longer reach. Setting MaxEditorHeight constrains the MEASURE, which is what makes
+        the platform text view scroll - it is already scrollable, it simply never had a reason to be.
+        No ScrollView is added.
 
-      - G9PopupInputField.Text no longer forces LeftToRight.
+        Both the inner editor and the outlined box are capped, the box by the ceiling plus its inner
+        padding, or the outline keeps growing around a field that has already stopped. Default 0 means
+        no ceiling, so existing editors are unchanged. Ignored when AutoSize is Disabled, which already
+        pins the height.
 
-      It defaulted to LTR because its sibling factories do, where the pin is correct for a real reason:
-      a phone number, an email and a password are written left-to-right in every language. Prose is
-      not. In an RTL app the symptom was a "Title" box whose caret sat on the left and whose text ran
-      away from its own label. Phone / Email / Password keep the pin. Text and TextArea also gained an
-      `enableVoice:` parameter.
+        1.0.10
+        - Voice dictation is now a suite capability, not a search-box feature.
 
-      1.0.9
-      - G9Diagnostics gets its first call sites: three periods the suite already knew about, now
+        The session engine moved out of G9SearchEntry into G9VoiceDictation (Localization/), a small
+        control-agnostic class driven through three delegates. G9TextEntry declares the public surface —
+        VoiceEnabled, VoiceCulture, IsListening, Start/Stop/ToggleVoiceAsync and the three voice events —
+        and G9Editor gained the same. G9SearchEntry keeps only its default (VoiceEnabled = true) and
+        inherits the rest, so nothing a consumer wrote against it changes. Why a class and not a shared
+        base: G9Editor is a SIBLING of G9TextEntry under G9OutlinedFieldBase, whose job is outline and
+        notch geometry — see ADR-0020.
+
+        Two fixes came with it. The microphone no longer disappears mid-session: its visibility was
+        keyed on the field being EMPTY, and a live transcript writes into Text, so the first
+        recognized word removed the only control that could stop the session (LES-0044). And a missing
+        G9Speech.Provider now really does hide the affordance, which the interface documentation had
+        promised since it was written and no code checked.
+
+        On G9Editor the microphone is deliberately NOT value-gated (no clear button competes for the slot,
+        and a long description is what people dictate) and it is pinned to the bottom of the box rather
+        than centred.
+
+        - G9PopupInputField.Text no longer forces LeftToRight.
+
+        It defaulted to LTR because its sibling factories do, where the pin is correct for a real reason:
+        a phone number, an email and a password are written left-to-right in every language. Prose is
+        not. In an RTL app the symptom was a "Title" box whose caret sat on the left and whose text ran
+        away from its own label. Phone / Email / Password keep the pin. Text and TextArea also gained an
+        `enableVoice:` parameter.
+
+        1.0.9
+        - G9Diagnostics gets its first call sites: three periods the suite already knew about, now
         reported as busy activities.
 
-      1.0.8 added the seam and only G9SafeCommand raised it, so a host could see commands and nothing
-      else. Three `using` scopes now cover the windows where the UI looks ready and is not:
-      G9PageBase reports `page:` + the page type name for as long as the page-loading overlay is on screen,
-      DeferredContentView reports `deferred:` + the view name across build AND reveal, and
-      G9BottomSheetHelper.ShowFullScreenAsync reports `sheet:open` while the open animation runs and a
-      factory sheet builds its body.
+        1.0.8 added the seam and only G9SafeCommand raised it, so a host could see commands and nothing
+        else. Three `using` scopes now cover the windows where the UI looks ready and is not:
+        G9PageBase reports `page:` + the page type name for as long as the page-loading overlay is on screen,
+        DeferredContentView reports `deferred:` + the view name across build AND reveal, and
+        G9BottomSheetHelper.ShowFullScreenAsync reports `sheet:open` while the open animation runs and a
+        factory sheet builds its body.
 
-      Why the library and not the consumer: these three windows are the library's own — it owns the
-      overlay, the deferred build and the sheet animation, and it is the only code that knows when each
-      one ends. A host can observe that a command started; it cannot observe that a sheet has finished
-      opening without reaching into internals that are deliberately private.
+        Why the library and not the consumer: these three windows are the library's own — it owns the
+        overlay, the deferred build and the sheet animation, and it is the only code that knows when each
+        one ends. A host can observe that a command started; it cannot observe that a sheet has finished
+        opening without reaching into internals that are deliberately private.
 
-      Two details are load-bearing. The page token is released BEFORE the exit animation, not after:
-      the page is usable the moment dismissal begins, and holding it through a 200 ms fade would make
-      every page transition look like work still in flight. And the sheet scope is released in a
-      continuation rather than a `finally`, because the work it covers is asynchronous — a `using`
-      around the synchronous call would release before the sheet had opened, which is worse than not
-      reporting at all.
+        Two details are load-bearing. The page token is released BEFORE the exit animation, not after:
+        the page is usable the moment dismissal begins, and holding it through a 200 ms fade would make
+        every page transition look like work still in flight. And the sheet scope is released in a
+        continuation rather than a `finally`, because the work it covers is asynchronous — a `using`
+        around the synchronous call would release before the sheet had opened, which is worse than not
+        reporting at all.
 
-      Unchanged from 1.0.8 and still true: nothing subscribes by default, both hooks are null until a
-      host assigns them, every invocation is guarded, and the library still decides nothing about what
-      busy means. No API, signature or rendering changes.
+        Unchanged from 1.0.8 and still true: nothing subscribes by default, both hooks are null until a
+        host assigns them, every invocation is guarded, and the library still decides nothing about what
+        busy means. No API, signature or rendering changes.
 
-      1.0.8
-      - G9Diagnostics: one observation seam, so a host can tell when its app is busy.
+        1.0.8
+        - G9Diagnostics: one observation seam, so a host can tell when its app is busy.
 
-      New static hooks in Helpers/G9Diagnostics.cs — OperationStarted, OperationCompleted and
-      ActivityChanged, plus an Activity(name) scope helper. G9SafeCommand raises the first two from the
-      trace markers it already emitted.
+        New static hooks in Helpers/G9Diagnostics.cs — OperationStarted, OperationCompleted and
+        ActivityChanged, plus an Activity(name) scope helper. G9SafeCommand raises the first two from the
+        trace markers it already emitted.
 
-      Why it belongs here rather than in the consumer: a host that wants to wait for the app to settle
-      instead of sleeping, or to record what a user actually did as semantic actions rather than raw
-      touches, has to observe the choke points — and in an app built on this suite those choke points
-      are G9SafeCommand, G9TabBar, DeferredContentView and G9PageBase, which live in the library. The
-      first consumer has 462 G9SafeCommand call sites. Wrapping them host-side would be a week of work
-      that decays the moment somebody writes the 463rd; one hook where they already funnel covers every
-      existing site and every future one.
+        Why it belongs here rather than in the consumer: a host that wants to wait for the app to settle
+        instead of sleeping, or to record what a user actually did as semantic actions rather than raw
+        touches, has to observe the choke points — and in an app built on this suite those choke points
+        are G9SafeCommand, G9TabBar, DeferredContentView and G9PageBase, which live in the library. The
+        first consumer has 462 G9SafeCommand call sites. Wrapping them host-side would be a week of work
+        that decays the moment somebody writes the 463rd; one hook where they already funnel covers every
+        existing site and every future one.
 
-      This is NOT a testing feature and must not become one. The library raises two events and decides
-      nothing: it never references a test framework, never decides that a build is a test build, and
-      never collects anything on its own. What counts as busy, what is worth recording, and whether any
-      of it happens at all are the host's decisions, in the host's code and build configuration. The
-      moment this file grows a policy, every consumer inherits somebody else's opinions about testing.
+        This is NOT a testing feature and must not become one. The library raises two events and decides
+        nothing: it never references a test framework, never decides that a build is a test build, and
+        never collects anything on its own. What counts as busy, what is worth recording, and whether any
+        of it happens at all are the host's decisions, in the host's code and build configuration. The
+        moment this file grows a policy, every consumer inherits somebody else's opinions about testing.
 
-      Three details are load-bearing. Both hooks are plain static delegate fields that are null until
-      somebody assigns them, so a build that never subscribes pays one predictable branch per operation
-      — which is what makes it acceptable to ship in every configuration rather than behind a
-      conditional. Every invocation is guarded, because an observer that throws must not be able to
-      break the operation it was observing; a diagnostics hook taking down a user's save is the failure
-      that would end the feature. And OperationCompleted is raised from G9SafeCommand's finally, so a
-      host counting in-flight work can never leak a count when an operation throws and then wait
-      forever for an app that is already idle. Anything added to these hooks must preserve that pairing.
+        Three details are load-bearing. Both hooks are plain static delegate fields that are null until
+        somebody assigns them, so a build that never subscribes pays one predictable branch per operation
+        — which is what makes it acceptable to ship in every configuration rather than behind a
+        conditional. Every invocation is guarded, because an observer that throws must not be able to
+        break the operation it was observing; a diagnostics hook taking down a user's save is the failure
+        that would end the feature. And OperationCompleted is raised from G9SafeCommand's finally, so a
+        host counting in-flight work can never leak a count when an operation throws and then wait
+        forever for an app that is already idle. Anything added to these hooks must preserve that pairing.
 
-      No behaviour change for existing consumers: nothing subscribes by default, and no existing API,
-      signature or rendering is touched.
+        No behaviour change for existing consumers: nothing subscribes by default, and no existing API,
+        signature or rendering is touched.
 
-      1.0.7
-      - Selection lists and picker triggers: honour a per-item icon colour, and stop the value text
+        1.0.7
+        - Selection lists and picker triggers: honour a per-item icon colour, and stop the value text
         drifting away from its own icon.
 
-      G9SelectionItem.IconTintColor was ignored by the picker/combobox LIST. The trigger honoured it and
-      always had, so an item that carries its own colour — a soil type, a health state, an option a back
-      office coloured on purpose — rendered grey in the list and then snapped to its real colour the
-      moment it was chosen. The tint now wins in BOTH states, because an item that carries a colour
-      carries it as its MEANING, not as decoration.
+        G9SelectionItem.IconTintColor was ignored by the picker/combobox LIST. The trigger honoured it and
+        always had, so an item that carries its own colour — a soil type, a health state, an option a back
+        office coloured on purpose — rendered grey in the list and then snapped to its real colour the
+        moment it was chosen. The tint now wins in BOTH states, because an item that carries a colour
+        carries it as its MEANING, not as decoration.
 
-      ⛔ That took TWO edits, and the first one alone was invisible. Rows are BUILT by
-      G9SelectionSheet.CreateRow and then RE-STYLED in place by UpdateRowVisuals on every selection
-      change (which exists to avoid a rebuild blink), and the second carried its own copy of the rule —
-      writing `selected ? Primary : TextSecondary` straight over the colour the first had just set.
-      Both now call one ResolveRowIconColor. A rendered value with two writers has no owner; see
-      LES-0043 for the diagnostic lesson, which is the part worth reading.
+        ⛔ That took TWO edits, and the first one alone was invisible. Rows are BUILT by
+        G9SelectionSheet.CreateRow and then RE-STYLED in place by UpdateRowVisuals on every selection
+        change (which exists to avoid a rebuild blink), and the second carried its own copy of the rule —
+        writing `selected ? Primary : TextSecondary` straight over the colour the first had just set.
+        Both now call one ResolveRowIconColor. A rendered value with two writers has no owner; see
+        LES-0043 for the diagnostic lesson, which is the part worth reading.
 
-      G9ComboBox and G9Picker triggers: the value label no longer picks its alignment with a direction
-      ternary, and no longer stretches. It carried
-      `HorizontalTextAlignment = IsRtl ? End : Start` while ALSO being given the culture's
-      FlowDirection — so under RTL it asked for the physical LEFT edge of a box that had just been told
-      to read right-to-left. Combined with a Fill/Grow label claiming all the leftover width, the
-      selected value ended up on the opposite side of the field from its own leading icon. Alignment is
-      Start in both controls now (direction-relative, so the flow mirrors it), and the label is sized to
-      its text so the glyph and its label stay one block on the reading edge. Same defect class as the
-      G9CultureDateTimeLabel fix in 1.0.2; see LES-0042.
+        G9ComboBox and G9Picker triggers: the value label no longer picks its alignment with a direction
+        ternary, and no longer stretches. It carried
+        `HorizontalTextAlignment = IsRtl ? End : Start` while ALSO being given the culture's
+        FlowDirection — so under RTL it asked for the physical LEFT edge of a box that had just been told
+        to read right-to-left. Combined with a Fill/Grow label claiming all the leftover width, the
+        selected value ended up on the opposite side of the field from its own leading icon. Alignment is
+        Start in both controls now (direction-relative, so the flow mirrors it), and the label is sized to
+        its text so the glyph and its label stay one block on the reading edge. Same defect class as the
+        G9CultureDateTimeLabel fix in 1.0.2; see LES-0042.
 
-      No API change — all of it is rendering behaviour inside the shared selection row and the two
-      triggers. A consumer that had compensated for the old alignment with a PHYSICAL alignment should
-      re-check those call sites, exactly as in 1.0.2.
+        No API change — all of it is rendering behaviour inside the shared selection row and the two
+        triggers. A consumer that had compensated for the old alignment with a PHYSICAL alignment should
+        re-check those call sites, exactly as in 1.0.2.
 
-      1.0.6
-      - G9SheetView / G9BottomSheetHelper: a multi-detent sheet now behaves like a platform sheet.
+        1.0.6
+        - G9SheetView / G9BottomSheetHelper: a multi-detent sheet now behaves like a platform sheet.
 
-      Three defects, one shape. A sheet opened with States = [Peek, Medium] could be dragged past
-      its own largest detent all the way to the top of the window, was then snapped back down to
-      whatever ratio the caller had guessed for Medium (leaving a band of empty sheet under the
-      content), and a downward drag from Medium raised a CLOSE request instead of stepping back to
-      Peek. All three came from the same place: the control derived its drag limits from the state
-      it happened to be IN, and AllowedState could not express "there is a peek step below this".
+        Three defects, one shape. A sheet opened with States = [Peek, Medium] could be dragged past
+        its own largest detent all the way to the top of the window, was then snapped back down to
+        whatever ratio the caller had guessed for Medium (leaving a band of empty sheet under the
+        content), and a downward drag from Medium raised a CLOSE request instead of stepping back to
+        Peek. All three came from the same place: the control derived its drag limits from the state
+        it happened to be IN, and AllowedState could not express "there is a peek step below this".
 
         * The drag is clamped to the largest ALLOWED detent (and, for a non-cancelable sheet, to the
-          smallest). Below the smallest detent of a cancelable sheet the body now slides off instead
-          of shrinking, so a dismiss drag no longer re-lays the content out per frame.
+        smallest). Below the smallest detent of a cancelable sheet the body now slides off instead
+        of shrinking, so a dismiss drag no longer re-lays the content out per frame.
         * G9BottomSheetOptions.ExpandedFitsContent (new, default off) sizes the largest detent to the
-          MEASURED content, capped by MaxFitToContentHeightRatio — Material's fitToContents applied
-          to the top detent. Content taller than the cap stops at the cap and scrolls inside a
-          viewport the helper hosts for it; content shorter than PeekHeight also lowers the peek, so
-          neither step can show dead space.
+        MEASURED content, capped by MaxFitToContentHeightRatio — Material's fitToContents applied
+        to the top detent. Content taller than the cap stops at the cap and scrolls inside a
+        viewport the helper hosts for it; content shorter than PeekHeight also lowers the peek, so
+        neither step can show dead space.
         * G9BottomSheetOptions.ScrollingExpandsSheet (new, default ON) makes a drag on a scrollable
-          body expand the sheet before the content scrolls — UIKit's
-          prefersScrollingExpandsWhenScrolledToEdge, whose default is likewise on, and Material's
-          nested-scroll contract. It is a NO-OP for every single-detent sheet by construction (they
-          are always at their maximum detent), so full-screen, single-state and fit-to-content sheets
-          scroll exactly as before. Turn it off for a multi-detent sheet whose body must scroll at
-          every step.
+        body expand the sheet before the content scrolls — UIKit's
+        prefersScrollingExpandsWhenScrolledToEdge, whose default is likewise on, and Material's
+        nested-scroll contract. It is a NO-OP for every single-detent sheet by construction (they
+        are always at their maximum detent), so full-screen, single-state and fit-to-content sheets
+        scroll exactly as before. Turn it off for a multi-detent sheet whose body must scroll at
+        every step.
 
-      Also: the helper now applies IsCancelable / DragCloseThreshold to the control, which it had
-      always been documented to do; and the iOS / Windows handlers skip horizontal-only scrollers
-      when resolving the scroller under the finger, so a side-scrolling row inside a body can no
-      longer swallow that body's vertical scrolling.
+        Also: the helper now applies IsCancelable / DragCloseThreshold to the control, which it had
+        always been documented to do; and the iOS / Windows handlers skip horizontal-only scrollers
+        when resolving the scroller under the finger, so a side-scrolling row inside a body can no
+        longer swallow that body's vertical scrolling.
 
-      CONSUMER ACTION: none for a single-detent sheet. A multi-detent sheet gains the clamp and the
-      scroll-expands behaviour; both are what the platforms do, and ScrollingExpandsSheet = false
-      restores the previous gesture priority if a call site depended on it.
+        CONSUMER ACTION: none for a single-detent sheet. A multi-detent sheet gains the clamp and the
+        scroll-expands behaviour; both are what the platforms do, and ScrollingExpandsSheet = false
+        restores the previous gesture priority if a call site depended on it.
 
-      1.0.5
-      - G9TabBar: new FabTapped event, raised BEFORE the control acts on a centre-FAB tap. Setting
+        1.0.5
+        - G9TabBar: new FabTapped event, raised BEFORE the control acts on a centre-FAB tap. Setting
         G9TabBarFabTappedEventArgs.Handled suppresses the built-in sub-menu fan-out (and the implicit
         move of SelectedIndex to the FAB slot) so a host can give the '+' its own meaning without the
         fan-out flashing open and shut. Additive: unhandled taps behave exactly as in 1.0.4.
-      1.0.4 — Icons: restore the affordances the extraction had quietly replaced, and make each one
-      themable.
+        1.0.4 — Icons: restore the affordances the extraction had quietly replaced, and make each one
+        themable.
 
-      Extracting these controls out of their host app swapped every host icon reference for the
-      package's own built-in vector set. Where an icon had no built-in equivalent, the nearest
-      available glyph was substituted — and three of those substitutions changed what the control
-      MEANT rather than merely how it looked:
+        Extracting these controls out of their host app swapped every host icon reference for the
+        package's own built-in vector set. Where an icon had no built-in equivalent, the nearest
+        available glyph was substituted — and three of those substitutions changed what the control
+        MEANT rather than merely how it looked:
 
         * G9BarcodeTextEntry showed the SEARCH magnifier at rest. The field opens a camera scanner;
-          promising "search" for that is a different action, not a different drawing.
+        promising "search" for that is a different action, not a different drawing.
         * G9IntroCarousel's language switcher showed the INFO mark, which reads as help, not as a
-          choice of language.
+        choice of language.
         * G9ProgressOverlayHelper's cancelled-sync toast showed the INFO mark instead of an
-          offline/no-connection cloud.
+        offline/no-connection cloud.
 
-      Two more collapsed distinct affordances onto one slot: the date picker sheet's "jump to today"
-      and the time-span picker's "date range" both resolved to the generic Calendar glyph.
+        Two more collapsed distinct affordances onto one slot: the date picker sheet's "jump to today"
+        and the time-span picker's "date range" both resolved to the generic Calendar glyph.
 
-      This release adds the built-in glyphs ScanCode, Language and CloudOff (drawn in the same 24x24
-      stroke style as the rest), exposes G9Glyphs.ScanCode / Language / CloudOff / CalendarToday /
-      DateRange so a host can substitute its own icon font per affordance, and points the affected
-      controls at those slots. G9IntroCarousel and G9ProgressOverlayHelper had hard-coded G9Glyph
-      values, which no host could override at all; they now go through G9Glyphs like everything else.
+        This release adds the built-in glyphs ScanCode, Language and CloudOff (drawn in the same 24x24
+        stroke style as the rest), exposes G9Glyphs.ScanCode / Language / CloudOff / CalendarToday /
+        DateRange so a host can substitute its own icon font per affordance, and points the affected
+        controls at those slots. G9IntroCarousel and G9ProgressOverlayHelper had hard-coded G9Glyph
+        values, which no host could override at all; they now go through G9Glyphs like everything else.
 
-      No API removed and no behaviour changed beyond the artwork. A host that sets nothing gets the
-      new built-in drawings; a host that wants the pre-extraction icons assigns its own to the five
-      new slots.
+        No API removed and no behaviour changed beyond the artwork. A host that sets nothing gets the
+        new built-in drawings; a host that wants the pre-extraction icons assigns its own to the five
+        new slots.
 
-      1.0.2 — G9CultureDateTimeLabel no longer pins its own FlowDirection.
+        1.0.2 — G9CultureDateTimeLabel no longer pins its own FlowDirection.
 
-      The label used to set FlowDirection = LeftToRight for every absolute (Date / Time / DateTime)
-      value, to keep a numeric date reading left-to-right inside a right-to-left screen. That is a
-      paragraph-direction switch, so it also pinned the label's ALIGNMENT: HorizontalTextAlignment and
-      HorizontalOptions resolve Start/End against the view's own effective flow direction, so a consumer
-      asking for "Start" got the physical LEFT edge under an RTL culture too. A date could therefore not
-      be aligned with the plain Label beside it in both languages — whichever alignment the consumer
-      wrote, one language was wrong. The order is now kept by wrapping the formatted value in a Unicode
-      LTR embedding (U+202A/U+202C), so the label is an ordinary Label for layout and its logical
-      alignment mirrors with the rest of the screen. Relative mode is unchanged (its phrase is localized
-      words and must read in the culture's direction), and nothing is wrapped under an LTR culture.
+        The label used to set FlowDirection = LeftToRight for every absolute (Date / Time / DateTime)
+        value, to keep a numeric date reading left-to-right inside a right-to-left screen. That is a
+        paragraph-direction switch, so it also pinned the label's ALIGNMENT: HorizontalTextAlignment and
+        HorizontalOptions resolve Start/End against the view's own effective flow direction, so a consumer
+        asking for "Start" got the physical LEFT edge under an RTL culture too. A date could therefore not
+        be aligned with the plain Label beside it in both languages — whichever alignment the consumer
+        wrote, one language was wrong. The order is now kept by wrapping the formatted value in a Unicode
+        LTR embedding (U+202A/U+202C), so the label is an ordinary Label for layout and its logical
+        alignment mirrors with the rest of the screen. Relative mode is unchanged (its phrase is localized
+        words and must read in the culture's direction), and nothing is wrapped under an LTR culture.
 
-      CONSUMER ACTION: a consumer that compensated by writing a PHYSICAL alignment (e.g.
-      HorizontalTextAlignment="End" purely to reach the right edge under Persian) now gets the trailing
-      edge in both languages, which is probably not what that call site meant. Express the intent
-      logically — Start to align with the label above it, End to sit against the trailing edge — and it
-      is correct in both directions.
+        CONSUMER ACTION: a consumer that compensated by writing a PHYSICAL alignment (e.g.
+        HorizontalTextAlignment="End" purely to reach the right edge under Persian) now gets the trailing
+        edge in both languages, which is probably not what that call site meant. Express the intent
+        logically — Start to align with the label above it, End to sit against the trailing edge — and it
+        is correct in both directions.
 
-      1.0.1 — packaging fix, no API or behaviour change.
+        1.0.1 — packaging fix, no API or behaviour change.
 
-      G9MAUIControls.Persistence.Sqlite 1.0.0 shipped a Windows resource index (.pri) that named
-      `G9MAUIControls.Persistence.Sqlite\icon.png`, a path the package does not contain — the icon is
-      packed at the package root, as PackageIcon requires. Every consumer building a net10.0-windows*
-      target failed with MSB3030 ("could not copy ... icon.png ... because it was not found"). The
-      packaging icon is now kept out of the SDK's default item globs family-wide, so it can no longer be
-      indexed as a WinUI resource. Only that one package was affected, because it is the only
-      Essentials-only project — the Controls-based four had the image swept back out of @(Content) by
-      the MAUI targets. Consumers on 1.0.0 that added a build-side workaround can remove it after
-      upgrading.
+        G9MAUIControls.Persistence.Sqlite 1.0.0 shipped a Windows resource index (.pri) that named
+        `G9MAUIControls.Persistence.Sqlite\icon.png`, a path the package does not contain — the icon is
+        packed at the package root, as PackageIcon requires. Every consumer building a net10.0-windows*
+        target failed with MSB3030 ("could not copy ... icon.png ... because it was not found"). The
+        packaging icon is now kept out of the SDK's default item globs family-wide, so it can no longer be
+        indexed as a WinUI resource. Only that one package was affected, because it is the only
+        Essentials-only project — the Controls-based four had the image swept back out of @(Content) by
+        the MAUI targets. Consumers on 1.0.0 that added a build-side workaround can remove it after
+        upgrading.
 
-      1.0.0 — first stable release. The controls themselves are not new: they have been carrying a
-      production application for a long time, and this version is the point at which the extracted
-      PACKAGES have been driven by that same application end to end rather than merely compiling.
+        1.0.0 — first stable release. The controls themselves are not new: they have been carrying a
+        production application for a long time, and this version is the point at which the extracted
+        PACKAGES have been driven by that same application end to end rather than merely compiling.
 
-      That pass found 21 defects in the library, all fixed here. The most significant were directional:
-      G9IconView now pins both of its children to LeftToRight, because an RTL parent made the platform
-      mirror the glyph canvas ON TOP of a control's already-correct directional choice — a double flip
-      that reversed every chevron and arrow in the suite and silently mirrored the non-directional glyphs
-      too. G9Glyph gains ArrowBack / ArrowForward (shaft + head) with overridable G9Glyphs slots, and the
-      bottom-sheet header uses them: a bare chevron in a header reads as an expander, not as "go back".
+        That pass found 21 defects in the library, all fixed here. The most significant were directional:
+        G9IconView now pins both of its children to LeftToRight, because an RTL parent made the platform
+        mirror the glyph canvas ON TOP of a control's already-correct directional choice — a double flip
+        that reversed every chevron and arrow in the suite and silently mirrored the non-directional glyphs
+        too. G9Glyph gains ArrowBack / ArrowForward (shaft + head) with overridable G9Glyphs slots, and the
+        bottom-sheet header uses them: a bare chevron in a header reads as an expander, not as "go back".
 
-      Verified on Android. iOS, Mac Catalyst and Windows build and pack but have not been rendered — see
-      AiGuides/09-Progress.md, which tracks that gap honestly.
+        Verified on Android. iOS, Mac Catalyst and Windows build and pack but have not been rendered — see
+        AiGuides/09-Progress.md, which tracks that gap honestly.
     </PackageReleaseNotes>
 
     <PackageProjectUrl>https://github.com/ImanKari/G9MAUIControls</PackageProjectUrl>
