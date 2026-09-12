@@ -1352,6 +1352,22 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         {
             if (!Equals(_trailingDefaultMauiIcon.Icon, icon)) _trailingDefaultMauiIcon.Icon = icon;
             if (_trailingDefaultMauiIcon.Color != color) _trailingDefaultMauiIcon.Color = color;
+
+            // ⛔ RE-ATTACH, because the cached icon may have been DETACHED behind our back.
+            // SetIconHostContent removes every non-GraphicsView child of the host, and a subclass
+            // affordance goes through it (G9ComboBox's clear "✕", the editor's voice mic, …). The
+            // cached field still points at that view, so the null-check above does NOT fire on the
+            // way back and the visibility loop below cannot find it either — the slot ends up
+            // holding nothing but the ripple layer.
+            //
+            // That is G9ComboBox losing its search glyph for good once an item had been picked and
+            // cleared again (2026-09-12, ITCS-15518): magnifier → ✕ → NOTHING. The icon is only
+            // absent after a round trip through a subclass affordance, which is why a field that had
+            // never been touched still looked right.
+            if (!_trailingHost.Children.Contains(_trailingDefaultMauiIcon))
+            {
+                _trailingHost.Children.Add(_trailingDefaultMauiIcon);
+            }
         }
 
         // Hide any subclass / emoji / image content currently attached, then make the
@@ -1396,6 +1412,14 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         {
             if (!Equals(_leadingDefaultMauiIcon.Icon, icon)) _leadingDefaultMauiIcon.Icon = icon;
             if (_leadingDefaultMauiIcon.Color != color) _leadingDefaultMauiIcon.Color = color;
+
+            // Same re-attach contract as ShowDefaultTrailingIcon — see the note there. The leading
+            // slot reaches SetIconHostContent through ApplyLeadingIcon's emoji / image branch, so it
+            // can be detached by exactly the same route.
+            if (!_leadingHost.Children.Contains(_leadingDefaultMauiIcon))
+            {
+                _leadingHost.Children.Add(_leadingDefaultMauiIcon);
+            }
         }
 
         for (var i = _leadingHost.Children.Count - 1; i >= 0; i--)

@@ -593,6 +593,24 @@ point of **LES-0042**.
 
 ---
 
+## 1.0.14 — a cached field icon that survived its own detachment
+
+**`G9ComboBox` lost its search glyph for good after a value had been picked and cleared** — magnifier
+to clear-x to *nothing*, with the trailing slot left empty for the rest of the field's life. A field
+that had never been touched looked correct, and that asymmetry is what made it read as a combobox bug
+instead of what it was: a caching bug in `G9OutlinedFieldBase`, affecting every control that mixes a
+default icon with a subclass-supplied one.
+
+`SetIconHostContent` clears the host wholesale (it keeps only the ripple `GraphicsView`), so attaching
+a subclass affordance DETACHES the cached default `G9IconView` — while the cache field still points at
+it. On the way back, the null-check that means "do I have one?" answered yes, the "just recolour"
+branch ran, and nothing ever put the view back in the tree. Both `ShowDefaultTrailingIcon` and
+`ShowDefaultLeadingIcon` now check membership rather than nullness. Full lesson in **LES-0046** — the
+generalisable half is that *a cache field is not proof of attachment* whenever one code path caches a
+view and another is allowed to clear its parent.
+
+---
+
 # Known risks
 
 # Known risks

@@ -134,6 +134,17 @@ filtering still rebuilds the list (rows actually need to come and go).
 - The trailing icon is `MaterialIcons.Search` by default; when `ClearButton` is true and
   the field has a value it switches to `MaterialIcons.Close`. Tapping × clears the
   selection.
+- **⛔ The search glyph COMES BACK after a clear (fixed 2026-09-12).** The round trip
+  search → × → search used to end on NOTHING: the field was left with an empty trailing
+  slot for the rest of its life, and only after a value had been picked and cleared — a
+  field never touched still looked right. The cause was in `G9OutlinedFieldBase`, not here:
+  a subclass affordance (this control's ×, the editor's voice mic) is attached through
+  `SetIconHostContent`, which REMOVES every non-ripple child of the host — including the
+  cached default `G9IconView`. The cached FIELD still pointed at that detached view, so on
+  the way back `ShowDefaultTrailingIcon` took its "already built" branch and never re-added
+  it. Both `ShowDefaultTrailingIcon` and `ShowDefaultLeadingIcon` now re-attach when the
+  cached icon is no longer a child of its host. Any control that mixes a default icon with
+  a subclass-supplied one depends on this.
 - The combo unfocuses the parent before opening the sheet so the page doesn't
   auto-scroll to the combo when the sheet captures focus.
 - The bottom sheet uses `G9SelectionSheet` which is shared with `G9Picker`. The same

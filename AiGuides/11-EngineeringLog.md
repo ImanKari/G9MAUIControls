@@ -1651,3 +1651,36 @@ END of the sweep, pointing along the tangent there.
   put side by side with the report.
 - **A settable slot that some code paths bypass is worse than no slot**, because the consumer's
   configuration is correct and the result is still wrong — so the investigation starts in the wrong repo.
+
+---
+
+## LES-0046 — A cache that survives its own view being detached
+
+**Symptom.** In `G9ComboBox`, the trailing slot went magnifier → ✕ → **nothing**. Picking an option and
+then clearing it left the field with an empty trailing slot permanently. A field that had never been
+touched looked correct, which is what made it read as "the clear button eats the search icon" rather
+than as a caching bug.
+
+**What it actually was, in `G9OutlinedFieldBase`.** The base caches the default trailing `G9IconView` in
+`_trailingDefaultMauiIcon` so a signature flip does not detach it and re-trigger the embedded font's
+rasterisation (the tofu-flash fix). A subclass affordance — the combo's ✕, the editor's voice mic — is
+attached through `SetIconHostContent`, which removes **every** non-ripple child of the host. That
+includes the cached icon. The field still pointed at the now-detached view, so on the way back
+`ShowDefaultTrailingIcon` saw non-null, took its "already built, just recolour" branch, and never
+re-added it to the host. The visibility loop below it could not find it either. Net result: a slot
+holding only the ripple layer.
+
+**Fix.** Both `ShowDefaultTrailingIcon` and `ShowDefaultLeadingIcon` re-attach the cached view when it is
+no longer a child of its host. Two lines, symmetric, and the leading slot had the identical latent bug
+through `ApplyLeadingIcon`'s emoji / image branch.
+
+**Carry forward.**
+
+- **A cache field is not proof of attachment.** When one code path caches a VIEW and another is allowed
+  to clear the parent wholesale, the null-check that means "do I have one?" stops meaning "is it on
+  screen?". Check membership, not nullness.
+- **The asymmetry is the tell.** "Broken only after a round trip through another state" points at
+  retained state, not at the state you are in — a field that never held a value was never wrong.
+- **Reported as a feature bug, fixed in the base class.** The tester's words were about a combobox; the
+  defect was in shared field chrome and affected every control that mixes a default icon with a
+  subclass-supplied one.

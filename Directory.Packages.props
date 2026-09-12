@@ -37,7 +37,21 @@
     <!-- ####### Shared by every package in the family ####### -->
 
     <!-- Records the exact build commit + repository metadata; build-time only, never a consumer dep. -->
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
+    <!--
+      ⛔ 10.0.401, NOT 8.0.0 (2026-09-12). CVE-2026-62900 / GHSA-23fw-v26w-5fgq — "improper removal of
+      sensitive information before storage or transfer" — was published on 2026-09-08 against
+      Microsoft.Build.Tasks.Git 8.0.0, which SourceLink pulls in. 8.0.0 has NO patched release, so the
+      only fix is to leave that line. NuGetAudit + TreatWarningsAsErrors promote it to NU1902, which
+      broke the RELEASE build of this repository on main with no code change of ours — the pipeline
+      packs in Release, so it would have published nothing.
+
+      10.0.401 is outside every affected range in the advisory, is STABLE (a stable package must not
+      depend on a prerelease — ADR-0010), and sits in the same 10.0.4xx band as the pinned SDK. The
+      advisory is doubly relevant here rather than theoretical: this repo has a PRIVATE Azure DevOps
+      origin and a PUBLIC GitHub mirror, and SourceLink is what writes repository identity into the
+      package and symbols. Suppressing it would have been the wrong call for exactly that reason.
+    -->
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
   <ItemGroup>

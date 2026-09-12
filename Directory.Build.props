@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.13</G9FamilyVersion>
+    <G9FamilyVersion>1.0.14</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,31 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+
+        1.0.14
+        - A default field icon comes back after a subclass affordance has replaced it.
+
+        G9OutlinedFieldBase caches the default leading/trailing G9IconView so a signature flip does not
+        detach it and re-trigger the embedded font's rasterisation. A subclass affordance — G9ComboBox's
+        clear "x", G9Editor's voice mic — is attached through SetIconHostContent, which removes every
+        non-ripple child of the host, INCLUDING that cached view. The cached field still pointed at the
+        detached instance, so on the way back ShowDefaultTrailingIcon saw non-null, took its
+        "already built, just recolour" branch, and never re-added it to the host; the visibility loop
+        below could not find it either. The slot was left holding nothing but the ripple layer.
+
+        Visible as G9ComboBox losing its search glyph permanently once an item had been picked and then
+        cleared: magnifier -> x -> NOTHING. A field that had never been touched still looked correct,
+        which is what made it read as a combobox bug rather than a caching one. Both
+        ShowDefaultTrailingIcon and ShowDefaultLeadingIcon now re-attach the cached view when it is no
+        longer a child of its host. Any control that mixes a default icon with a subclass-supplied one
+        is affected.
+
+        - Build dependency: Microsoft.SourceLink.GitHub 8.0.0 -> 10.0.401.
+
+        CVE-2026-62900 (GHSA-23fw-v26w-5fgq, published 2026-09-08) affects Microsoft.Build.Tasks.Git
+        8.0.0, which SourceLink pulls in, and 8.0.0 has no patched release. 10.0.401 is stable, outside
+        every affected range, and in the same band as the pinned SDK. Build-time only (PrivateAssets),
+        so nothing about the shipped assemblies changes.
 
         1.0.13
         - A control that offers a G9Glyphs slot now reads that slot EVERYWHERE, including its own XAML.
