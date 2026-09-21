@@ -403,6 +403,13 @@ suppression because it makes the trimmer **preserve** the members rather than me
 that remain are the mapper's true reflection, where the `Type` arrives from a dictionary and no annotation
 can be expressed.
 
+**No trimmer descriptor ships, and that is a decision rather than an omission.** The package README and
+`04-SqlitePersistence.md` once said a `TrimmerRootDescriptor` XML shipped; it never existed (the csproj
+packs `build\*.xml` only `If Exists` — IN-30), and the claim has been removed rather than made true. The
+library has no reflection targets of its own to root: what must survive the link is the **consumer's**
+entity assembly, which a package cannot name. A descriptor preserving this assembly would look like a fix
+and change nothing, so (1) above stays the consumer's line to write.
+
 **What would change this.** A source-generated mapping layer replacing `sqlite-net-pcl`'s mapper outright.
 That is a v2 conversation: it changes the persistence engine, not the packaging.
 
@@ -717,3 +724,157 @@ the assignment has to happen at a point that observes the final value.
   whose output depends on host startup state is not a converter.
 - **Leave it and document the mixing.** The defect is invisible until a consumer overrides a slot AND a
   control happens to draw the same icon both ways. Nothing about the code shows it; only the screen does.
+
+---
+
+## ADR-0022 — A sheet is STAGED off-screen and measured for real before it opens; its motion is a translation, never a relayout
+
+**Status:** accepted (2026-09-21, 1.1.0) — built and compile-verified on all four TFMs; **not yet run on a device**
+
+### Context
+
+Three complaints from the consuming app, all about the bottom sheet, all worst on Android: a loading
+skeleton had to be shown before content; the first-open height was wrong, so the app kept a persisted
+memory of past heights plus a compiled seed table; and a sheet that changed size after opening did so
+badly. A fourth: it was slow.
+
+`BottomSheet/G9BottomSheetGuide.md` recorded the accepted explanation — "the first measure of a sheet
+body on Android is ALWAYS cold … platform reality … the placeholder / memo / settle machinery is
+unavoidable". Reading the open pipeline says otherwise. `ConfigureSheetContent` ran the first
+`ApplySheetContentSizing` BEFORE `overlayHost.Children.Add(sheet)`. A view that is not in the tree has
+no platform handler, and a handler-less MAUI view reports a desired size of zero. The zero was ours. On
+top of it, `DeferContent` defaults to `true`, so a view the caller had ALREADY BUILT (55 of the app's 58
+call sites) was wrapped in a `DeferredContentView` and hidden behind a placeholder for a fixed
+369 + 220 + 160 ms — after its construction cost had been paid on the tap.
+
+The resize was a tween that rewrote the detent ratios every tick, each write setting the body's
+`HeightRequest`: a full measure and arrange of the sheet body per frame. A drag between detents did the
+same per touch-move. And on Android, every position event below the backdrop threshold ran two ~96-view
+native tree sweeps over JNI to "reset" a transform that was already identity.
+
+### Decision
+
+1. **Stage before show.** `OpenSheet` parks the body BELOW the screen edge — visible, attached, laid
+   out at its real height (`G9SheetView.Stage`) — and `StageAndShowAsync` then measures it (handlers
+   exist now), waits for one layout pass, measures again, holds for `PreOpenSettleFrames` drawn frames,
+   honours `IDeferredContentReadiness`, and only then starts the open motion. Every wait is a frame or a
+   signal, all bounded by one deadline (`PreOpenMaxHoldMs`). A translation, never `IsVisible = false`:
+   an invisible view is skipped by layout and would realize nothing.
+2. **A pre-built view is never deferred.** `DeferContent` keeps its meaning for FACTORY content only.
+3. **Motion is translation; layout happens once per size.** A drag grows the body to its largest detent
+   on the first move and translates from then on. `SetFitHeight` resizes with one layout pass — grow:
+   take the height first (the extra hangs below the screen edge), then slide up; shrink: slide down,
+   then take the height. A sticky footer is kept at the screen edge by counter-translation
+   (`BottomPinnedView`).
+4. **An aborted motion does not complete.** `finished` honours `cancelled`; a retargeted motion
+   inherits the completion of the one it replaces, so `OpenMotionCompleted` fires once, at the real end.
+5. **Release is judged on velocity as well as distance** (Android `VelocityTracker` in SCREEN
+   coordinates — the view moves with the finger, so view-relative velocity reads as zero; iOS
+   `VelocityInView(null)`).
+6. **Everything has a rollback.** `G9BottomSheetSettings.StageBeforeShow = false` restores the previous
+   pipeline wholesale; `DeferPrebuiltContent` and `UseHardwareLayerDuringMotion` are finer switches.
+
+### Consequences
+
+- A sheet whose data is in hand opens once, at its exact height, with finished content. The height memo
+  and the seed table are no longer consulted for it (they remain, as hints, for open-then-fill bodies).
+- **The cost moves; it does not vanish.** Handler creation and first layout now happen BEFORE the motion
+  instead of during or after it. Tap → motion-start gets longer by exactly that work (two frames for a
+  light menu; more for a heavy body), in exchange for tap → usable getting much shorter and for nothing
+  happening during the animation. The modal scrim appears at once, so the tap is acknowledged
+  immediately. If that trade is wrong for a particular heavy sheet, it should be shown from a FACTORY,
+  which still opens first and builds after.
+- The app-side compensations become deletable, but are deliberately NOT deleted in this change: the 10
+  height seeds, 6 hand-written height providers, 2 memo keys, `OperationsMenuContentViewBase`,
+  `CompactListSheetHelper`. They are harmless with the new engine and they are the safety net until it
+  has been seen on a device.
+- `ShowListG9BottomSheetAsync` honours a caller's `SizeMode`. Two app call sites that pass
+  `FitToContentOptions()` and were silently given a full-screen panel will now get what they asked for.
+- A sheet is "in flight" while staged. `GetOpenSheetCount` counts it, and `CloseSheet` closes it.
+
+### Rejected
+
+- **A native container** (`BottomSheetDialogFragment` / `BottomSheetBehavior` /
+  `UISheetPresentationController`). Material's behaviour has no smooth content-driven resize either — it
+  snaps on relayout, which is the very symptom (material-components-android #2062, #1729). An
+  activity-level container renders BEHIND .NET 9+ modal pages; a Dialog cannot be non-modal over a live
+  map; any of them leaves the shared `OverlayHost → PopupHost → ToastHost` z-stack, so toasts would draw
+  under the sheet. CommunityToolkit.Maui went the other way for the same reason (Popup v2). Only iOS 16+
+  has a primitive that genuinely solves resize (`animateChanges { invalidateDetents() }`); it stays open
+  as a possible per-platform presenter later.
+- **"Native animators" as the performance fix.** This was the plan's own first instinct and it was
+  wrong: `ViewPropertyAnimator` and `SpringAnimation` run on the UI thread exactly like MAUI's ticker, so
+  they stall just the same when the UI thread is inflating content. What keeps a motion smooth is that
+  NOTHING else runs during it — i.e. sequencing, which is decision 1. The one native assist kept is a
+  hardware layer for the duration of the motion, because a translation never dirties it.
+- **Keeping the persisted height memo as the first-open answer.** It is a guess that is wrong on a fresh
+  install, after every app update, at another font scale and for any sheet whose height depends on its
+  data — and it existed only to hide a zero we were producing ourselves.
+- **Pooling the sheet shell, an `INestedScrollingParent3` touch layer, IME-synchronised translation, a
+  predictive-back callback, a structural `G9Redacted` skeleton, and splitting the 6,000-line helper into
+  a per-sheet session object.** All are recorded as open defects in `11-EngineeringLog.md` → RSK-0003,
+  and all were deliberately left out of this change. Each is either a large refactor with no user-visible effect, or platform gesture / inset
+  code that cannot be validated without a device and would interact with workarounds the app still
+  carries (`KeyboardInsetScope`, its back coordinator). Shipping them blind would have put the part that
+  fixes the actual complaints at risk.
+
+---
+
+## ADR-0023 — Sheet motion is the PLATFORM's model, resolved per motion, and runs on the display's frame clock
+
+**Date:** 2026-09-21 · **Status:** accepted · **Supersedes:** the "size-scaled duration" rule in the guide
+
+### Context
+
+ADR-0022 made a sheet arrive finished. The first device trace taken with it (59 sheets, the AgriPad app,
+Pixel 9 Pro XL emulator) then showed why it still did not FEEL native:
+
+- The open duration was `configured × distance / screen`. With the app's 199 ms that is a constant
+  5000 dp/s: a 200 dp picker opened in **40 ms**, a 720 dp sheet in 144 ms. Native sheets take
+  ~250–500 ms whatever the distance.
+- 34 of 119 motions had a frame gap over 25 ms — nearly always the FIRST frame (hardware layer + first
+  rasterisation). MAUI's ticker charges that gap to the curve, and an ease-out is fastest at the start,
+  so the sheet appeared part-way open instead of sliding in.
+- One .NET collection with Java bridge processing every 1.1 s during the session, each stalling the UI
+  thread for tens of ms; 36 of 59 opens contained one. The engine's own per-frame Java callback
+  objects were feeding it.
+
+### Decision
+
+1. **`G9BottomSheetSettings.MotionStyle = PlatformNative` is the default.** Duration AND curve are resolved
+   per motion by `G9SheetMotionModel`: androidx `ViewDragHelper`'s settle on Android / Windows (every
+   constant read from source and asserted by tests), UIKit's default critically-damped spring on iOS /
+   Mac Catalyst (an inference — Apple publishes no sheet figures — and labelled as one). `Timed` keeps the
+   1.0 behaviour. A per-sheet duration override still wins, on the native curve.
+2. **Motion runs on `G9SheetMotionDriver`** against `G9FrameClock` (Android `Choreographer`): the clock
+   starts on the first drawn frame, a hitch is absorbed as a pause rather than a jump, positions are
+   evaluated at vsync time, and the motion ends within 0.5 dp of its target. Other platforms run the same
+   curve on MAUI's ticker. `UseFrameClockMotion = false` is the kill switch.
+3. **`G9FrameClock` owns the ONLY Java frame-callback object in the process.** Nothing in the engine may
+   allocate a Java peer per frame.
+4. **Whatever accompanies a motion reads that motion** (`CurrentMotionDurationMs`, `IsMotionRunning`) — the
+   overlay fade and the close cleanup no longer assume a configured constant.
+5. The model is MAUI-free (`Func<double,double>`, not `Easing`) so it is file-linked into the test project.
+
+### Rejected
+
+- **A spring everywhere (Compose 1.4's `DefaultSpatial`, ζ 0.9 / k 700).** Closer to new Compose apps, but
+  it overshoots, and this body is exactly as tall as its detent: an overshoot lifts its bottom edge off the
+  screen edge and shows the page under it. It would need an over-tall body first.
+- **Material's `BottomSheetDialog` window animation (20 % translate + fade, 400 ms, emphasized).** It is what
+  a dialog-hosted sheet does on show, but it is a fade, not a slide, and it has no answer for a release or
+  a detent change. The settle model covers every motion with one rule.
+- **Native animators (`ViewPropertyAnimator`, `SpringAnimation`).** Unchanged from ADR-0022: they run on the
+  same UI thread and stall with it; they would also fork the motion code per platform.
+- **Letting the curve absorb hitches** (the MAUI ticker's behaviour). Measured, above.
+
+### Consequences
+
+- The app-wide `OpenAnimationDurationMs` / `CloseAnimationDurationMs` / `SizeScaledAnimationDuration` are
+  inert under the default style. AgriPad's `MauiProgram.cs` still sets 199 / 199; they are annotated there.
+- `FlingVelocityThreshold` 700 → 300 dp/s (Material ≈ 170, Compose 125).
+- Not a library matter, but found by the same trace and recorded in the app: the Mono nursery is raised to
+  32 MB through an `AndroidEnvironment` file (`MONO_GC_PARAMS`), so bridged collections are ~8× rarer. Note
+  for anyone repeating it: the variable REPLACES the SDK's own `major=marksweep-conc`, so that has to be
+  restated; and in a Debug fast-deployed build the file is parsed on the device by a reader that treats
+  any line containing `=` as a variable — comments included.

@@ -99,8 +99,10 @@ internal sealed class G9OutlinedFieldDrawable : IDrawable
 
         // Build a single open path that traces the outline, leaving a gap on the top edge.
         // Drawing as a path (instead of separate segments) keeps the line joins crisp at the
-        // corners.
-        var path = new PathF();
+        // corners. PathF owns a native path on every platform canvas, so it is released as soon
+        // as it has been drawn — this runs on every paint and used to leave each one to the
+        // finalizer.
+        using var path = new PathF();
         path.MoveTo(notchEnd, y1);
         path.LineTo(x2 - r, y1);
         // Top-right corner: 90° → 0° clockwise around the top-right rounded corner.

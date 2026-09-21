@@ -72,7 +72,13 @@ await G9ToastHelper.DismissToastAsync();
 | `ActionText`  | `null` — no action button                 |
 | `Action`      | `null`                                    |
 
+### The action button cannot crash the app
+
+`Action` runs through `G9SafeCommand.RunSafe` (throttle and concurrency guard **off** — the key is shared by every toast, so either guard would silently drop the "Undo" of a second toast). It was an `async void` event handler, so a throwing action was an unhandled exception on the UI thread. A failure is now logged and shown in the standard error popup. The button also fires once: the toast stays tappable through its 200 ms exit animation, and a second tap used to run the action twice.
+
 ## Toast Stacking
+
+**At most `MaxToastsPerStack` (4) toasts per `(Parent, Position)`.** Past that the *oldest* is dismissed to make room. **Identical consecutive toasts collapse:** the same message and type as the newest live toast of the stack refreshes that toast's lifetime (timer + fill bar) instead of stacking a copy. A toast with an action button is never collapsed into or onto — two "Item deleted — Undo" toasts read the same but undo different items.
 
 When multiple toasts target the same `(Parent, Position)`, they stack with `ToastStackGap` (8 dp) between them. `ReflowToastStackAsync` repositions the stack on every show / dismiss / size change so the stack stays visually clean. Bottom-anchored stacks honor any active `SyncProgressToastView` height so a sync toast sitting at the bottom doesn't get covered by a regular toast that spawns later — the regular toast lifts above the sync overlay and the sync overlay stays anchored.
 
@@ -95,6 +101,17 @@ finally
     await G9ToastHelper.DismissLoadingAsync();
 }
 ```
+
+**Reference-counted.** There is one blocker for the whole app and it stays up until every `ShowLoadingAsync` has been matched by a `DismissLoadingAsync`. It used to be a single slot, so operation A's dismiss removed the blocker operation B had just raised. A second show re-labels the overlay in place (newest text wins); when a hold is released while others remain, the label falls back to the most recent remaining one. `DismissAllAsync` clears the blocker regardless of the count — it is the escape hatch. **The count makes an unpaired show permanent**, so always pair with `try / finally`, or use the lease form, which cannot be left unpaired and is safe to dispose twice:
+
+```csharp
+await using (await G9ToastHelper.BeginLoadingAsync("Signing in..."))
+{
+    await DoSomethingBlockingAsync();
+}
+```
+
+The two forms share one count and can be mixed; the anonymous `DismissLoadingAsync` never releases a lease's hold.
 
 Visuals: a scrim covers the whole page (theme.Scrim @ 55% alpha). A centered card with `theme.InverseSurface` background, 14 dp corner radius, and an outline stroke (flat — no shadow; see `../G9/G9Controls.md` §0) shows a `G9ActivityIndicator` (CircularMaterial) above a centered label. The scrim swallows every tap so the user cannot interact with anything underneath until the loader is dismissed. Fade-in is 200 ms, fade-out is 180 ms.
 
@@ -230,7 +247,11 @@ Run the whole Toast tab after changing `G9ToastHelper`, `G9ToastOptions`, the in
 - Do not call `View.FadeTo` / `View.TranslateTo` directly. They are obsoleted in MAUI 10. Use `View.FadeToAsync` / `View.TranslateToAsync` so we don't accumulate `CS0618` warnings; the new APIs return `Task<bool>` that we already await.
 - Do not add a public `AnimationType` parameter back to `ShowLoadingAsync` / `ShowLoadingToastAsync`. The internal `CircularMaterial` default is what every caller in the app uses; surfacing the parameter pushes the the former third-party library (now removed) `AnimationType` enum onto every consumer's `using` list and provides no real value.
 - Do not bypass `ResolveHostContext()` by reaching directly into `Application.Current.Windows[0].Page.Content`. The registry path is what makes toast routing predictable across modal pushes and bottom sheets — the windows-walk path is a startup-only fallback.
-- Do not mutate `_activeToasts` outside of `MainThread`. The list and its handles are not thread-safe; the helper relies on every public entry point being wrapped in `MainThread.InvokeOnMainThreadAsync` and every internal access happening on the UI thread.
+- Do not remove a toast outside a `finally`. Toasts are input-opaque; an exit (or enter) animation that throws used to strand an opacity-0 view that kept swallowing taps. Exit removes in a `finally`, enter snaps to the visible state on failure, and the full-screen loader does the same for its fade-in.
+- Do not discard a task with a bare `_ =` unless the method is documented as never throwing (`DismissG9InlineToastHandleAsync` is). Everything else goes through `Observe(...)` so a fault is logged.
+- Do not wire a consumer delegate to an `async` event-handler lambda. Route it through `G9SafeCommand.RunSafe`.
+- Do not turn the loading ref-count back into a single slot, and do not let `DismissLoadingAsync` remove a leased entry.
+- Do not mutate `_activeToasts` (or `_loadingRequests`) outside of `MainThread`. The list and its handles are not thread-safe; the helper relies on every public entry point being wrapped in `MainThread.InvokeOnMainThreadAsync` and every internal access happening on the UI thread.
 - Do not race `ShowProgressToastAsync` with another `ShowProgressToastAsync`. Only one progress toast can be active — the second call calls `DismissProgressToast()` first and replaces the active state. If you need two concurrent progress overlays, file a feature request rather than working around it; the current single-progress contract is what makes `UpdateProgressToastAsync` safe to call from anywhere.
 - Do not anchor toasts on `ContentPage.Content` directly without going through `ResolveHostContext()`. Custom resolution paths bypass the modal-stack walk and break toast visibility on pages pushed into a sheet body.
 

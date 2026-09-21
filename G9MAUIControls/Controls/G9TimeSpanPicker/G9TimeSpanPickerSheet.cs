@@ -6,6 +6,12 @@ namespace G9MAUIControls.Controls;
 
 internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
 {
+    /// <summary>Last row of the years drum.</summary>
+    private const int MaxYears = 100;
+
+    /// <summary>Last row of the days drum unless the opening value needs more (see the ctor).</summary>
+    private const int DefaultMaxDays = 30;
+
     private readonly G9TimeSpanPickerMode _mode;
     private readonly G9TimeSpanPicker? _owner;
     private TimeSpan _selected;
@@ -38,14 +44,25 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
         Grid.SetRow(header, 0);
         Children.Add(header);
 
-        var totalYears = _selected.Days / 365;
-        var remainingMonths = _selected.Days % 365 / 30;
-        var remainingDays = _selected.Days % 30;
-
         var showDays = mode >= G9TimeSpanPickerMode.YearsMonthsDays;
 
-        var columnCount = 1;
-        if (showDays) columnCount++;
+        // ONE decomposition for the drums, the field text and the returned value (G9TimeSpanMath).
+        // The sheet used to compute months from `Days % 365 / 30` but days from `Days % 30`, so 370
+        // days opened as "1 year 10 days" and a Done without touching anything re-saved a different
+        // number than the one on screen.
+        var (totalYears, remainingMonths, remainingDays) = G9TimeSpanMath.Decompose(_selected.Days);
+
+        // A value past the years drum would select a row that does not exist (the drum then shows
+        // nothing selected and reports the out-of-range number). Pin it to the last row instead.
+        totalYears = Math.Min(totalYears, MaxYears);
+        if (!showDays) remainingDays = 0;
+
+        // What Done returns must be what the drums show — including when the user changes nothing.
+        _selected = ComposeSelection(totalYears, remainingMonths, remainingDays);
+
+        // Years AND months always exist; days is the optional third drum. This used to be
+        // `1 (+1 if days)`, one definition short, so the last two drums were stacked in one cell.
+        var columnCount = showDays ? 3 : 2;
 
         var columns = new Grid
         {
@@ -73,7 +90,9 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
         if (showDays)
         {
             _daysColumn = new G9DrumColumn(G9Strings.Get(G9StringKey.Day));
-            _daysColumn.SetItems(BuildDays(), remainingDays);
+            // The last five days of a 365-day year decompose to 11 months + 30..34 days (see
+            // G9TimeSpanMath.Decompose); grow the drum just enough to hold such a value.
+            _daysColumn.SetItems(BuildDays(Math.Max(DefaultMaxDays, remainingDays)), remainingDays);
             _daysColumn.SelectedValueChanged += OnColumnChanged;
             columns.Add(_daysColumn, colIndex++);
         }
@@ -180,12 +199,15 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
         var months = _monthsColumn?.SelectedValue ?? 0;
         var days = _daysColumn?.SelectedValue ?? 0;
 
-        _selected = new TimeSpan(years * 365 + months * 30 + days, 0, 0, 0);
+        _selected = ComposeSelection(years, months, days);
     }
+
+    private static TimeSpan ComposeSelection(int years, int months, int days) =>
+        new(G9TimeSpanMath.Compose(years, months, days), 0, 0, 0);
 
     private static IEnumerable<G9DrumItem> BuildYears()
     {
-        for (var year = 0; year <= 100; year++)
+        for (var year = 0; year <= MaxYears; year++)
         {
             yield return new G9DrumItem
             {
@@ -197,7 +219,7 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
 
     private static IEnumerable<G9DrumItem> BuildMonths()
     {
-        for (var month = 0; month <= 11; month++)
+        for (var month = 0; month <= G9TimeSpanMath.MaxMonths; month++)
         {
             yield return new G9DrumItem
             {
@@ -207,9 +229,9 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
         }
     }
 
-    private static IEnumerable<G9DrumItem> BuildDays()
+    private static IEnumerable<G9DrumItem> BuildDays(int maxDay)
     {
-        for (var day = 0; day <= 30; day++)
+        for (var day = 0; day <= maxDay; day++)
         {
             yield return new G9DrumItem
             {

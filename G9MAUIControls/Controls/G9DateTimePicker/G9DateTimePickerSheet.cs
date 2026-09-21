@@ -8,7 +8,8 @@ namespace G9MAUIControls.Controls;
 
 /// <summary>
 ///     Bottom-sheet that hosts the drum columns for <see cref="G9DateTimePicker" />.
-///     Uses the Persian calendar in RTL mode and the Gregorian calendar in LTR mode.
+///     Uses the Persian calendar when the active LANGUAGE is Persian and the Gregorian calendar
+///     otherwise (see <see cref="G9Calendar" />); the layout direction still follows the culture.
 ///     The header always shows a live preview of the currently-selected date/time so the
 ///     user sees the value update as they spin the columns.
 /// </summary>
@@ -21,11 +22,40 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
     ];
 
+    /// <summary>
+    ///     Years built on each side of the selection. The year drum is NOT virtualized — every year
+    ///     is a realized row — so it must never be sized from Min..Max: a <c>MinDate = 1900</c>
+    ///     sentinel alone was ~175 rows, at a measured ~700 ms per 31 rows on Android.
+    /// </summary>
+    private const int YearWindowRadius = 50;
+
+    /// <summary>Rows appended when the selection gets close to the END of the built window.</summary>
+    private const int YearWindowStep = 25;
+
+    /// <summary>How close (in rows) to a window edge the selection must be before the window grows.</summary>
+    private const int YearWindowEdgeRows = 2;
+
+    /// <summary>
+    ///     Delay before the window is re-centred after the selection reached its START. Longer than
+    ///     the drum's own post-settle snap, which would otherwise scroll the rebuilt column to the
+    ///     old row's offset.
+    /// </summary>
+    private const int YearRecentreDelayMs = 260;
+
+    /// <summary>Duration of the corrective roll after a value was clamped to Min/Max.</summary>
+    private const int ClampSnapDurationMs = 220;
+
+    private const int GregorianMaxYear = 9999;
+
+    /// <summary>One short of the Persian calendar's last (partial) year, so every month/day the drums offer exists.</summary>
+    private const int PersianMaxYear = 9377;
+
     private readonly G9DateTimePickerMode _mode;
     private readonly DateTime? _minDate;
     private readonly DateTime? _maxDate;
     private readonly bool _twentyFourHour;
     private readonly bool _isPersian;
+    private readonly bool _isRtl;
     private readonly G9DateTimePicker? _owner;
     private readonly Label _previewLabel;
     private readonly G9DrumColumn? _dayColumn;
@@ -49,6 +79,12 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
     private int _dayColumnBuiltForDayCount;
     private readonly bool _showTodayButton;
 
+    /// <summary>First / last year the year drum currently holds (see <see cref="BuildYears" />).</summary>
+    private int _yearWindowMin;
+    private int _yearWindowMax;
+    private bool _yearRecentreScheduled;
+    private bool _clampSnapScheduled;
+
     public G9DateTimePickerSheet(
         string title,
         DateTime? selected,
@@ -60,12 +96,30 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         bool showTodayButton = true)
     {
         _mode = mode;
-        _minDate = minDate;
-        _maxDate = maxDate;
         _twentyFourHour = twentyFourHour;
-        _isPersian = G9Culture.IsRtl;
+        // Calendar by LANGUAGE, layout by DIRECTION. Both used to come from IsRtl, which gave
+        // Arabic / Hebrew apps the Jalali calendar.
+        _isPersian = G9Calendar.IsPersianLanguage(G9Culture.CurrentCulture);
+        _isRtl = G9Culture.IsRtl;
         _owner = owner;
         _showTodayButton = showTodayButton;
+
+        // PersianCalendar throws for anything before 0622-03-22, and nothing above this sheet
+        // catches it. Bounds are pulled into the supported range once, here, so every later
+        // GetDateParts call is safe; a SELECTED value the calendar cannot represent (a bound
+        // default(DateTime) is the usual one) means "no value yet" and opens on today.
+        if (_isPersian)
+        {
+            minDate = minDate.HasValue ? G9Calendar.ClampToPersianRange(minDate.Value) : null;
+            maxDate = maxDate.HasValue ? G9Calendar.ClampToPersianRange(maxDate.Value) : null;
+            if (selected.HasValue && !G9Calendar.IsSupportedByPersianCalendar(selected.Value))
+            {
+                selected = null;
+            }
+        }
+
+        _minDate = minDate;
+        _maxDate = maxDate;
         _selected = Clamp(selected ?? DateTime.Now);
 
         RowDefinitions =
@@ -77,7 +131,7 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         ];
         BackgroundColor = G9Palette.Current.Surface;
         Padding = new Thickness(0, 0, 0, 10);
-        FlowDirection = _isPersian ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
+        FlowDirection = _isRtl ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
 
         var header = CreateHeader(title);
         Grid.SetRow(header, 0);
@@ -293,7 +347,18 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
             var year = _yearColumn.SelectedValue;
             var month = _monthColumn.SelectedValue;
             var day = Math.Min(_dayColumn.SelectedValue, GetDaysInMonth(year, month));
-            next = CreateDate(year, month, day, hour, minute);
+            try
+            {
+                next = CreateDate(year, month, day, hour, minute);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // A drum combination the calendar cannot represent (its very first / last days).
+                // This runs inside an event handler, where an exception is fatal — keep the last
+                // good value and put the drums back on it.
+                ScheduleSnapToSelected();
+                return;
+            }
 
             // Adjust the day column ONLY when the day count actually changes (e.g.
             // March 31 → April 30, or to/from leap-Feb). Year-only changes within the
@@ -335,6 +400,155 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
 
         _selected = Clamp(next);
         UpdatePreview();
+
+        // Clamp used to change the VALUE only: the drums kept showing the out-of-range date while
+        // the preview and the returned value said something else. Roll them onto the clamped one.
+        if (_selected != next)
+        {
+            ScheduleSnapToSelected();
+        }
+        else if (_yearColumn is not null)
+        {
+            GrowYearWindowIfNeeded(GetDateParts(_selected).Year);
+        }
+    }
+
+    /// <summary>
+    ///     Rolls every drum onto <see cref="_selected" />. Deferred by one dispatcher tick on
+    ///     purpose: this is reached from a drum's <c>SelectedValueChanged</c>, and the drum starts
+    ///     its own snap animation right AFTER raising that event — a roll started from inside the
+    ///     handler would be cancelled by it.
+    /// </summary>
+    private void ScheduleSnapToSelected()
+    {
+        if (_clampSnapScheduled) return;
+        _clampSnapScheduled = true;
+
+        Dispatcher.Dispatch(() =>
+        {
+            _clampSnapScheduled = false;
+            if (_completed) return;
+            _ = SnapColumnsToSelectedAsync();
+        });
+    }
+
+    private async Task SnapColumnsToSelectedAsync()
+    {
+        var (year, month, day) = GetDateParts(_selected);
+
+        _suspendApply = true;
+        try
+        {
+            if (_yearColumn is not null && !YearInRange(year))
+            {
+                _yearColumn.SetItems(BuildYears(year), year);
+            }
+
+            SyncDayCount(year, month, day);
+        }
+        finally
+        {
+            _suspendApply = false;
+        }
+
+        var tasks = new List<Task>();
+        if (_yearColumn is not null) tasks.Add(_yearColumn.AnimateToValue(year, ClampSnapDurationMs));
+        if (_monthColumn is not null) tasks.Add(_monthColumn.AnimateToValue(month, ClampSnapDurationMs));
+        if (_dayColumn is not null) tasks.Add(_dayColumn.AnimateToValue(day, ClampSnapDurationMs));
+        if (_hourColumn is not null) tasks.Add(_hourColumn.AnimateToValue(_selected.Hour, ClampSnapDurationMs));
+        if (_minuteColumn is not null) tasks.Add(_minuteColumn.AnimateToValue(_selected.Minute, ClampSnapDurationMs));
+
+        try { await Task.WhenAll(tasks).ConfigureAwait(true); }
+        catch { }
+    }
+
+    /// <summary>
+    ///     Day-count adjustment (Persian leap-Esfand, Gregorian leap-Feb, 30/31 alternating months)
+    ///     through the cheap trim/extend path — see <see cref="ApplySelectionFromColumns" />.
+    /// </summary>
+    private void SyncDayCount(int year, int month, int day)
+    {
+        if (_dayColumn is null) return;
+
+        var requiredDays = GetDaysInMonth(year, month);
+        if (_dayColumnBuiltForDayCount == requiredDays) return;
+
+        var culture = G9Culture.CurrentCulture;
+        _dayColumn.TrimOrExtendItems(requiredDays, day, idx => new G9DrumItem
+        {
+            Value = idx + 1,
+            Text = (idx + 1).ToString("00", culture)
+        });
+        _dayColumnBuiltForDayCount = requiredDays;
+    }
+
+    /// <summary>
+    ///     Keeps the capped year window usable: when the selection comes within
+    ///     <see cref="YearWindowEdgeRows" /> of an edge that Min/Max do not actually impose, the
+    ///     window grows in that direction.
+    ///     <para>
+    ///         The END grows in place — appending rows does not move the rows already there, so it
+    ///         is cheap and cannot disturb the drum's scroll position. The START cannot (rows
+    ///         inserted above would shift everything under the finger), so there the column is
+    ///         rebuilt re-centred on the selection, once the drum has come to rest.
+    ///     </para>
+    /// </summary>
+    private void GrowYearWindowIfNeeded(int year)
+    {
+        if (_yearColumn is null) return;
+
+        var (allowedMin, allowedMax) = ResolveAllowedYears();
+
+        if (year >= _yearWindowMax - YearWindowEdgeRows && _yearWindowMax < allowedMax)
+        {
+            var newMax = Math.Min(allowedMax, _yearWindowMax + YearWindowStep);
+            var windowMin = _yearWindowMin;
+            var culture = G9Culture.CurrentCulture;
+
+            _suspendApply = true;
+            try
+            {
+                _yearColumn.TrimOrExtendItems(newMax - windowMin + 1, year, idx => new G9DrumItem
+                {
+                    Value = windowMin + idx,
+                    Text = (windowMin + idx).ToString("0000", culture)
+                });
+                _yearWindowMax = newMax;
+            }
+            finally
+            {
+                _suspendApply = false;
+            }
+        }
+
+        if (year <= _yearWindowMin + YearWindowEdgeRows && _yearWindowMin > allowedMin && !_yearRecentreScheduled)
+        {
+            _yearRecentreScheduled = true;
+            Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(YearRecentreDelayMs), RecentreYearWindow);
+        }
+    }
+
+    private void RecentreYearWindow()
+    {
+        _yearRecentreScheduled = false;
+        if (_completed || _yearColumn is null || Handler is null) return;
+
+        // Still under the finger or still rolling: leave it. The next settle re-evaluates.
+        if (!_yearColumn.IsIdle) return;
+
+        var year = GetDateParts(_selected).Year;
+        var (allowedMin, _) = ResolveAllowedYears();
+        if (year > _yearWindowMin + YearWindowEdgeRows || _yearWindowMin <= allowedMin) return;
+
+        _suspendApply = true;
+        try
+        {
+            _yearColumn.SetItems(BuildYears(year), year);
+        }
+        finally
+        {
+            _suspendApply = false;
+        }
     }
 
     private void UpdatePreview()
@@ -345,7 +559,7 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
     private string FormatFallback(DateTime value)
     {
         var culture = G9Culture.CurrentCulture;
-        if (_isPersian)
+        if (_isPersian && G9Calendar.IsSupportedByPersianCalendar(value))
         {
             var day = PersianCalendar.GetDayOfMonth(value).ToString("00", culture);
             var month = PersianMonths[PersianCalendar.GetMonth(value) - 1];
@@ -359,6 +573,8 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
             };
         }
 
+        // Formats in the Gregorian calendar whatever the culture's own calendar is (G9Calendar).
+        culture = G9Calendar.GetGregorianFormatCulture(culture);
         return _mode switch
         {
             G9DateTimePickerMode.Time => value.ToString(_twentyFourHour ? "HH:mm" : "hh:mm tt", culture),
@@ -371,25 +587,57 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
     {
         if (!_isPersian) return (date.Year, date.Month, date.Day);
 
+        // Every caller passes a value already inside the Persian range (the ctor pulls Min / Max /
+        // the selection into it, and "now" always is); the clamp makes that a guarantee, not a hope.
+        date = G9Calendar.ClampToPersianRange(date);
         return (
             PersianCalendar.GetYear(date),
             PersianCalendar.GetMonth(date),
             PersianCalendar.GetDayOfMonth(date));
     }
 
-    private IEnumerable<G9DrumItem> BuildYears(int selectedYear)
+    /// <summary>
+    ///     Builds the year rows for a window of at most ±<see cref="YearWindowRadius" /> around
+    ///     <paramref name="selectedYear" />, inside Min/Max, and records that window. Not lazy on
+    ///     purpose: <see cref="YearInRange" /> and <see cref="GrowYearWindowIfNeeded" /> read the
+    ///     recorded bounds, which an iterator would only set once somebody enumerated it.
+    /// </summary>
+    private List<G9DrumItem> BuildYears(int selectedYear)
     {
-        var minYear = _minDate.HasValue ? GetDateParts(_minDate.Value).Year : selectedYear - 50;
-        var maxYear = _maxDate.HasValue ? GetDateParts(_maxDate.Value).Year : selectedYear + 50;
+        var (allowedMin, allowedMax) = ResolveAllowedYears();
 
+        var minYear = Math.Max(allowedMin, selectedYear - YearWindowRadius);
+        var maxYear = Math.Min(allowedMax, selectedYear + YearWindowRadius);
+        if (minYear > maxYear)
+        {
+            // Inverted Min/Max from the consumer. One row beats an empty, unselectable drum.
+            minYear = maxYear = selectedYear;
+        }
+
+        _yearWindowMin = minYear;
+        _yearWindowMax = maxYear;
+
+        var culture = G9Culture.CurrentCulture;
+        var items = new List<G9DrumItem>(maxYear - minYear + 1);
         for (var year = minYear; year <= maxYear; year++)
         {
-            yield return new G9DrumItem
+            items.Add(new G9DrumItem
             {
                 Value = year,
-                Text = year.ToString("0000", G9Culture.CurrentCulture)
-            };
+                Text = year.ToString("0000", culture)
+            });
         }
+
+        return items;
+    }
+
+    /// <summary>The years Min/Max (or, without them, the calendar itself) allow.</summary>
+    private (int Min, int Max) ResolveAllowedYears()
+    {
+        var calendarMax = _isPersian ? PersianMaxYear : GregorianMaxYear;
+        var min = _minDate.HasValue ? GetDateParts(_minDate.Value).Year : 1;
+        var max = _maxDate.HasValue ? GetDateParts(_maxDate.Value).Year : calendarMax;
+        return (Math.Clamp(min, 1, calendarMax), Math.Clamp(max, 1, calendarMax));
     }
 
     private IEnumerable<G9DrumItem> BuildMonths()
@@ -497,32 +745,18 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         _suspendApply = true;
         try
         {
-            // The year column was built once at sheet open with a window around the
-            // initially-selected year (or constrained by min/max date if set). If the
-            // user navigated outside that window AND today's year falls outside the
-            // current column range, AnimateToValue would silently no-op. Rebuild the
-            // year column to cover the new year — this is rare so the cost is fine.
+            // The year column holds a window around the year it was last built for. If today's
+            // year falls outside it, AnimateToValue would silently no-op, so rebuild the column
+            // around today — rare, so the cost is fine. YearInRange tests the window that was
+            // ACTUALLY built: it used to recompute one around `_selected`, which the line above
+            // had just overwritten with today, so it always answered "in range" and Today did
+            // nothing whenever the value was more than 50 years away.
             if (_yearColumn is not null && !YearInRange(year))
             {
                 _yearColumn.SetItems(BuildYears(year), year);
             }
 
-            // Day-count adjustment (Persian leap-Esfand, Gregorian leap-Feb, 30/31
-            // alternating months) — same logic as ApplySelectionFromColumns.
-            if (_dayColumn is not null)
-            {
-                var requiredDays = GetDaysInMonth(year, month);
-                if (_dayColumnBuiltForDayCount != requiredDays)
-                {
-                    var culture = G9Culture.CurrentCulture;
-                    _dayColumn.TrimOrExtendItems(requiredDays, day, idx => new G9DrumItem
-                    {
-                        Value = idx + 1,
-                        Text = (idx + 1).ToString("00", culture)
-                    });
-                    _dayColumnBuiltForDayCount = requiredDays;
-                }
-            }
+            SyncDayCount(year, month, day);
         }
         finally
         {
@@ -544,19 +778,11 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         catch { }
     }
 
+    /// <summary>Whether the year drum, as currently built, holds a row for <paramref name="year" />.</summary>
     private bool YearInRange(int year)
     {
         if (_yearColumn is null) return true;
-        // The year column's items are built linearly from min to max. Use the items'
-        // selected-value range as the "in-range" check by walking the column. We don't
-        // expose the full list, so use SelectedValue as the proxy plus the count.
-        // Simpler: try AnimateToValue and let it no-op silently is risky; explicitly
-        // check by attempting a lookup. The cheapest path is to recompute the bounds
-        // we'd have used in BuildYears.
-        var selectedYear = GetDateParts(_selected).Year;
-        var minYear = _minDate.HasValue ? GetDateParts(_minDate.Value).Year : selectedYear - 50;
-        var maxYear = _maxDate.HasValue ? GetDateParts(_maxDate.Value).Year : selectedYear + 50;
-        return year >= minYear && year <= maxYear;
+        return year >= _yearWindowMin && year <= _yearWindowMax;
     }
 
     private View CreateTodayChip()

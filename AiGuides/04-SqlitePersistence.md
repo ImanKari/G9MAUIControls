@@ -50,8 +50,12 @@ The posture instead:
    preserves what mapping needs. Where that cannot express the requirement, the API is marked
    `[RequiresUnreferencedCode]` and the annotation is **propagated to public API**, which is what stops
    consumers getting an unactionable `IL2104: assembly produced trim warnings`.
-3. Ship a `TrimmerRootDescriptor` XML in the package so a consumer's entity assembly can be rooted
-   without them working out the incantation.
+3. **No `TrimmerRootDescriptor` ships.** This list used to say one did; it never existed — the csproj packs
+   `build\*.xml` only `If Exists`, and the file was never written (IN-30). It was not then added, because
+   there is nothing for it to name: the library has no reflection targets of its own. It reflects over the
+   *consumer's* entity types, expression trees and closures, so what has to survive the link is the
+   consumer's entity assembly — and a package cannot know that assembly's name. A descriptor rooting
+   *this* assembly would ship, look like a fix, and change nothing.
 4. Document the escape hatch: a consumer who needs NativeAOT should keep entity types in an assembly
    named in `TrimmerRootAssembly`.
 

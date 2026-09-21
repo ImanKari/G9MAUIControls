@@ -25,6 +25,11 @@ public sealed class G9SqliteConnectionProvider : IAsyncDisposable
     private string? _databasePath;
     private bool _pragmasApplied;
 
+    // The opt-in made by ApplyPerformancePragmasAsync, remembered for the life of the provider so every
+    // LATER connection gets the same PRAGMAs. Volatile because it is read from sqlite-net's open callback,
+    // which runs on whichever thread-pool thread performs a connection's first operation — outside the lock.
+    private volatile bool _performancePragmasRequested;
+
     /// <summary>Creates the provider over a database locator.</summary>
     /// <param name="locator">Decides which file is open, and says when the answer changes.</param>
     /// <remarks>
@@ -83,9 +88,17 @@ public sealed class G9SqliteConnectionProvider : IAsyncDisposable
     {
         get
         {
-            var path = _locator.GetDatabasePath();
+            SQLiteAsyncConnection connection;
+            SQLiteAsyncConnection? staleConnection = null;
+
             lock (_connectionLock)
             {
+                // Read INSIDE the lock. Read outside it, a thread could resolve user A's path, lose the CPU
+                // while a switch to user B completed, then come back, find "B is open but I was told A",
+                // close B and reopen A — after which the new session's writes land in the previous user's
+                // file. Inside the lock, the path and the decision made on it are one atomic step.
+                var path = _locator.GetDatabasePath();
+
                 if (_connection is not null &&
                     string.Equals(_databasePath, path, StringComparison.OrdinalIgnoreCase))
                 {
@@ -94,7 +107,11 @@ public sealed class G9SqliteConnectionProvider : IAsyncDisposable
 
                 if (_connection is not null)
                 {
-                    _connection.CloseAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                    // Detached here, CLOSED BELOW, outside the lock. Closing waits on SQLite (a WAL
+                    // checkpoint, on the last connection to a file); blocking on that while holding the lock
+                    // stalled every other caller behind it, on whatever thread they were — the UI thread
+                    // included.
+                    staleConnection = _connection;
                     _connection = null;
                     _databasePath = null;
                     _pragmasApplied = false;
@@ -110,16 +127,45 @@ public sealed class G9SqliteConnectionProvider : IAsyncDisposable
 
                 // Existing databases store datetime columns as TEXT values in a space-separated ISO style.
                 // Configure sqlite-net to parse this format with invariant culture to avoid culture-specific failures.
+                //
+                // postKeyAction is sqlite-net's "the native handle has just been opened" hook. busy_timeout,
+                // synchronous, cache_size and friends belong to a HANDLE, not to the database file, so they
+                // were lost on every reconnect — a user switch, a restore, any close-and-reopen — long after
+                // ApplyPerformancePragmasAsync had returned. Re-applying them from this hook covers every
+                // handle this provider opens, before the first statement runs on it.
                 var connectionString = new SQLiteConnectionString(
                     path,
                     SQLiteOpenFlags.ReadWrite | SQLiteOpenFlags.Create,
                     false,
+                    postKeyAction: ApplyRequestedPragmasOnOpen,
                     dateTimeStringFormat: LegacyDateTimeTextFormat);
 
                 _connection = new SQLiteAsyncConnection(connectionString);
                 _databasePath = path;
-                return _connection;
+                connection = _connection;
             }
+
+            if (staleConnection is not null)
+            {
+                try
+                {
+                    staleConnection.CloseAsync().ConfigureAwait(false).GetAwaiter().GetResult();
+                }
+                catch (Exception)
+                {
+                    // Same posture as OnDatabasePathChanged. It is already detached, so it can never be
+                    // handed out again, and failing the caller's query over the PREVIOUS database's close
+                    // helps nobody. (It used to throw from inside the lock with _connection still pointing
+                    // at the stale connection, so every later caller retried the same failing close.)
+                }
+
+                // A swap noticed here is the same event as DatabasePathChanged and needs the same
+                // consequence. It was skipped, so a locator that changed its answer without raising the event
+                // left the previous database's rows in every cache. Outside the lock: a reset calls listeners.
+                SqliteRepositoryCacheRegistry.ResetAllCachesForSession();
+            }
+
+            return connection;
         }
     }
 
@@ -202,11 +248,21 @@ public sealed class G9SqliteConnectionProvider : IAsyncDisposable
     ///         <item><description>5 s busy timeout (ride out short locks instead of throwing).</description></item>
     ///     </list>
     /// </summary>
+    /// <remarks>
+    ///     <b>The opt-in is remembered.</b> Calling this once applies the PRAGMAs to the connection that is
+    ///     open now, and the provider re-applies them to every connection it opens afterwards — after a user
+    ///     switch, a restore, or any close-and-reopen. All of them except the journal mode are
+    ///     per-connection settings, so until this was remembered the first reconnect silently fell back to
+    ///     SQLite's defaults, including sqlite-net's one-second busy timeout. With no connection open yet,
+    ///     the call just records the opt-in and the next connection picks it up.
+    /// </remarks>
     public async Task ApplyPerformancePragmasAsync()
     {
         SQLiteAsyncConnection connection;
         lock (_connectionLock)
         {
+            _performancePragmasRequested = true;
+
             if (_pragmasApplied || _connection is null)
             {
                 return;
@@ -248,6 +304,72 @@ public sealed class G9SqliteConnectionProvider : IAsyncDisposable
         if (connection is not null)
         {
             await connection.CloseAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    ///     Closes the open connection and resets every repository/DTO cache, without blocking the caller.
+    ///     The awaitable form of what <see cref="IG9SqliteDatabaseLocator.DatabasePathChanged" /> triggers.
+    /// </summary>
+    /// <remarks>
+    ///     Await this at a session boundary — sign-out, user switch, before replacing the database file —
+    ///     <b>before</b> the locator starts returning a different path. The <c>DatabasePathChanged</c>
+    ///     handler has to be synchronous (the event is an <see cref="EventHandler" />), so it can only wait
+    ///     for the close by blocking the thread that raised the event, which at sign-out is normally the UI
+    ///     thread. Once this has run there is no connection left for that handler to close and it returns
+    ///     immediately. The next <see cref="Connection" /> access opens whatever file the locator names
+    ///     then, with the requested PRAGMAs re-applied.
+    /// </remarks>
+    public async Task SwitchDatabaseAsync()
+    {
+        try
+        {
+            await CloseCurrentConnectionAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            // Unconditional, as in OnDatabasePathChanged: a failed close is loud on the next query, a stale
+            // cached row is silent.
+            SqliteRepositoryCacheRegistry.ResetAllCachesForSession();
+        }
+    }
+
+    /// <summary>
+    ///     sqlite-net's open hook: runs on every native handle this provider's connections open, right after
+    ///     the open and before any statement. Mirrors <see cref="ApplyPerformancePragmasAsync" /> — keep the
+    ///     two lists identical.
+    /// </summary>
+    /// <remarks>
+    ///     Best-effort by design. These are tuning, and the hook runs inside sqlite-net's connection
+    ///     constructor: a throw here would make the DATABASE unopenable over a setting that only makes it
+    ///     faster (switching to WAL, for one, needs a lock another connection may be holding). A PRAGMA that
+    ///     fails is skipped and the connection still opens, with SQLite's default for that setting.
+    /// </remarks>
+    private void ApplyRequestedPragmasOnOpen(SQLiteConnection connection)
+    {
+        if (!_performancePragmasRequested)
+        {
+            return;
+        }
+
+        // ExecuteScalar, never Execute — see ApplyPerformancePragmasAsync for why.
+        TryPragma<string>(connection, "PRAGMA journal_mode=WAL");
+        TryPragma<int>(connection, "PRAGMA synchronous=NORMAL");
+        TryPragma<int>(connection, "PRAGMA temp_store=MEMORY");
+        TryPragma<long>(connection, "PRAGMA cache_size=-40000");
+        TryPragma<long>(connection, "PRAGMA mmap_size=134217728");
+        TryPragma<int>(connection, "PRAGMA busy_timeout=5000");
+
+        static void TryPragma<TResult>(SQLiteConnection connection, string pragma)
+        {
+            try
+            {
+                connection.ExecuteScalar<TResult>(pragma);
+            }
+            catch (Exception)
+            {
+                // See the remarks: never fail an open over tuning.
+            }
         }
     }
 }

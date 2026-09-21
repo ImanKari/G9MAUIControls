@@ -123,6 +123,11 @@ hosting them inside the bar.
 `G9TabItem` is the `[ContentProperty]` for `TabContent` so XAML can place the content
 directly inside the tab item element.
 
+`G9TabItem` is a `BindableObject` that is never parented, so `G9TabView` hands its own
+`BindingContext` down to every item (on `BindingContextChanged` and whenever an item is added):
+`BadgeCount="{Binding Unread}"` on a tab resolves against the tab view's context. An item that sets
+its own `BindingContext` keeps it.
+
 ## Visual Anatomy
 
 ### Underlined (default)
@@ -266,6 +271,9 @@ This eliminates the 1-frame default-color flash that recreating icon Views cause
   user reports the indicator "slightly off in Persian only", measure the underline's
   pixel span against the bar's before assuming the positioning math is wrong: in the one
   case we had, the math was right and the host was 10 dp narrow.
+
+A runtime language switch that flips the direction rebuilds the cells (their order is decided at
+build time), and a burst of `Items.Add(...)` calls is coalesced into one rebuild per dispatcher tick.
 
 ## Usage
 

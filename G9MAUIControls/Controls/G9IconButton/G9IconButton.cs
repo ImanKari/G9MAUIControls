@@ -1,5 +1,6 @@
 using G9MAUIControls.Helpers;
 using G9MAUIControls.Icons;
+using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Maui.BindableProperty.Generator.Core;
 using Microsoft.Maui.Controls.Shapes;
@@ -34,7 +35,8 @@ public partial class G9IconButton : G9ControlBase
     private readonly G9CornerBadge _badgeOverlay;
     private readonly ContentView _iconHost;
     private readonly ActivityIndicator _spinner;
-    private string? _lastIconSig;
+    private G9IconSlotSignature _iconSignature;
+    private double _frameRadius = double.NaN;
 
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _emoji;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9IconSource? _icon;
@@ -95,7 +97,15 @@ public partial class G9IconButton : G9ControlBase
     ///     mode, so a value like <c>"99+"</c> renders as <c>"+99"</c>. Set false to keep the
     ///     badge text in its literal left-to-right order regardless of culture.
     /// </summary>
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _mirrorBadgeTextInRtl = true;
+    [AutoBindable(DefaultValue = "true", OnChanged = nameof(OnVisualChanged))] private bool _mirrorBadgeTextInRtl = true;
+
+    /// <summary>
+    ///     Accessible name announced by screen readers (TalkBack / VoiceOver / Narrator). An
+    ///     icon-only button has no text of its own, so without this it is announced as an
+    ///     unlabelled button. Pass an already-localized string ("Filter", "Refresh"). A
+    ///     <c>SemanticProperties.Description</c> set directly on the control still wins.
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _accessibilityText;
 
     [AutoBindable] private ICommand? _command;
     [AutoBindable] private object? _commandParameter;
@@ -157,6 +167,24 @@ public partial class G9IconButton : G9ControlBase
     private void OnVisualChanged() => RequestVisualUpdate();
 
     /// <summary>
+    ///     Subclass hook: <c>true</c> while the button must refuse taps and paint disabled for a
+    ///     reason of its own (busy, command cannot execute). Exists so
+    ///     <see cref="G9SafeIconButton" /> never has to write <see cref="VisualElement.IsEnabled" />,
+    ///     which belongs to the consumer — writing it replaced their <c>IsEnabled="{Binding …}"</c>.
+    /// </summary>
+    private protected virtual bool IsInteractionBlocked => false;
+
+    /// <summary>
+    ///     Subclass hook: whether a tap runs <see cref="Command" /> directly.
+    ///     <see cref="G9SafeIconButton" /> turns it off because it runs the same command through
+    ///     the safe layer from <see cref="Clicked" />; leaving both on would execute it twice.
+    /// </summary>
+    private protected virtual bool ExecutesCommandOnTap => true;
+
+    /// <summary>The consumer's <see cref="VisualElement.IsEnabled" /> AND the button's own veto.</summary>
+    private bool IsEffectivelyEnabled => IsEnabled && !IsInteractionBlocked;
+
+    /// <summary>
     ///     Resolve the effective frame colors, honoring the <see cref="BaseBackgroundColor" /> /
     ///     <see cref="TextColor" /> escape hatches over the named <see cref="Variant" />.
     ///     Ghost style is handled by the caller (transparent frame + secondary icon tint).
@@ -210,7 +238,7 @@ public partial class G9IconButton : G9ControlBase
         else
         {
             var colors = ResolveColors();
-            var enabled = IsEnabled && !IsLoading;
+            var enabled = IsEffectivelyEnabled && !IsLoading;
             _frame.Background = G9Colors.BuildSolidOrGradient(colors.Background, colors.UsesGradient && enabled);
             _frame.Stroke = new SolidColorBrush(colors.Stroke);
             iconColor = colors.Icon;
@@ -224,14 +252,22 @@ public partial class G9IconButton : G9ControlBase
     protected override void OnApplyVisuals()
     {
         var palette = G9Palette.Current;
-        var enabled = IsEnabled && !IsLoading;
+        var effectivelyEnabled = IsEffectivelyEnabled;
+        var enabled = effectivelyEnabled && !IsLoading;
         var size = ButtonSize > 0 ? ButtonSize : 40;
         var iconSz = IconSize > 0 ? IconSize : 20;
 
         // Frame sizing
         if (_frame.WidthRequest != size) _frame.WidthRequest = size;
         if (_frame.HeightRequest != size) _frame.HeightRequest = size;
-        _frame.StrokeShape = G9Colors.Round(FrameRadius);
+        // A new shape object makes the platform rebuild the clip path, so only hand one over
+        // when the radius actually moved (ButtonSize / IsCircular), not on every pass.
+        var radius = FrameRadius;
+        if (_frame.StrokeShape is null || radius != _frameRadius)
+        {
+            _frameRadius = radius;
+            _frame.StrokeShape = G9Colors.Round(radius);
+        }
 
         // Hit target. The gesture is on the control, so the control's MEASURED bounds are what the
         // finger must land in — the drawn frame is irrelevant to hit-testing. MinimumTouchTarget lets a
@@ -261,7 +297,7 @@ public partial class G9IconButton : G9ControlBase
 
         // Apply loading/disabled opacity only to the frame, NOT the badge.
         // The badge must remain fully visible even during loading.
-        var frameOpacity = !IsEnabled ? 0.38 : IsLoading ? 0.7 : 1.0;
+        var frameOpacity = !effectivelyEnabled ? 0.38 : IsLoading ? 0.7 : 1.0;
         if (_frame.Opacity != frameOpacity)
             _frame.Opacity = frameOpacity;
         // Keep the control itself fully opaque so the badge isn't affected.
@@ -281,26 +317,11 @@ public partial class G9IconButton : G9ControlBase
         }
 
         // Icon: build once, then only toggle visibility + update color.
-        // Never destroy/recreate the icon view on loading state changes.
-        var hasIcon = G9IconFactory.HasIcon(Emoji, Icon, ImagePath, ImageSource);
-        var iconSig = hasIcon ? $"{Emoji}|{Icon}|{ImagePath}|{(ImageSource is null ? "0" : "1")}" : "none";
-        if (_lastIconSig != iconSig)
-        {
-            _lastIconSig = iconSig;
-            _iconHost.Content = hasIcon
-                ? G9IconFactory.Create(Emoji, Icon, ImagePath, ImageSource, iconColor, iconSz)
-                : null;
-        }
-        else if (hasIcon && _iconHost.Content is not null)
-        {
-            // Just update color in-place without rebuilding
-            switch (_iconHost.Content)
-            {
-                case G9IconView mi:
-                    if (mi.Color != iconColor) mi.Color = iconColor;
-                    break;
-            }
-        }
+        // Never destroy/recreate the icon view on loading state changes. The signature carries
+        // the ImageSource's identity and the icon size, so swapping one bitmap for another or
+        // changing IconSize refreshes the view (the earlier string key saw neither).
+        var hasIcon = G9IconSlot.Apply(
+            _iconHost, ref _iconSignature, Emoji, Icon, ImagePath, ImageSource, iconColor, iconSz);
 
         // Toggle visibility: icon hidden during loading, shown otherwise
         var iconVisible = !IsLoading && hasIcon;
@@ -339,11 +360,19 @@ public partial class G9IconButton : G9ControlBase
             hostWidth: size,
             hostHeight: size,
             mirrorTextInRtl: MirrorBadgeTextInRtl);
+
+        // Name from the consumer (an icon has no text to fall back on); state from the library's
+        // own catalogue. A count badge is part of what the button says, so it is read out too.
+        ApplySemantics(
+            AccessibilityText,
+            IsLoading
+                ? G9Strings.Get(G9StringKey.Loading)
+                : string.IsNullOrWhiteSpace(BadgeText) ? null : BadgeText);
     }
 
     private void OnTapped(object? sender, TappedEventArgs e)
     {
-        if (!IsEnabled || IsLoading) return;
+        if (!IsEffectivelyEnabled || IsLoading) return;
 
         // Invoke handlers SYNCHRONOUSLY first so any state change inside the handler
         // (most commonly IsLoading = true) lands on this same frame as the touch-up.
@@ -354,14 +383,16 @@ public partial class G9IconButton : G9ControlBase
         {
             Clicked?.Invoke(this, EventArgs.Empty);
 
-            if (Command is { } cmd && cmd.CanExecute(CommandParameter))
+            if (ExecutesCommandOnTap && Command is { } cmd && cmd.CanExecute(CommandParameter))
             {
                 cmd.Execute(CommandParameter);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // UI buttons must never crash from a click handler.
+            // UI buttons must never crash from a click handler — and must not hide the failure
+            // either, or the button just "does nothing" with no trace of why.
+            G9Press.ReportFailure(this, ex);
         }
 
         _ = PlayPressAnimationAsync();

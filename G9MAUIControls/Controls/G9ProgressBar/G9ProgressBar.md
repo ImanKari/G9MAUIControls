@@ -70,7 +70,13 @@
 - Determinate value transitions are animated over 300ms with `CubicOut` easing. Setting
   `Value` from a binding produces a smooth fill animation, not a snap.
 - Indeterminate mode uses a `Dispatcher.StartTimer` ticker at 16ms frame intervals. The
-  ticker exits when `IsIndeterminate` flips back to `false` or when the control unloads.
+  ticker runs ONLY while the control is loaded, has a handler, is visible and
+  `IsIndeterminate` is true; it stops on Unloaded / handler-null / `IsVisible = false` and
+  restarts on the next load. (Until the 2026-09 fix it only checked `IsIndeterminate`, despite
+  what this note claimed, and kept ticking — and rooting the page — after a pop.)
+- `OnApplyVisuals` does not write the drawable's value while the value animation is running, so
+  the animation is no longer snapped to its end one tick after it starts.
+- The percent label is formatted with `G9Culture.CurrentCulture`.
 - The diagonal "stripe" overlay only paints when `IsPaused == false` and `IsEnabled == true`.
 - `Value` is clamped to `[0, 1]` inside `OnValueChanged` — the visual is always sane,
   even if a binding pushes a value outside the range.

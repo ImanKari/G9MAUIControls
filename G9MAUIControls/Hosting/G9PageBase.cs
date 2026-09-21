@@ -52,7 +52,18 @@ public abstract partial class G9PageBase : ContentPage
     private VisualElement? _pageLoadingOverlay;
     private IDisposable? _pageLoadingActivity;
     private bool _overlayDismissed;
+    private bool _pageLoadingWatchdogStarted;
+
+    // The CTS of the appearing run that is currently in flight, published ONLY so OnDisappearing can
+    // cancel it. Each run owns its CTS through a local and is the only one that disposes it — as a
+    // plain shared field, overlapping runs disposed each other's source.
     private CancellationTokenSource? _pageLoadingCts;
+
+    // Concurrency key for this page's appearing run. It must identify the INSTANCE: keyed by type name
+    // alone, a second live instance of the same page type had its run skipped as "already running",
+    // and with it the only code that removes that instance's loading overlay.
+    private readonly string _lifecycleKey;
+    private static long _lifecycleKeySeed;
 
     // Set when the page reports it is visually ready — automatically when
     // OnAppearingAfterParentAsync completes, or manually when the page calls
@@ -111,8 +122,18 @@ public abstract partial class G9PageBase : ContentPage
         // In the source app every page content happened to be opaque, so this never surfaced. It surfaced
         // on the first consumer page built from scratch (LES-0019). Assigning it here means a consumer gets
         // the right thing by default and can still override — the palette push below respects that.
+        //
+        // Painted once here; the live palette SUBSCRIPTION is made in OnHandlerChanging, paired with its
+        // removal. Subscribing from the constructor had no matching `-=` anywhere, so the static palette
+        // pinned every page ever built — a whole MainPage tree per sign-out / sign-in cycle.
         ApplyThemedBackground();
-        G9Palette.Current.PropertyChanged += OnPalettePropertyChanged;
+
+        _lifecycleKey = $"{GetType().Name}#{Interlocked.Increment(ref _lifecycleKeySeed)}";
+
+        // Visibility drives which page the overlay helpers resolve as current — see ClaimOverlayHost.
+        // Self-subscriptions, so they add no lifetime of their own.
+        Loaded += OnHostPageLoaded;
+        Unloaded += OnHostPageUnloaded;
 
         // Tap-outside-to-dismiss-keyboard. We bypass MAUI's built-in
         // ContentPage.HideSoftInputOnTapped because it gates registration on
@@ -130,11 +151,8 @@ public abstract partial class G9PageBase : ContentPage
         // Subscribe to Loaded event to apply Android insets when view is ready
         Loaded += OnPageLoaded;
 
-        // Re-apply the safe-area insets whenever the Android window environment changes (cold start,
-        // resume, window focus regain after a picker/camera intent, or a screen off→on). This keeps
-        // the cutout-only insets correct across background/foreground and intent cycles. Unsubscribed
-        // in OnHandlerChanging when the handler is torn down.
-        G9AndroidHost.WindowEnvironmentChanged += OnAndroidWindowEnvironmentChanged;
+        // (The G9AndroidHost.WindowEnvironmentChanged subscription is made in OnHandlerChanging, next to
+        // its removal — from here it pinned pages that never got a handler, through the static event.)
 #endif
     }
 
@@ -181,9 +199,15 @@ public abstract partial class G9PageBase : ContentPage
         // nothing that lets external code reach into another overlay's control. See IG9OverlayHost for
         // why the boundary is drawn there rather than opened up with InternalsVisibleTo.
         //
-        // Assigned together so the two views can never disagree about which page is current.
-        G9ModalHostRegistry.Assign(this, _appG9Popup, _appG9BottomSheet, _overlayHost, _toastHost);
-        G9OverlayHostRegistry.Set(this, _toastHost, _devHost, _overlayHost);
+        // Registered together so the two views can never disagree about which page is current.
+        //
+        // REGISTERED, not made current: this runs inside the constructor (assigning ControlTemplate
+        // applies it synchronously), i.e. for a page that is not on screen and may never be. Register
+        // only takes "current" when no visible page outranks it — which keeps app start working, where
+        // the first page is built before anything has loaded. The claim itself happens in
+        // ClaimOverlayHost, when the page is actually shown.
+        G9ModalHostRegistry.Register(this, _appG9Popup, _appG9BottomSheet, _overlayHost, _toastHost);
+        G9OverlayHostRegistry.Register(this, _toastHost, _devHost, _overlayHost);
 
 #if IOS || MACCATALYST
         ApplyAppleTemplateHostEdgeToEdge();
@@ -201,6 +225,61 @@ public abstract partial class G9PageBase : ContentPage
             });
 
         _templateReady = true;
+    }
+
+    /// <summary>
+    ///     Makes this page the one popups, sheets and toasts mount into. Called whenever the page becomes
+    ///     visible — <c>Loaded</c> and <c>OnAppearing</c>, either of which can be the only signal
+    ///     depending on how the page got on screen (a modal popping off it raises Appearing without a
+    ///     Loaded; an Android back-stack return re-attaches the view and raises both). Idempotent.
+    /// </summary>
+    private void ClaimOverlayHost()
+    {
+        if (!_templateReady || IsCoveredByModalPage())
+        {
+            return;
+        }
+
+        G9ModalHostRegistry.Assign(this, _appG9Popup, _appG9BottomSheet, _overlayHost, _toastHost);
+        G9OverlayHostRegistry.Set(this, _toastHost, _devHost, _overlayHost);
+    }
+
+    /// <summary>
+    ///     True while another page is presented modally above this one. A covered page can still be
+    ///     re-attached or re-announced by the platform, and must not take the overlays back from the modal
+    ///     the user is actually looking at.
+    /// </summary>
+    private bool IsCoveredByModalPage()
+    {
+        var modalStack = Window?.Navigation?.ModalStack;
+        if (modalStack is null || modalStack.Count == 0)
+        {
+            return false;
+        }
+
+        var topModal = modalStack[^1];
+        for (Element? element = this; element is not null; element = element.Parent)
+        {
+            if (ReferenceEquals(element, topModal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void OnHostPageLoaded(object? sender, EventArgs e)
+    {
+        ClaimOverlayHost();
+    }
+
+    private void OnHostPageUnloaded(object? sender, EventArgs e)
+    {
+        // Off screen, NOT removed: Android raises Unloaded for transient detaches too, and the entry
+        // has to survive those. Removal is the handler teardown's job (OnHandlerChanging).
+        G9ModalHostRegistry.MarkOffScreen(this);
+        G9OverlayHostRegistry.MarkOffScreen(this);
     }
 
     /// <summary>
@@ -285,7 +364,13 @@ public abstract partial class G9PageBase : ContentPage
         FlowDirection = G9Culture.IsRtl
             ? FlowDirection.RightToLeft
             : FlowDirection.LeftToRight;
+
+        // `-=` first: OnAppearing can run twice without an OnDisappearing between (modal push / pop), and
+        // a second `+=` on the static event would outlive the single `-=` in OnDisappearing.
+        G9Culture.CultureChanged -= G9CultureOnCultureChanged;
         G9Culture.CultureChanged += G9CultureOnCultureChanged;
+
+        ClaimOverlayHost();
 
         // Wire the tap-outside detector. Idempotent — guards against
         // duplicate OnAppearing calls (modal push/pop scenarios).
@@ -296,6 +381,8 @@ public abstract partial class G9PageBase : ContentPage
         ApplyIOSPaddingAsync();
 #endif
 
+        StartPageLoadingWatchdog();
+
         G9SafeCommand.RunSafe(
             RunAppearingWithOverlayDismissAsync,
             new G9SafeCommandOptions
@@ -303,7 +390,7 @@ public abstract partial class G9PageBase : ContentPage
                 Source = GetType().Name,
                 EnableThrottle = false,
                 ShowErrorG9Popup = true,
-                ThrottleKey = $"{GetType().Name}.OnAppearingAfterParent"
+                ThrottleKey = $"{_lifecycleKey}.OnAppearingAfterParent"
             });
     }
 
@@ -408,8 +495,33 @@ public abstract partial class G9PageBase : ContentPage
         {
             G9ModalHostRegistry.Remove(this);
             G9OverlayHostRegistry.Clear(this);
+
+            // Every subscription this page holds on a STATIC event ends here, or the event pins the page
+            // (and everything it hosts) for the life of the process.
+            G9Palette.Current.PropertyChanged -= OnPalettePropertyChanged;
+            G9Culture.CultureChanged -= G9CultureOnCultureChanged;
 #if ANDROID
             G9AndroidHost.WindowEnvironmentChanged -= OnAndroidWindowEnvironmentChanged;
+
+            // A new handler means new native views; the inset cache describes the old ones.
+            _androidInsetsApplied = false;
+#endif
+        }
+        else
+        {
+            // Paired with the removals above, so a page that is detached and attached again follows the
+            // theme again. `-=` first keeps a handler swap (old → new, no null between) at one subscription.
+            G9Palette.Current.PropertyChanged -= OnPalettePropertyChanged;
+            G9Palette.Current.PropertyChanged += OnPalettePropertyChanged;
+
+            // Catch up on a theme switch that happened while nothing was subscribed.
+            ApplyThemedBackground();
+#if ANDROID
+            // Re-apply the safe-area insets whenever the Android window environment changes (cold start,
+            // resume, window focus regain after a picker/camera intent, or a screen off→on). This keeps
+            // the cutout-only insets correct across background/foreground and intent cycles.
+            G9AndroidHost.WindowEnvironmentChanged -= OnAndroidWindowEnvironmentChanged;
+            G9AndroidHost.WindowEnvironmentChanged += OnAndroidWindowEnvironmentChanged;
 #endif
         }
 
@@ -493,14 +605,19 @@ public abstract partial class G9PageBase : ContentPage
             return;
         }
 
-        _pageReadyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pageLoadingCts = new CancellationTokenSource(
+        // Both are owned by THIS run through locals. The fields only publish them — to
+        // ReleasePageLoadingOverlay and to OnDisappearing's cancel — and the CTS field is cleared in the
+        // finally only if it still belongs to this run.
+        var readyTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cts = new CancellationTokenSource(
             TimeSpan.FromMilliseconds(Math.Max(0, PageLoadingSafetyTimeoutMs)));
+        _pageReadyTcs = readyTcs;
+        _pageLoadingCts = cts;
 
         try
         {
             await OnAppearingAfterParentAsync()
-                .WaitAsync(_pageLoadingCts.Token)
+                .WaitAsync(cts.Token)
                 .ConfigureAwait(true);
 
             // Auto pages: the appearing hook completing IS the ready signal. Manual pages release
@@ -510,11 +627,11 @@ public abstract partial class G9PageBase : ContentPage
                 ReleasePageLoadingOverlay();
             }
 
-            await _pageReadyTcs.Task
-                .WaitAsync(_pageLoadingCts.Token)
+            await readyTcs.Task
+                .WaitAsync(cts.Token)
                 .ConfigureAwait(true);
 
-            await Task.Delay(Math.Max(0, PageLoadingDismissDelayMs), _pageLoadingCts.Token)
+            await Task.Delay(Math.Max(0, PageLoadingDismissDelayMs), cts.Token)
                 .ConfigureAwait(true);
         }
         catch (System.OperationCanceledException)
@@ -527,9 +644,52 @@ public abstract partial class G9PageBase : ContentPage
         }
         finally
         {
-            _pageLoadingCts?.Dispose();
-            _pageLoadingCts = null;
+            if (ReferenceEquals(_pageLoadingCts, cts))
+            {
+                _pageLoadingCts = null;
+            }
+
+            cts.Dispose();
             await DismissPageLoadingOverlayAsync().ConfigureAwait(true);
+        }
+    }
+
+    /// <summary>
+    ///     Last line of defence for the loading overlay, deliberately OUTSIDE <c>G9SafeCommand</c>.
+    ///     <para>
+    ///         The overlay is input-opaque at <c>ZIndex = int.MaxValue</c>; while it is up the page cannot
+    ///         be used. Its normal removal lives in <see cref="RunAppearingWithOverlayDismissAsync" />, which
+    ///         runs behind <c>RunSafe</c>'s concurrency gate — and any gate that skips that run leaves the
+    ///         overlay up for good. This timer depends on nothing but the clock, and
+    ///         <see cref="DismissPageLoadingOverlayAsync" /> is one-shot, so whichever path gets there first
+    ///         wins and the other is a no-op.
+    ///     </para>
+    /// </summary>
+    private void StartPageLoadingWatchdog()
+    {
+        if (_overlayDismissed || _pageLoadingWatchdogStarted)
+        {
+            return;
+        }
+
+        _pageLoadingWatchdogStarted = true;
+        _ = RunPageLoadingWatchdogAsync();
+    }
+
+    private async Task RunPageLoadingWatchdogAsync()
+    {
+        try
+        {
+            // The normal path's own worst case is the safety timeout followed by the dismiss delay. The
+            // margin keeps this strictly behind it, so it only ever acts when the normal path did not.
+            var budgetMs = Math.Max(0, PageLoadingSafetyTimeoutMs) + Math.Max(0, PageLoadingDismissDelayMs) + 500;
+            await Task.Delay(budgetMs).ConfigureAwait(true);
+            await DismissPageLoadingOverlayAsync().ConfigureAwait(true);
+        }
+        catch
+        {
+            // A watchdog must never become the failure. DismissPageLoadingOverlayAsync already guards
+            // its own animation and removal.
         }
     }
 
@@ -694,6 +854,10 @@ public abstract partial class G9PageBase : ContentPage
 #endif
 
 #if ANDROID
+    // False until the insets have been applied once against the CURRENT handler (reset on teardown), so
+    // the first application always forces the edge-to-edge re-layout exactly as it used to.
+    private bool _androidInsetsApplied;
+
     /// <summary>
     ///     Handles the Loaded event on Android to apply safe-area insets after the handler is ready.
     /// </summary>
@@ -738,8 +902,9 @@ public abstract partial class G9PageBase : ContentPage
     ///     <para>
     ///         Runs on load AND on every resume / focus regain via
     ///         <see cref="OnAndroidWindowEnvironmentChanged" />. Fully guarded so it never throws, and
-    ///         idempotent — writing an unchanged bindable inset raises no PropertyChanged — so the
-    ///         re-runs are cheap and side-effect-free.
+    ///         idempotent — writing an unchanged bindable inset raises no PropertyChanged, and the forced
+    ///         native re-layout is skipped when neither padding nor any inset changed — so the re-runs
+    ///         are cheap and side-effect-free.
     ///     </para>
     /// </summary>
     private void ApplyAndroidSafeAreaInsets()
@@ -748,8 +913,13 @@ public abstract partial class G9PageBase : ContentPage
         {
             if (Handler?.PlatformView is not View handler) return;
 
-            ClearAndroidNativeRootPadding(handler);
-            InvalidateAndroidEdgeToEdgeLayout(handler);
+            // This runs on every resume / focus regain, and nearly all of those change nothing. The
+            // forced re-layout below (InvalidateMeasure on the page, its content and ContentHost, plus
+            // RequestLayout across up to 240 native views) used to run unconditionally, twice per call.
+            // It now runs once, and only when there is something to re-lay-out: native padding really was
+            // re-applied and cleared, an inset value really changed, or this is the first application
+            // against the current handler.
+            var layoutDirty = ClearAndroidNativeRootPadding(handler) || !_androidInsetsApplied;
 
             if (Content is Layout contentLayout)
             {
@@ -757,7 +927,15 @@ public abstract partial class G9PageBase : ContentPage
             }
 
             var windowInsets = handler.RootWindowInsets;
-            if (windowInsets is null) return;
+            if (windowInsets is null)
+            {
+                if (layoutDirty)
+                {
+                    InvalidateAndroidEdgeToEdgeLayout(handler);
+                }
+
+                return;
+            }
 
             var density = handler.Context?.Resources?.DisplayMetrics?.Density ?? 1;
             if (density <= 0) density = 1;
@@ -793,15 +971,34 @@ public abstract partial class G9PageBase : ContentPage
             }
             // API < 28: no DisplayCutout API and no cutout hardware -> all zero (edge-to-edge).
 
+            var bottomWithTabBar = ComputeBottomSafeAreaWithTabBar(bottom);
+
+            // Exact comparison on purpose: the values are recomputed from the same integers and density,
+            // so an unchanged environment reproduces them bit-for-bit.
+            if (!TopSafeAreaInset.Equals(top) ||
+                !BottomSafeAreaInset.Equals(bottom) ||
+                !LeftSafeAreaInset.Equals(left) ||
+                !RightSafeAreaInset.Equals(right) ||
+                !BottomSafeAreaWithTabBar.Equals(bottomWithTabBar))
+            {
+                layoutDirty = true;
+            }
+
             TopSafeAreaInset = top;
             BottomSafeAreaInset = bottom;
             LeftSafeAreaInset = left;
             RightSafeAreaInset = right;
 
-            BottomSafeAreaWithTabBar = ComputeBottomSafeAreaWithTabBar(bottom);
+            BottomSafeAreaWithTabBar = bottomWithTabBar;
 
-            ClearAndroidNativeRootPadding(handler);
-            InvalidateAndroidEdgeToEdgeLayout(handler);
+            // Publishing the insets can make MAUI put native padding back; clear it again, as before.
+            layoutDirty |= ClearAndroidNativeRootPadding(handler);
+            _androidInsetsApplied = true;
+
+            if (layoutDirty)
+            {
+                InvalidateAndroidEdgeToEdgeLayout(handler);
+            }
         }
         catch
         {
@@ -814,28 +1011,32 @@ public abstract partial class G9PageBase : ContentPage
     ///     child activity returns. The app publishes safe-area values through bindable properties;
     ///     the native page root itself must stay edge-to-edge.
     /// </summary>
-    private void ClearAndroidNativeRootPadding(View pageHandler)
+    /// <returns><c>true</c> when any padding was actually present and cleared.</returns>
+    private bool ClearAndroidNativeRootPadding(View pageHandler)
     {
-        ClearAndroidNativePadding(pageHandler);
+        var cleared = ClearAndroidNativePadding(pageHandler);
 
         if (Content?.Handler?.PlatformView is View contentView)
         {
-            ClearAndroidNativePadding(contentView);
+            cleared |= ClearAndroidNativePadding(contentView);
         }
+
+        return cleared;
     }
 
-    private static void ClearAndroidNativePadding(View view)
+    private static bool ClearAndroidNativePadding(View view)
     {
         if (view.PaddingTop == 0 &&
             view.PaddingBottom == 0 &&
             view.PaddingLeft == 0 &&
             view.PaddingRight == 0)
         {
-            return;
+            return false;
         }
 
         view.SetPadding(0, 0, 0, 0);
         view.RequestLayout();
+        return true;
     }
 
     private void InvalidateAndroidEdgeToEdgeLayout(View pageHandler)

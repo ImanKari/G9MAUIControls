@@ -92,8 +92,14 @@ internal static class G9OutlinedFieldVisual
             { 0, 1, new Animation(v => label.Scale = startScale + ((targetScale - startScale) * v)) }
         };
         anim.Commit(owner, FloatLabelAnimationName, 16, G9Metrics.FloatingLabelDurationMs, Easing.CubicOut,
-            finished: (_, _) =>
+            finished: (_, cancelled) =>
             {
+                // A newer call aborted this animation and has already written ITS font / colour
+                // (a refocus within the 160 ms slide sets Bold + the focus colour, THEN aborts us).
+                // Applying our deferred rest-state values now would overwrite them and leave the
+                // floated label regular-weight and grey (G9Controls.md §12 rule 6).
+                if (cancelled) return;
+
                 // Deferred font/color change for un-floating (rest state).
                 if (!floated)
                 {

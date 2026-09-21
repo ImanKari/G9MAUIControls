@@ -37,10 +37,15 @@ public sealed class G9SheetViewPositionChangedEventArgs : EventArgs
     }
 
     /// <summary>Current visible height of the sheet body, in dp.</summary>
-    public double VisibleHeight { get; }
+    public double VisibleHeight { get; internal set; }
 
     /// <summary>Full host height in dp (used to compute a 0..1 ratio).</summary>
-    public double FullHeight { get; }
+    public double FullHeight { get; internal set; }
+
+    // The setters are internal because G9SheetView raises this once per animation frame and once
+    // per touch-move, and REUSES one instance for the life of the control (as it already does for
+    // its state-changed args) instead of allocating on the UI thread at 60-120 Hz. Subscribers
+    // must therefore read the values during the callback and never retain the instance.
 }
 
 /// <summary>

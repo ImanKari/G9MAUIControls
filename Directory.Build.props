@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.0.14</G9FamilyVersion>
+    <G9FamilyVersion>1.1.0</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,72 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+
+        1.1.0
+        - Bottom sheet: a sheet is STAGED off-screen and measured for real before it opens (ADR-0022).
+
+        The first sizing pass used to run before the sheet joined the visual tree, where a view has no
+        platform handler and measures as zero. The settle passes, the persisted height memo and the seed
+        table existed to hide that zero. A sheet is now attached below the screen edge, measured with its
+        handlers in place, laid out and drawn, and only then slid in - at its exact height, with finished
+        content, in one motion. An already-built view is no longer wrapped in a DeferredContentView and
+        hidden behind a placeholder for a fixed 369 + 220 + 160 ms; DeferContent now only applies to
+        factory content, whose build starts when the open motion ends rather than on a timer.
+
+        Resize and drag no longer re-lay the body out every frame: the body is laid out once per size and
+        moved by translation, a sticky footer is held at the screen edge by counter-translation, and a
+        fit-to-content resize is one layout pass plus a slide. An aborted motion no longer runs its
+        completion. Release is judged on velocity as well as distance. On Android the backdrop effect no
+        longer sweeps the native view tree on every animation frame.
+
+        Rollback: G9BottomSheetSettings.StageBeforeShow = false restores the previous pipeline. New
+        settings: PreOpenSettleFrames (2), PreOpenMaxHoldMs (250), DeferPrebuiltContent (false),
+        UseHardwareLayerDuringMotion (true). New API: ShowG9BottomSheetAsync, which faults when the open
+        pipeline throws; ShowListG9BottomSheetAsync now honours the caller's SizeMode.
+
+        Sheet motion is platform-native by default (ADR-0023): duration and curve are resolved per motion
+        from the distance and the release velocity - ViewDragHelper's settle on Android and Windows,
+        UIKit's default spring on iOS and Mac Catalyst - instead of a configured duration scaled by
+        distance, which made a short sheet open in a few frames. With the default style the app-wide
+        OpenAnimationDurationMs, CloseAnimationDurationMs and SizeScaledAnimationDuration are not used; a
+        per-sheet duration still wins. MotionStyle = Timed restores the old behaviour. On Android motion
+        runs on the display frame clock (UseFrameClockMotion, default true): the clock starts on the first
+        drawn frame and a frame hitch becomes a pause instead of a jump. The fling threshold is 300 dp/s
+        (was 700).
+
+        LoadableSheetContentView.LoadWhileStaged (default false): a body whose first render needs only
+        on-device data can run its load while the sheet is staged, and the sheet opens already filled
+        instead of on a spinner. The staging pipeline now waits for IDeferredContentReadiness before its
+        first measure. ShowListG9BottomSheetAsync and G9SelectionSheet build eagerly even when called off
+        the UI thread.
+
+        G9BottomSheetOptions.ReplaceCurrentSheet: the new sheet is staged while the open one stays on
+        screen, then the two cross in one frame with the dim handed over - no empty page between a
+        sheet and its replacement. A staged sheet's modal dim is zero until the sheet moves (it used to
+        show the resting dim over an empty page), and a stacked child's parent recedes when the child
+        rises rather than when it is attached.
+
+        - Popup: ShowConfirmAsync no longer hangs for ever when dismissed by the hardware back button.
+        The popup queue no longer deadlocks on a popup raised from a button callback, and one exception
+        can no longer wedge it for the life of the process. Footer buttons are re-entrancy guarded.
+
+        - Hosting: the overlay-host registry is a stack of live pages instead of one slot, so a sheet
+        opened after a pushed page was popped no longer throws. G9PageBase, G9ContentViewBase and
+        G9EdgePanel release their static palette and culture subscriptions (each page used to leak).
+        Follow-system-theme survives a garbage collection.
+
+        - Controls: [AutoBindable] defaults that were silently default(T) now apply (G9PinEntry.Length,
+        G9CascadePanel.ShowHeader, G9TimeSpanPicker.Mode, nine G9IntroCarousel properties). CONSUMER
+        VISIBLE: a G9TimeSpanPicker with no Mode now shows years, months AND days, and a nested
+        G9CascadePanel now shows its back header. G9TimeSpanPicker lays its drums out in the right number
+        of columns and decomposes days consistently (370 days is 1 year 5 days, not 1 year 10 days).
+        G9DateTimePicker no longer crashes in Persian on DateTime.MinValue and picks its calendar by
+        language, not by reading direction. Number fields accept Persian and Arabic-Indic digits and
+        G9PinEntry normalises them. The safe buttons no longer capture Command once or write IsEnabled.
+        A selection sheet dismissed without a choice no longer clears the bound value.
+
+        - Toast, tab bar, theming, progress overlay, SQLite: see AiGuides/12-Remediation-Plan.md for the
+        full list of findings addressed in this release.
 
         1.0.14
         - A default field icon comes back after a subclass affordance has replaced it.

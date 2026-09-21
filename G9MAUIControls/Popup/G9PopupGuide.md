@@ -246,7 +246,35 @@ public static class G9PopupHelper
 - `DoNothing` — keeps the popup open. Used by the input popup's submit button when validation fails so the user can fix the field instead of getting their values discarded.
 - `ShowNext` — closes the current popup and opens `result.NextG9Popup` immediately. Useful for guided flows.
 
-`G9PopupResult.AfterCloseAsync` runs after the close animation finishes (and after the next popup, if any, is enqueued). Used for navigation / cleanup that should not race the open animation of the next popup.
+`G9PopupResult.AfterCloseAsync` runs after the close animation finishes (and after the next popup, if any, is enqueued). Used for navigation / cleanup that should not race the open animation of the next popup. The queue waits for it **only until another popup is requested** — see "Nested popups" below.
+
+### `ShowConfirmAsync` returns `false` for every exit that is not OK
+
+Cancel, hardware back, `DismissAllG9PopupsAsync`, `ClearG9PopupQueueAsync`, `CloseActiveG9PopupAsync`, "no visible host" and a presentation failure all yield `false`. It used to await a flag that only the two buttons set, so any other dismissal suspended the caller **forever** — and under `G9SafeCommand` held its concurrency key forever, which is what "the button stopped responding until the app restarts" was. The rule for any new awaitable built on the queue: derive the answer from `EnqueueAsync` returning, never from a side flag that only some exits set.
+
+### Nested popups (a popup requested from inside a button callback)
+
+```csharp
+await G9PopupHelper.ShowConfirmAsync(message, okCallback: async _ =>
+    await G9SafeCommand.RunAsync(DeleteAsync));   // DeleteAsync throws → error popup
+```
+
+A popup is "done" only when its button's `CallbackAsync` has **returned**, and there is one queue pump. The error popup above used to queue behind the confirm, which was waiting for its callback, which was waiting for the error popup: a permanent deadlock. `AfterCloseAsync` had the same shape.
+
+Now, while a callback (or `AfterCloseAsync`) is running, a newly requested popup goes to the **front** of the queue and wakes the pump. The pump *parks* the popup whose callback is running — stops waiting on it, leaves the callback running — and presents the nested one. When the parked callback returns:
+
+- `Close` / `ShowNext` → the request completes and its `AfterCloseAsync` / `NextG9Popup` run as usual (from the button handler, since the pump has moved on).
+- `DoNothing` → the popup is put back at the front of the queue and shown again. A custom view (the input form) is re-mounted as the same instance, so typed values survive.
+
+Consequences worth knowing: the outer popup's card is **closed** while the nested one shows (one `G9PopupView`, one card at a time), and *any* popup requested while a callback runs is shown straight away — the detection is a global flag rather than an `AsyncLocal`, because an `AsyncLocal` does not survive a platform dispatcher hop and a missed detection is a hang. A parked popup does not come back after `DismissAllG9PopupsAsync`.
+
+### Footer buttons run once
+
+Each popup has one re-entrancy gate shared by all of its footer buttons: a double tap does not run a Delete callback twice, and OK-then-Cancel does not run both. The gate reopens only when a callback answers `DoNothing` (the popup stays up, the user retries). Callbacks are resumed on the UI thread, and the view is closed only by the request whose content it is showing — a callback that finishes late cannot close a popup that has since replaced it.
+
+### Failure containment
+
+Nothing may escape the queue pump: it is fire-and-forget, and an escaped exception used to leave `_isProcessing == true` with no pump running — every later popup, error popups included, queued forever. `PresentAsync` failures complete the request with `Close`, and the view is hidden with `G9PopupView.ForceClose()` (never a second animated `CloseAsync`, which is what threw twice). `G9PopupView` itself snaps to the final state when it has no `MauiContext` — `Animate(...)` throws rather than no-ops without one — and `CloseAsync` carries a watchdog so its task completes even if MAUI never calls the animation's finished-callback.
 
 ## Per-Type Visuals (`G9PopupVisualProfile`)
 
@@ -318,7 +346,7 @@ than the early migration values so alerts stay readable on mobile:
 
 ## Overlay Modes
 
-- **`Transparent`** (default) — the overlay is a solid color (default `Colors.Black`) at `OverlayOpacity` (default 0.45). Same on every platform.
+- **`Transparent`** (default) — the overlay is a solid color at `OverlayOpacity` (default 0.45). Same on every platform. The helper supplies the palette's **`Scrim`** token (black in both themes) — the same one the full-screen toast loader uses. It used to be `OnSurface`, which is dark in the light theme but *light* in the dark theme, so dark-mode popups sat on a pale veil. Only the hue comes from the token; the alpha is always `OverlayOpacity`. (`G9PopupView` on its own, with no `OverlayColor`, falls back to `Colors.Black`.)
 - **`Blur`** — best-effort blur overlay. MAUI does not have a public blur primitive, so the helper falls back to a slightly darker scrim driven by `BlurIntensity` (`Light`/`ExtraLight` add 5–10 % opacity; `Dark`/`ExtraDark` add 15–20 %). On platforms / hardware where compositor blur is not available, the result reads as a darker solid scrim — visually different from `Transparent` but still distinct.
 
 `Settings.OverlayColor` overrides the default base color regardless of mode.
@@ -453,6 +481,13 @@ Run the whole G9Popup tab after changing `G9PopupHelper`, `G9PopupSettings`, `G9
 - Do not remove `InputTransparent = true` / `CascadeInputTransparent = false` from the `G9PopupView` constructor. Without these flags the empty area of the popup host Grid (which fills the entire `OverlayHost`) blocks taps on the page content underneath — the symptom is that LoginPage's username/password entries can't be tapped while no popup is open, but Tab still focuses them.
 - Do not block the input popup's submit button on validation failure with a real `Close()`. Use `G9PopupResult.NoAction()` so the popup stays open and the user can correct the field. Returning `Close` here loses the entered values and the helper queue mistakenly advances.
 - Do not hardcode per-popup spacing or radius. Use `G9LayoutMetrics` and `G9Palette` like the rest of the codebase. The defaults in `G9PopupViewOpenOptions` already pull from the design system; per-popup overrides should be the rare exception.
+- Do not complete an awaitable from the footer buttons alone. A popup ends in seven ways (two buttons, background tap, hardware back, auto-close, dismiss/clear, no host / failure) and only `request.Completion` sees them all — `ShowConfirmAsync` hung forever on the other five.
+- Do not make the queue pump `await` consumer code (`CallbackAsync`, `AfterCloseAsync`) without the `PreemptSignal` escape, and do not replace the global `IsUserCodeRunning` flag with an `AsyncLocal`. Either change brings back the nested-popup deadlock.
+- Do not let an exception leave `ProcessQueueAsync`, and do not call `CloseAsync()` from a failure path — use `ForceClose()`. Do not read `Logger` unguarded from a `catch`: `G9ServiceProvider.GetServiceNullable` throws while the provider is uninitialized.
+- Do not close the view from a button handler without the `_mountedRequest` ownership check, and do not resolve the view from "the current host" in a tap handler — use `request.PresentedOn`.
+- Do not `ConfigureAwait(false)` before touching the popup view. With `Animation = None` the close path writes `IsVisible` / `InputTransparent` synchronously, on whatever thread it is on.
+- Do not call `Animate(...)` on the view without the `CanAnimate` guard, and do not remove the `CloseAsync` watchdog: the helper's single pump awaits that task.
+- Do not point the scrim back at `OnSurface` (or any text token). It is `palette.Scrim`.
 - Do not bypass the helper queue by calling `host.G9Popup.Open(...)` directly from anywhere outside `G9PopupHelper.PresentAsync`. The queue gate is what prevents two concurrent `ShowG9PopupAsync` calls from racing each other and showing one popup on top of another.
 - Do not rebuild the toast inline overlay scrim on top of `G9PopupView`. The toast paths (`ShowToastAsync`, `ShowLoadingToastAsync`, `ShowProgressToastAsync`) use plain inline `Border` views mounted directly into the page-level layout because they don't need the popup's modal semantics. Only `ShowLoadingAsync`'s full-screen blocking overlay shares the same "scrim + card" structure — and even that one is a hand-rolled inline `Grid + BoxView + Border`, not an `G9PopupView` instance, because making it a popup would mean it gets queued behind any other open popup.
 - Do not point a `G9PopupType` at `G9Palette.Primary` (or `Secondary`) in `G9PopupVisualProfile`. Information → `Info`, Success → `Success`, Warning → `Warning`, Error → `Error`; that mapping IS the type's meaning. Same for the primary button's text: take `profile.ButtonTextColor` (the accent's `On*` token), never `Colors.White`.

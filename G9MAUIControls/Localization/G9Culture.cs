@@ -124,11 +124,37 @@ public static class G9Culture
 
         if (MainThread.IsMainThread)
         {
-            CultureChanged?.Invoke(null, args);
+            RaiseCultureChanged(args);
             return;
         }
 
-        MainThread.BeginInvokeOnMainThread(() => CultureChanged?.Invoke(null, args));
+        MainThread.BeginInvokeOnMainThread(() => RaiseCultureChanged(args));
+    }
+
+    /// <summary>
+    ///     Invokes each subscriber on its own. A multicast <c>Invoke</c> stops at the first handler that
+    ///     throws, so one faulty view left every subscriber after it on the previous culture — half the
+    ///     screen mirrored to RTL and half not.
+    /// </summary>
+    private static void RaiseCultureChanged(G9CultureEventArgs args)
+    {
+        var handlers = CultureChanged;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (var handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((EventHandler<G9CultureEventArgs>)handler)(null, args);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[G9Culture] CultureChanged subscriber failed: {ex}");
+            }
+        }
     }
 
     /// <summary>Clears the configuration and every subscriber. Intended for tests.</summary>

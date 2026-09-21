@@ -264,7 +264,98 @@ public partial class G9SwipeView : ContentView
 
         _leftActions.CollectionChanged += OnLeftActionsChanged;
         _rightActions.CollectionChanged += OnRightActionsChanged;
+
+        // G9Culture.CultureChanged is STATIC, so the subscription roots this view and its page.
+        // "Handler disconnected" alone is too late a release: a page popped off the stack or a
+        // recycled row keeps its handler long after it left the screen. Follow Loaded / Unloaded
+        // as well; OnHandlerChanged stays as the last line of defence.
+        Loaded += OnSwipeViewLoaded;
+        Unloaded += OnSwipeViewUnloaded;
     }
+
+    private void OnSwipeViewLoaded(object? sender, EventArgs e)
+    {
+        if (Handler is null) return;
+
+        var missedCultureChange = _cultureHandler is null && _builtForRtl.HasValue && _builtForRtl.Value != G9Culture.IsRtl;
+        AttachCultureHandler();
+
+        // A language switch while detached was not heard; the panes are keyed by direction.
+        if (missedCultureChange) RebuildAll();
+    }
+
+    private void OnSwipeViewUnloaded(object? sender, EventArgs e) => DetachCultureHandler();
+
+    private void AttachCultureHandler()
+    {
+        _cultureHandler ??= (_, _) => RebuildAll();
+        G9Culture.CultureChanged -= _cultureHandler;
+        G9Culture.CultureChanged += _cultureHandler;
+    }
+
+    private void DetachCultureHandler()
+    {
+        if (_cultureHandler is null) return;
+        G9Culture.CultureChanged -= _cultureHandler;
+        _cultureHandler = null;
+    }
+
+    /// <summary>Direction the panes were last built for (see <see cref="OnSwipeViewLoaded" />).</summary>
+    private bool? _builtForRtl;
+
+    /// <summary>True while a collection-driven rebuild is queued on the dispatcher.</summary>
+    private bool _rebuildQueued;
+
+    /// <inheritdoc />
+    protected override void OnBindingContextChanged()
+    {
+        base.OnBindingContextChanged();
+        PropagateBindingContext(_leftActions);
+        PropagateBindingContext(_rightActions);
+    }
+
+    /// <summary>
+    ///     A <see cref="G9SwipeAction" /> is a <see cref="BindableObject" /> but not an
+    ///     <see cref="Element" />: it is never parented, so it never inherited a BindingContext and
+    ///     <c>Command="{Binding Delete}"</c> on an action silently never resolved. Handed down by
+    ///     hand, as an INHERITED context so an action that sets its own keeps it.
+    /// </summary>
+    private void PropagateBindingContext(System.Collections.IEnumerable? actions)
+    {
+        if (actions is null) return;
+
+        var context = BindingContext;
+        foreach (var entry in actions)
+        {
+            if (entry is G9SwipeAction action) SetInheritedBindingContext(action, context);
+        }
+    }
+
+    /// <summary>
+    ///     Coalesces collection-driven rebuilds. XAML fills LeftActions / RightActions one Add at a
+    ///     time, and each Add used to rebuild BOTH panes - per action, per recycled row.
+    /// </summary>
+    private void ScheduleRebuild()
+    {
+        if (_rebuildQueued) return;
+        _rebuildQueued = true;
+
+        Dispatcher.Dispatch(() =>
+        {
+            _rebuildQueued = false;
+            RebuildAll();
+        });
+    }
+
+    /// <summary>
+    ///     Properties that are read at TAP time and never painted. A change to one of them must not
+    ///     touch the action's visuals: in a recycled row <c>CommandParameter="{Binding .}"</c>
+    ///     changes on every rebind, and each change used to rebuild the action content.
+    /// </summary>
+    private static bool IsNonVisualActionProperty(string? propertyName) =>
+        propertyName is nameof(G9SwipeAction.Command)
+            or nameof(G9SwipeAction.CommandParameter)
+            or nameof(BindingContext);
 
     /// <summary>Actions revealed by swiping the content from the leading edge.</summary>
     public ObservableCollection<G9SwipeAction> LeftActions => _leftActions;
@@ -280,17 +371,12 @@ public partial class G9SwipeView : ContentView
         {
             // View detached — release the culture subscription so the page can be
             // garbage-collected without leaking back to the static culture service.
-            if (_cultureHandler is not null)
-            {
-                G9Culture.CultureChanged -= _cultureHandler;
-                _cultureHandler = null;
-            }
+            DetachCultureHandler();
         }
-        else
+        else if (IsLoaded)
         {
-            _cultureHandler ??= (_, _) => RebuildAll();
-            G9Culture.CultureChanged -= _cultureHandler;
-            G9Culture.CultureChanged += _cultureHandler;
+            // A handler re-created while already in the live tree raises no new Loaded.
+            AttachCultureHandler();
         }
     }
 
@@ -325,11 +411,17 @@ public partial class G9SwipeView : ContentView
         _frame.StrokeThickness = CardStroke is not null ? CardStrokeThickness : 0;
     }
 
-    private void OnLeftActionsChanged(object? sender, NotifyCollectionChangedEventArgs e) =>
-        RebuildAll();
+    private void OnLeftActionsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        PropagateBindingContext(e.NewItems);
+        ScheduleRebuild();
+    }
 
-    private void OnRightActionsChanged(object? sender, NotifyCollectionChangedEventArgs e) =>
-        RebuildAll();
+    private void OnRightActionsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        PropagateBindingContext(e.NewItems);
+        ScheduleRebuild();
+    }
 
     /// <summary>
     ///     Native SwipeView keys its panes by **physical** screen edge — LeftItems always
@@ -342,6 +434,7 @@ public partial class G9SwipeView : ContentView
     /// </summary>
     private void RebuildAll()
     {
+        _builtForRtl = G9Culture.IsRtl;
 #if WINDOWS
         // Windows custom swipe: build the two edge-docked panes from the action
         // collections (with the same RTL leading-edge swap as mobile). The native
@@ -408,6 +501,7 @@ public partial class G9SwipeView : ContentView
 
     private void OnActionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (IsNonVisualActionProperty(e.PropertyName)) return;
         if (sender is not G9SwipeAction action) return;
         if (!_renderedItems.TryGetValue(action, out var item)) return;
         ApplyActionVisuals(item, action);
@@ -592,7 +686,10 @@ public partial class G9SwipeView : ContentView
     }
 
     private void OnWinActionPropertyChanged(object? sender, PropertyChangedEventArgs e)
-        => RebuildWindowsPanes();
+    {
+        if (IsNonVisualActionProperty(e.PropertyName)) return;
+        RebuildWindowsPanes();
+    }
 
     private void OnWinBodyTapped(object? sender, TappedEventArgs e)
     {

@@ -42,10 +42,22 @@ public partial class SqliteRepository<T> where T : class, new()
         }
 
         var setClause = statement.Sql.Substring(setStart, setLength);
-        var hasUpdatedTime = setClause.Contains("UpdatedTime", StringComparison.OrdinalIgnoreCase);
-        var hasUpdatedByUserId = setClause.Contains("UpdatedByUserId", StringComparison.OrdinalIgnoreCase);
 
-        if (hasUpdatedTime && hasUpdatedByUserId)
+        // Whole-identifier, assignment-target matches. A substring test read `[LastUpdatedTimeOnServer] = ?`
+        // as "UpdatedTime is already set" and skipped the stamp, leaving the row looking unmodified.
+        var hasUpdatedTime = AssignsColumn(setClause, "UpdatedTime");
+        var hasUpdatedByUserId = AssignsColumn(setClause, "UpdatedByUserId");
+
+        // Resolved once, up front. With nobody signed in there is nothing to stamp, and the column must be
+        // left ALONE — this used to append `[UpdatedByUserId] = NULL`, erasing who last touched the row
+        // every time a background job ran a partial update. The entity-object path
+        // (SqliteEntityAuditDefaults.ApplyUpdateDefaults) has always skipped a null user; now both agree.
+        var currentUserId = hasUpdatedByUserId
+            ? null
+            : SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser);
+        var stampUpdatedByUserId = !hasUpdatedByUserId && !string.IsNullOrWhiteSpace(currentUserId);
+
+        if (hasUpdatedTime && !stampUpdatedByUserId)
         {
             return statement;
         }
@@ -61,12 +73,10 @@ public partial class SqliteRepository<T> where T : class, new()
             insertParamIndex++;
         }
 
-        if (!hasUpdatedByUserId)
+        if (stampUpdatedByUserId)
         {
             additionalAssignments.Add("[UpdatedByUserId] = ?");
-            parameters.Insert(
-                insertParamIndex,
-                SqliteQueryFactory.NormalizeParam(SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser)));
+            parameters.Insert(insertParamIndex, SqliteQueryFactory.NormalizeParam(currentUserId));
             insertParamIndex++;
         }
 
@@ -105,6 +115,46 @@ public partial class SqliteRepository<T> where T : class, new()
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    ///     Whether <paramref name="setClause" /> assigns to <paramref name="column" /> — the whole identifier,
+    ///     bare or quoted (<c>[x]</c>, <c>"x"</c>, <c>`x`</c>), followed by <c>=</c>. A column that merely
+    ///     CONTAINS the name, or one that appears on the right-hand side of another assignment, is not a match.
+    /// </summary>
+    private static bool AssignsColumn(string setClause, string column)
+    {
+        var index = 0;
+        while ((index = setClause.IndexOf(column, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            var end = index + column.Length;
+            var startsClean = index == 0 || !IsIdentifierChar(setClause[index - 1]);
+            var endsClean = end >= setClause.Length || !IsIdentifierChar(setClause[end]);
+
+            if (startsClean && endsClean)
+            {
+                var next = end;
+                while (next < setClause.Length &&
+                       (setClause[next] is ']' or '"' or '`' || char.IsWhiteSpace(setClause[next])))
+                {
+                    next++;
+                }
+
+                if (next < setClause.Length && setClause[next] == '=')
+                {
+                    return true;
+                }
+            }
+
+            index = end;
+        }
+
+        return false;
+
+        static bool IsIdentifierChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_';
+        }
     }
 
     private static int CountPlaceholders(string sql)

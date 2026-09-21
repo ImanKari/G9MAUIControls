@@ -37,6 +37,9 @@ See `../G9TextEntry/G9TextEntry.md` for the full inherited list.
 
 - `ItemSelected` — fires after `SelectedItem` changes due to user choice.
 - `SelectionCancelled` — fires when the sheet is dismissed without a selection.
+- `ItemSelected` / `SelectionAcceptedCommand` fire **only for a row pick**. A dismissed sheet hands
+  back the previous item, which used to be read as a pick; the picker now reads
+  `G9SelectionSheetResult.WasAccepted` instead.
 
 ## G9SelectionItem
 

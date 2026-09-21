@@ -190,3 +190,19 @@ filtering still rebuilds the list (rows actually need to come and go).
   `flow == FlowDirection.RightToLeft ? TextAlignment.End : TextAlignment.Start`. Any NEW label built
   inside this control (or `G9Picker`) must apply the same explicit flip — do not assume
   `FlowDirection` alone reorients text.
+
+## Dismissing the sheet never changes the value
+
+The sheet is opened through `G9SelectionSheet.ShowForResultAsync`, whose result says whether the
+user **committed** (`WasAccepted`) and whether the selection **changed** (`SelectionChanged`):
+
+- **Single-select** — only a row pick writes `SelectedItem`. Back / swipe-down / tap-outside / the
+  header close button leave it exactly as it was.
+- **Multi-select** — **Done** commits; dismissing a sheet whose selection was changed commits too
+  (unchanged behaviour). A sheet dismissed untouched, or closed before its deferred content was
+  built, writes nothing — it used to come back as an empty list and clear the bound collection.
+- Disabled items are left out of the list **except the currently selected ones**, which show dimmed
+  and non-tappable. A selected item that is disabled — or no longer in `ItemsSource` — is therefore
+  never dropped by merely opening the sheet.
+- The `CollectionChanged` subscriptions on `ItemsSource` / `SelectedItems` are held only between
+  `Loaded` and `Unloaded`, so a shared lookup list does not keep the page alive.

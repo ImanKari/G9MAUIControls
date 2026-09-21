@@ -7,14 +7,76 @@ using G9MAUIControls.Icons;
 namespace G9MAUIControls.Controls;
 
 /// <summary>
+///     What <see cref="G9SelectionSheet.ShowForResultAsync" /> resolves to: the selection, plus HOW the
+///     sheet ended — which the bare list returned by <see cref="G9SelectionSheet.ShowAsync" /> cannot say.
+///     <para>
+///         A bare list has one value, the empty list, for three different endings: the user cleared
+///         the selection, the user dismissed a sheet that had nothing selected, and the sheet was
+///         closed before its deferred content was ever built. <c>G9ComboBox</c> read all three as
+///         "cleared" and wrote <c>null</c> into the bound value — a recorded data-loss bug in the
+///         consuming app. And a dismissed single-select sheet returned the PREVIOUS item, which
+///         <c>G9Picker</c> could not tell from a pick, so it raised <c>ItemSelected</c> for a cancel.
+///     </para>
+/// </summary>
+public sealed class G9SelectionSheetResult
+{
+    internal G9SelectionSheetResult(bool wasAccepted, bool selectionChanged, IReadOnlyList<G9SelectionItem> items)
+    {
+        WasAccepted = wasAccepted;
+        SelectionChanged = selectionChanged;
+        Items = items;
+    }
+
+    /// <summary>
+    ///     <see langword="true" /> when the user committed explicitly: picked a row on a
+    ///     close-on-select sheet, pressed Done, or pressed Reset. <see langword="false" /> for every
+    ///     dismissal — back, swipe-down, tap outside, the header close button, or a close that beat
+    ///     the deferred content.
+    /// </summary>
+    public bool WasAccepted { get; }
+
+    /// <summary>
+    ///     <see langword="true" /> when <see cref="Items" /> is a different selection from the one the
+    ///     sheet was opened with. A sheet that was dismissed untouched — or never got as far as
+    ///     building its rows — reports <see langword="false" />.
+    /// </summary>
+    public bool SelectionChanged { get; }
+
+    /// <summary>
+    ///     The selection when the sheet ended. Never loses an item the caller passed in as selected
+    ///     unless the user deselected it: an item that is disabled, or missing from the candidate
+    ///     list, stays selected. An empty list therefore means the user really left nothing selected.
+    /// </summary>
+    public IReadOnlyList<G9SelectionItem> Items { get; }
+}
+
+/// <summary>
 ///     Bottom-sheet picker rendering a single column of <see cref="G9SelectionItem" />.
 ///     Used by <see cref="G9Picker" /> and <see cref="G9ComboBox" />.
 ///     // TODO (palette step): row / check colors will move to G9Palette.
 /// </summary>
 public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredContentReadiness
 {
+    /// <summary>Pause after the last keystroke before the list is filtered.</summary>
+    private const int SearchDebounceMs = 150;
+
+    /// <summary>Dim applied to a row whose item is not enabled.</summary>
+    private const double DisabledRowOpacity = 0.45;
+
     private readonly IReadOnlyList<G9SelectionItem> _allItems;
-    private readonly HashSet<object?> _selectedKeys;
+
+    /// <summary>The selection the sheet was opened with — what <see cref="CollectSelection" /> falls back on for items that are not in the list.</summary>
+    private readonly IReadOnlyList<G9SelectionItem> _initialSelection;
+
+    /// <summary>Labels shared by more than one key-less item; see <see cref="KeyOf" />.</summary>
+    private readonly HashSet<string> _ambiguousTexts;
+    private readonly HashSet<object> _selectedKeys;
+    private readonly HashSet<object> _initialKeys;
+
+    /// <summary>Every row, built once. Searching toggles <see cref="VisualElement.IsVisible" /> on these.</summary>
+    private readonly List<(G9SelectionItem Item, Border Row)> _rows = [];
+    private Label? _emptyLabel;
+    private IDispatcherTimer? _searchTimer;
     private readonly bool _allowMultiple;
     private readonly bool _closeOnSingleSelection;
     private readonly bool _showSearch;
@@ -30,6 +92,9 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     private readonly Border? _selectedCountBorder;
     private readonly G9TextEntry? _searchEntry;
     private bool _isCompleted;
+
+    /// <summary>A close-on-select pick is waiting out its 120 ms before closing; further taps are ignored.</summary>
+    private bool _pickInFlight;
     private string _query = string.Empty;
 
     public G9SelectionSheet(
@@ -45,7 +110,10 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         Border? countBadge = null)
     {
         _allItems = items.ToList();
-        _selectedKeys = selected?.Select(static i => i.SelectionIdentity).ToHashSet() ?? [];
+        _initialSelection = selected?.ToList() ?? [];
+        _ambiguousTexts = FindAmbiguousTexts(_allItems);
+        _initialKeys = _initialSelection.Select(KeyOf).ToHashSet();
+        _selectedKeys = [.. _initialKeys];
         _allowMultiple = allowMultiple;
         _closeOnSingleSelection = closeOnSingleSelection;
         _showSearch = showSearch;
@@ -90,7 +158,7 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             _searchEntry.InnerEntry.TextChanged += (_, e) =>
             {
                 _query = e.NewTextValue ?? string.Empty;
-                RebuildItems();
+                ScheduleFilter();
             };
             Grid.SetRow(_searchEntry, 1);
             Children.Add(_searchEntry);
@@ -110,13 +178,24 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         Grid.SetRow(_itemsScroll, 2);
         Children.Add(_itemsScroll);
 
-        RebuildItems();
+        BuildRows();
         UpdateSelectedCount();
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     public IG9BottomSheetHandle G9BottomSheetHandle { get; set; } = G9BottomSheetHelper.InitG9BottomSheet();
     public event EventHandler<IReadOnlyList<G9SelectionItem>>? Completed;
+
+    /// <summary>
+    ///     Set before <see cref="Completed" /> is raised: <see langword="true" /> when the user
+    ///     committed (row pick on a close-on-select sheet, Done), <see langword="false" /> when the
+    ///     sheet was merely dismissed. See <see cref="G9SelectionSheetResult.WasAccepted" />.
+    /// </summary>
+    public bool WasAccepted { get; private set; }
+
+    /// <summary>True when the current selection differs from the one the sheet was opened with.</summary>
+    public bool HasSelectionChanged => !_selectedKeys.SetEquals(_initialKeys);
 
     bool IDeferredContentReadiness.IsContentReady => _readiness.IsReady;
 
@@ -169,23 +248,65 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         }
     }
 
+    private void OnUnloaded(object? sender, EventArgs e)
+    {
+        // A pending debounce tick must not fire into (or keep alive) a closed sheet.
+        _searchTimer?.Stop();
+    }
+
     private View? FindFirstSelectedRow()
     {
-        foreach (var child in _itemsHost.Children)
+        foreach (var (item, row) in _rows)
         {
-            if (child is not Border { Content: Grid row } border ||
-                row.BindingContext is not G9SelectionItem item)
+            if (row.IsVisible && _selectedKeys.Contains(KeyOf(item)))
             {
-                continue;
-            }
-
-            if (_selectedKeys.Contains(item.SelectionIdentity))
-            {
-                return border;
+                return row;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    ///     The identity a row is selected by: the item's <see cref="G9SelectionItem.Key" /> when it
+    ///     has one, otherwise its text — unless that text is shared by another key-less item, in
+    ///     which case the INSTANCE is the identity.
+    ///     <para>
+    ///         <see cref="G9SelectionItem.SelectionIdentity" /> falls back to the text alone, so two
+    ///         key-less rows with the same label were one selection: tapping either checked both,
+    ///         and both came back in the result. Text is still used while it is unambiguous, because
+    ///         that is what keeps a selection alive when the caller rebuilds its item instances.
+    ///         Keys and texts live in separate namespaces so a key "A" never matches a label "A".
+    ///     </para>
+    /// </summary>
+    private object KeyOf(G9SelectionItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.Key))
+        {
+            return (true, item.Key);
+        }
+
+        if (_ambiguousTexts.Contains(item.Text))
+        {
+            return item;
+        }
+
+        return (false, item.Text);
+    }
+
+    private static HashSet<string> FindAmbiguousTexts(IReadOnlyList<G9SelectionItem> items)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item.Key) && !seen.Add(item.Text))
+            {
+                ambiguous.Add(item.Text);
+            }
+        }
+
+        return ambiguous;
     }
 
     /// <summary>
@@ -216,16 +337,27 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         return (showSearch ? 64 : 0) + 18;
     }
 
-    public void CompleteFromClose() => Complete(CollectSelection());
+    /// <summary>Completes as a DISMISSAL with the selection as it stands (<see cref="WasAccepted" /> = false).</summary>
+    public void CompleteFromClose() => Complete(CollectSelection(), accepted: false);
 
     /// <summary>
     ///     Marks the sheet as already resolved so the close handler does not overwrite a result the
     ///     caller has just produced by other means (the header RESET action completes with its own
     ///     selection, then closes).
     /// </summary>
-    public void MarkCompleted() => Complete([]);
+    public void MarkCompleted() => Complete([], accepted: true);
 
-    public static Task<IReadOnlyList<G9SelectionItem>> ShowAsync(
+    /// <summary>
+    ///     Shows the sheet and resolves to the selection when it ends.
+    ///     <para>
+    ///         The list cannot say whether the user committed or dismissed — prefer
+    ///         <see cref="ShowForResultAsync" /> wherever the result is written back into a bound
+    ///         value. Kept for source compatibility; one thing did change for the better: a sheet
+    ///         closed before its deferred content was built now returns the selection it was opened
+    ///         with instead of an empty list (which read as "the user cleared it").
+    ///     </para>
+    /// </summary>
+    public static async Task<IReadOnlyList<G9SelectionItem>> ShowAsync(
         string title,
         IEnumerable<G9SelectionItem> items,
         IEnumerable<G9SelectionItem>? selectedItems,
@@ -236,7 +368,30 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         G9TextInputDirection itemTextDirection = G9TextInputDirection.MatchParent,
         IEnumerable<G9SelectionItem>? resetSelection = null)
     {
-        var tcs = new TaskCompletionSource<IReadOnlyList<G9SelectionItem>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var result = await ShowForResultAsync(
+            title, items, selectedItems, allowMultiple, closeOnSingleSelection, showSearch,
+            emptyText, itemTextDirection, resetSelection).ConfigureAwait(false);
+        return result.Items;
+    }
+
+    /// <summary>
+    ///     Shows the sheet and resolves to a <see cref="G9SelectionSheetResult" />, which — unlike the
+    ///     list from <see cref="ShowAsync" /> — distinguishes "committed" from "dismissed" and
+    ///     "changed" from "untouched". This is what <see cref="G9ComboBox" /> and
+    ///     <see cref="G9Picker" /> use.
+    /// </summary>
+    public static Task<G9SelectionSheetResult> ShowForResultAsync(
+        string title,
+        IEnumerable<G9SelectionItem> items,
+        IEnumerable<G9SelectionItem>? selectedItems,
+        bool allowMultiple,
+        bool closeOnSingleSelection,
+        bool showSearch,
+        string? emptyText = null,
+        G9TextInputDirection itemTextDirection = G9TextInputDirection.MatchParent,
+        IEnumerable<G9SelectionItem>? resetSelection = null)
+    {
+        var tcs = new TaskCompletionSource<G9SelectionSheetResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         G9SelectionSheet? sheet = null;
 
         // Materialize the items list once — the factory may be invoked on a deferred
@@ -247,8 +402,9 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
 
         void OnCompleted(object? sender, IReadOnlyList<G9SelectionItem> result)
         {
-            if (sheet is not null) sheet.Completed -= OnCompleted;
-            tcs.TrySetResult(result);
+            if (sheet is null) return;
+            sheet.Completed -= OnCompleted;
+            tcs.TrySetResult(new G9SelectionSheetResult(sheet.WasAccepted, sheet.HasSelectionChanged, result));
         }
 
         // Use the factory + DeferContent path so the heavy view-tree construction
@@ -277,6 +433,9 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             {
                 FontSize = 11,
                 FontAttributes = FontAttributes.Bold,
+                // The culture's own face, like every other number the suite prints: with a Persian
+                // font the count reads in Persian digits instead of Latin ones in a Persian sheet.
+                FontFamily = G9Culture.ResolveFontFamily(),
                 TextColor = G9Palette.Current.OnPrimaryContainer,
                 Padding = new Thickness(10, 4),
                 VerticalTextAlignment = TextAlignment.Center
@@ -298,7 +457,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
                 VerticalOptions = LayoutOptions.Center,
                 Command = new Command(() =>
                 {
-                    sheet?.CompleteFromClose();
+                    // Done is a COMMIT, not a dismissal — the distinction the result carries.
+                    sheet?.Complete(sheet.CollectSelection(), accepted: true);
                     sheet?.G9BottomSheetHandle.Close();
                 })
             };
@@ -324,7 +484,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
                     Icon = G9Glyphs.Refresh,
                     AsyncAction = () =>
                     {
-                        tcs.TrySetResult(resetItems);
+                        tcs.TrySetResult(new G9SelectionSheetResult(
+                            wasAccepted: true, selectionChanged: true, resetItems));
                         sheet?.MarkCompleted();
                         sheet?.G9BottomSheetHandle.Close();
                         return Task.CompletedTask;
@@ -356,20 +517,82 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             ToolbarItems = toolbarItems,
             ClosedCommand = new Command(() =>
             {
+                // Reached for EVERY close. After a pick / Done / Reset the result is already set and
+                // both calls below are no-ops; otherwise this is a dismissal.
                 sheet?.CompleteFromClose();
-                if (sheet is not null) tcs.TrySetResult(sheet.CollectSelection());
-                else tcs.TrySetResult([]);
+
+                // Closed before the deferred factory ever ran: nothing was shown, so nothing can
+                // have changed. This used to resolve to an EMPTY list, which a caller cannot tell
+                // from "the user cleared the selection".
+                IReadOnlyList<G9SelectionItem> untouched = materializedSelected ?? [];
+                tcs.TrySetResult(new G9SelectionSheetResult(
+                    wasAccepted: false,
+                    selectionChanged: sheet?.HasSelectionChanged ?? false,
+                    sheet?.CollectSelection() ?? untouched));
             })
         };
 
+        G9SelectionSheet BuildSheet()
+        {
+            var built = new G9SelectionSheet(title, materializedItems, materializedSelected, allowMultiple, closeOnSingleSelection, showSearch, emptyText, itemTextDirection, countLabel, countBadge);
+            built.Completed += OnCompleted;
+            return built;
+        }
+
+        // ⛔ A SHORT list is built up front and shown as a PRE-BUILT body: it goes through
+        // stage-before-show, so it opens at its exact height with its rows already in it — no
+        // skeleton, no swap. The factory + skeleton path above was written for the case where
+        // building the rows is the expensive part (the "1-3 s" note), and that is a property of LONG
+        // lists: the rows are not virtualized, so cost scales with the count. A language or theme
+        // picker has two or three rows, all already in memory; putting a loading placeholder in
+        // front of those made the fastest sheets in the app the ones that visibly "loaded".
+        // Views must be built on the UI thread — so a call that arrives OFF it (after a
+        // ConfigureAwait(false), typically) goes there, rather than falling back to the skeleton
+        // path it was the whole point to avoid.
+        if (materializedItems.Count <= EagerBuildItemLimit)
+        {
+            void ShowPrebuilt()
+            {
+                try
+                {
+                    sheet = BuildSheet();
+                    G9BottomSheetHelper.ShowG9BottomSheet(sheet, options);
+                }
+                catch (Exception exception)
+                {
+                    // Nothing was shown, so nothing will ever resolve the caller's task but this.
+                    tcs.TrySetException(exception);
+                }
+            }
+
+            if (MainThread.IsMainThread)
+            {
+                ShowPrebuilt();
+            }
+            else
+            {
+                MainThread.BeginInvokeOnMainThread(ShowPrebuilt);
+            }
+
+            return tcs.Task;
+        }
+
         G9BottomSheetHelper.ShowG9BottomSheet(() =>
         {
-            sheet = new G9SelectionSheet(title, materializedItems, materializedSelected, allowMultiple, closeOnSingleSelection, showSearch, emptyText, itemTextDirection, countLabel, countBadge);
-            sheet.Completed += OnCompleted;
+            sheet = BuildSheet();
             return sheet;
         }, options);
         return tcs.Task;
     }
+
+    /// <summary>
+    ///     Lists up to this many rows are built eagerly and open with their content in place; longer
+    ///     ones keep the open-then-build path behind a skeleton (the rows are not virtualized, so a
+    ///     very long list is genuinely expensive to construct). Default <c>40</c> — roughly the point
+    ///     where building the rows stops being cheaper than the open animation it would delay. A
+    ///     tuning knob for a consumer whose devices put that point somewhere else.
+    /// </summary>
+    public static int EagerBuildItemLimit { get; set; } = 40;
 
     private static FlowDirection ResolveItemFlowDirection(G9TextInputDirection direction)
     {
@@ -381,37 +604,87 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         };
     }
 
-    private void RebuildItems()
+    /// <summary>
+    ///     Builds every row ONCE. The list is not virtualized, and a row is a Border + Grid + Label
+    ///     + icon + gesture recognizer; the old code tore all of them down and rebuilt them on every
+    ///     search keystroke. Searching now only toggles visibility (<see cref="ApplyFilter" />).
+    /// </summary>
+    private void BuildRows()
     {
-        _itemsHost.Children.Clear();
-
-        var filtered = string.IsNullOrWhiteSpace(_query)
-            ? _allItems
-            : _allItems.Where(i => i.Text.Contains(_query, StringComparison.CurrentCultureIgnoreCase)).ToList();
-
-        if (filtered.Count == 0)
+        foreach (var item in _allItems)
         {
-            _itemsHost.Children.Add(new Label
+            var row = CreateRow(item);
+            _rows.Add((item, row));
+            _itemsHost.Children.Add(row);
+        }
+
+        ApplyFilter();
+    }
+
+    /// <summary>
+    ///     Debounces the search box: the filter runs <see cref="SearchDebounceMs" /> after the last
+    ///     keystroke, so typing a word relays the list out once, not once per letter. Clearing the
+    ///     box is applied at once — waiting to show the full list again only reads as lag.
+    /// </summary>
+    private void ScheduleFilter()
+    {
+        if (string.IsNullOrWhiteSpace(_query))
+        {
+            _searchTimer?.Stop();
+            ApplyFilter();
+            return;
+        }
+
+        if (_searchTimer is null)
+        {
+            _searchTimer = Dispatcher.CreateTimer();
+            _searchTimer.Interval = TimeSpan.FromMilliseconds(SearchDebounceMs);
+            _searchTimer.IsRepeating = false;
+            _searchTimer.Tick += (_, _) => ApplyFilter();
+        }
+
+        _searchTimer.Stop();
+        _searchTimer.Start();
+    }
+
+    private void ApplyFilter()
+    {
+        var hasQuery = !string.IsNullOrWhiteSpace(_query);
+        var anyVisible = false;
+
+        foreach (var (item, row) in _rows)
+        {
+            var matches = !hasQuery || item.Text.Contains(_query, StringComparison.CurrentCultureIgnoreCase);
+            if (row.IsVisible != matches) row.IsVisible = matches;
+            anyVisible |= matches;
+        }
+
+        if (anyVisible)
+        {
+            if (_emptyLabel is not null) _emptyLabel.IsVisible = false;
+            return;
+        }
+
+        if (_emptyLabel is null)
+        {
+            _emptyLabel = new Label
             {
                 Text = _emptyText,
                 TextColor = G9Palette.Current.TextTertiary,
                 FontSize = 13,
                 HorizontalTextAlignment = TextAlignment.Center,
                 Padding = new Thickness(16, 28)
-            });
-            return;
+            };
+            _itemsHost.Children.Add(_emptyLabel);
         }
 
-        foreach (var item in filtered)
-        {
-            _itemsHost.Children.Add(CreateRow(item));
-        }
+        _emptyLabel.IsVisible = true;
     }
 
-    private View CreateRow(G9SelectionItem item)
+    private Border CreateRow(G9SelectionItem item)
     {
         var palette = G9Palette.Current;
-        var selected = _selectedKeys.Contains(item.SelectionIdentity);
+        var selected = _selectedKeys.Contains(KeyOf(item));
 
         var row = new Grid
         {
@@ -425,6 +698,11 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             ColumnSpacing = 12,
             Padding = new Thickness(G9Metrics.SelectionRowHorizontalPadding, 0),
             VerticalOptions = LayoutOptions.Fill,
+            // A disabled item had NO visual state — it looked tappable, flashed when pressed, and
+            // then did nothing. Dimming the content (not the Border: a selected-but-disabled row
+            // keeps its full-strength selection tint) is state-independent, so UpdateRowVisuals
+            // never has to know about it.
+            Opacity = item.IsEnabled ? 1 : DisabledRowOpacity,
             BindingContext = item
         };
 
@@ -499,8 +777,16 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         var tap = new TapGestureRecognizer();
         tap.Tapped += async (_, _) =>
         {
-            await PlayRowPressAsync(rowBorder).ConfigureAwait(true);
-            await SelectItemAsync(item).ConfigureAwait(true);
+            // A disabled row neither acts nor pretends to; and once a close-on-select pick is on its
+            // way out, a second tap must not re-point the selection the first one already returned.
+            if (!item.IsEnabled || _isCompleted || _pickInFlight) return;
+
+            // ACT FIRST. This used to await the 110 ms press flash before touching the selection,
+            // so every tap felt late. The selection (and its row styling) is applied synchronously
+            // inside SelectItemAsync; the flash is feedback only and never gates the action.
+            var selection = SelectItemAsync(item);
+            _ = PlayRowPressAsync(rowBorder, item);
+            await selection.ConfigureAwait(true);
         };
         rowBorder.GestureRecognizers.Add(tap);
         return rowBorder;
@@ -536,9 +822,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     ///     (theme-aware via <c>OnSurface</c>) then restore its resting fill. Replaces the removed
     ///     card border/background as the row's "pressed" cue.
     /// </summary>
-    private static async Task PlayRowPressAsync(Border row)
+    private async Task PlayRowPressAsync(Border row, G9SelectionItem item)
     {
-        var resting = row.BackgroundColor ?? Colors.Transparent;
         row.BackgroundColor = G9Palette.Current.OnSurface.WithAlpha(0.06f);
         try
         {
@@ -548,14 +833,18 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         {
         }
 
-        row.BackgroundColor = resting;
+        // Resolved NOW, not captured before the flash: the flash no longer blocks the action, so
+        // the row's selection may have flipped (again) while it was showing.
+        row.BackgroundColor = _selectedKeys.Contains(KeyOf(item))
+            ? SelectedRowTint(G9Palette.Current)
+            : Colors.Transparent;
     }
 
     private async Task SelectItemAsync(G9SelectionItem item)
     {
         if (!item.IsEnabled) return;
 
-        var key = item.SelectionIdentity;
+        var key = KeyOf(item);
         if (_allowMultiple)
         {
             if (!_selectedKeys.Add(key)) _selectedKeys.Remove(key);
@@ -570,6 +859,7 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
 
         if (_closeOnSingleSelection)
         {
+            _pickInFlight = true;
             try
             {
                 await Task.Delay(120).ConfigureAwait(true);
@@ -578,7 +868,7 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             {
             }
 
-            Complete([item]);
+            Complete([item], accepted: true);
             G9BottomSheetHandle.Close();
         }
     }
@@ -599,7 +889,7 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             // Retrieve the item identity stored in the row's BindingContext.
             if (row.BindingContext is not G9SelectionItem item) continue;
 
-            var selected = _selectedKeys.Contains(item.SelectionIdentity);
+            var selected = _selectedKeys.Contains(KeyOf(item));
 
             // Flat row: no stroke. Selection is a subtle primary-tint fill only.
             border.BackgroundColor = selected ? SelectedRowTint(palette) : Colors.Transparent;
@@ -642,7 +932,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         // The count pill lives in the shared header (multi-select only); null for single-select.
         if (_selectedCountLabel is not null)
         {
-            _selectedCountLabel.Text = $"{_selectedKeys.Count} {G9Strings.Get(G9StringKey.Selected)}";
+            _selectedCountLabel.Text = string.Format(
+                G9Culture.CurrentCulture, "{0} {1}", _selectedKeys.Count, G9Strings.Get(G9StringKey.Selected));
         }
 
         if (_selectedCountBorder is not null)
@@ -651,15 +942,48 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         }
     }
 
+    /// <summary>
+    ///     The current selection: the listed items that are selected, plus every item the sheet was
+    ///     opened with that is still selected but is NOT in the list.
+    ///     <para>
+    ///         The second half is the point. This used to be the intersection with the list alone,
+    ///         so a selected item the caller had filtered out of the candidates (disabled, or no
+    ///         longer in its source) silently fell out of the result — opening the sheet and
+    ///         dismissing it was enough to null a bound value. The user can only deselect what they
+    ///         can see, so anything they cannot see stays selected.
+    ///     </para>
+    /// </summary>
     private IReadOnlyList<G9SelectionItem> CollectSelection()
     {
-        return _allItems.Where(i => _selectedKeys.Contains(i.SelectionIdentity)).ToList();
+        var result = new List<G9SelectionItem>();
+        var listed = new HashSet<object>();
+
+        foreach (var item in _allItems)
+        {
+            var key = KeyOf(item);
+            if (!_selectedKeys.Contains(key)) continue;
+
+            listed.Add(key);
+            result.Add(item);
+        }
+
+        foreach (var item in _initialSelection)
+        {
+            var key = KeyOf(item);
+            if (_selectedKeys.Contains(key) && listed.Add(key))
+            {
+                result.Add(item);
+            }
+        }
+
+        return result;
     }
 
-    private void Complete(IReadOnlyList<G9SelectionItem> selection)
+    private void Complete(IReadOnlyList<G9SelectionItem> selection, bool accepted)
     {
         if (_isCompleted) return;
         _isCompleted = true;
+        WasAccepted = accepted;
         Completed?.Invoke(this, selection);
     }
 }

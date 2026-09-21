@@ -98,7 +98,10 @@ public class G9ObservableRangeCollection<T> : ObservableCollection<T>
         if (notificationMode == NotifyCollectionChangedAction.Reset)
         {
             var raiseEvents = false;
-            foreach (var item in collection)
+
+            // Snapshot first: a lazy query over THIS collection (RemoveRange(items.Where(...))) would
+            // otherwise be enumerated while it is being modified, and throw.
+            foreach (var item in collection.ToList())
             {
                 Items.Remove(item);
                 raiseEvents = true;
@@ -155,9 +158,14 @@ public class G9ObservableRangeCollection<T> : ObservableCollection<T>
 
         var previouslyEmpty = Items.Count == 0;
 
+        // Materialised BEFORE the clear. The argument is often derived from this very collection
+        // (ReplaceRange(items.Where(...)), a sort, a filter); enumerated after Items.Clear() such a
+        // query is empty, and the call silently wiped the list instead of replacing it.
+        var incoming = collection.ToList();
+
         Items.Clear();
 
-        AddArrangeCore(collection);
+        AddArrangeCore(incoming);
 
         var currentlyEmpty = Items.Count == 0;
 

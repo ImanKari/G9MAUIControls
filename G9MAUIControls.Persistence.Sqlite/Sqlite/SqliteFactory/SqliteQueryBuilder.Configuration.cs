@@ -14,6 +14,20 @@ public sealed partial class SqliteQueryBuilder<T> where T : class, new()
         return this;
     }
 
+    /// <summary>
+    ///     States that an UPDATE or DELETE is meant to affect <b>every row</b> of the table.
+    /// </summary>
+    /// <remarks>
+    ///     <see cref="BuildUpdate" /> and <see cref="BuildDelete" /> refuse to build a statement that has no
+    ///     WHERE condition unless this was called — see <c>EnsureWriteIsScoped</c> for the accident that
+    ///     guards against. Combining it with a WHERE condition is rejected too. It has no effect on SELECT.
+    /// </remarks>
+    public SqliteQueryBuilder<T> AllRows()
+    {
+        _allRows = true;
+        return this;
+    }
+
     #endregion
 
     #region Culture and Localization

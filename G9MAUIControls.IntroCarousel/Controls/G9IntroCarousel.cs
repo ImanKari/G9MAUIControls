@@ -83,16 +83,21 @@ public partial class G9IntroCarousel : G9ControlBase
     private IList<G9IntroSlideItem>? _slides;
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnIndexChanged))]
     private int _currentIndex;
-    [AutoBindable(OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayOpacity = G9Metrics.IntroOverlayOpacity;
+    // Every default below is declared through DefaultValue, NOT through the field initializer:
+    // [AutoBindable] ignores initializers, so the generated BindableProperty default was default(T)
+    // for all of them — no overlay (opacity 0), a NULL overlay colour, every fade switched off and
+    // every fade duration 0 — while the guide documented the values written here. The initializers
+    // are kept only so the field still reads as its documented default.
+    [AutoBindable(DefaultValue = "G9Metrics.IntroOverlayOpacity", OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayOpacity = G9Metrics.IntroOverlayOpacity;
     [AutoBindable(OnChanged = nameof(OnOverlayVisualChanged))] private bool _useGradientOverlay;
-    [AutoBindable(OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayTopOpacityRatio = G9Metrics.IntroOverlayTopOpacityRatio;
-    [AutoBindable(OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayTopOpacity = double.NaN;
-    [AutoBindable(OnChanged = nameof(OnOverlayVisualChanged))] private Color _overlayColor = Colors.Black;
-    [AutoBindable] private bool _useMediaFadeTransitions = true;
-    [AutoBindable] private bool _useVideoLoopFade = true;
-    [AutoBindable] private bool _skipFirstSlideInitialFadeIn = true;
-    [AutoBindable] private int _mediaFadeInDurationMs = G9Metrics.IntroMediaFadeInDurationMs;
-    [AutoBindable] private int _mediaFadeOutDurationMs = G9Metrics.IntroMediaFadeOutDurationMs;
+    [AutoBindable(DefaultValue = "G9Metrics.IntroOverlayTopOpacityRatio", OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayTopOpacityRatio = G9Metrics.IntroOverlayTopOpacityRatio;
+    [AutoBindable(DefaultValue = "double.NaN", OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayTopOpacity = double.NaN;
+    [AutoBindable(DefaultValue = "global::Microsoft.Maui.Graphics.Colors.Black", OnChanged = nameof(OnOverlayVisualChanged))] private Color _overlayColor = Colors.Black;
+    [AutoBindable(DefaultValue = "true")] private bool _useMediaFadeTransitions = true;
+    [AutoBindable(DefaultValue = "true")] private bool _useVideoLoopFade = true;
+    [AutoBindable(DefaultValue = "true")] private bool _skipFirstSlideInitialFadeIn = true;
+    [AutoBindable(DefaultValue = "G9Metrics.IntroMediaFadeInDurationMs")] private int _mediaFadeInDurationMs = G9Metrics.IntroMediaFadeInDurationMs;
+    [AutoBindable(DefaultValue = "G9Metrics.IntroMediaFadeOutDurationMs")] private int _mediaFadeOutDurationMs = G9Metrics.IntroMediaFadeOutDurationMs;
     // NOTE: the UseChromeShadow / ChromeShadowOpacity / ChromeShadowRadius / ChromeShadowOffsetY
     // properties were removed with the app-wide shadow ban. They set a MAUI `Shadow` on the logo
     // Image and four Labels — none of which have a BorderDrawable background, so every one of them
@@ -100,7 +105,7 @@ public partial class G9IntroCarousel : G9ControlBase
     // from the gradient overlay (UseGradientOverlay / OverlayOpacity). See G9Controls.md.
     [AutoBindable(OnChanged = nameof(OnStartupCoverChanged))] private string? _startupCoverImageSource;
     [AutoBindable(OnChanged = nameof(OnStartupCoverChanged))] private int _startupCoverDurationMs;
-    [AutoBindable] private int _startupCoverFadeDurationMs = G9Metrics.IntroStartupCoverFadeDurationMs;
+    [AutoBindable(DefaultValue = "G9Metrics.IntroStartupCoverFadeDurationMs")] private int _startupCoverFadeDurationMs = G9Metrics.IntroStartupCoverFadeDurationMs;
     [AutoBindable] private double _initialVideoStartSeconds;
     [AutoBindable] private ICommand? _languageCommand;
     [AutoBindable] private ICommand? _completeCommand;
@@ -392,9 +397,13 @@ public partial class G9IntroCarousel : G9ControlBase
             _startupCoverCts?.Cancel();
             _startupCoverCts?.Dispose();
             _startupCoverCts = null;
-            _mediaElement.HandlerChanged -= OnMediaElementHandlerReady;
-            _mediaElement.HandlerChanging -= OnMediaElementHandlerChanging;
-            _mediaElement.PositionChanged -= OnMediaPositionChanged;
+            // The _mediaElement subscriptions made in the ctor are deliberately NOT released here.
+            // They used to be, and nothing ever re-subscribed — but Unloaded also fires for a
+            // temporary detach, and Loaded resumes playback afterwards. After one such cycle the
+            // video loop fade was gone and, worse, so was OnMediaElementHandlerChanging: the guard
+            // that stops ExoPlayer before the native view is torn down. The media element is this
+            // control's own child — same lifetime, nothing outside holds it — so the handlers
+            // cannot leak anything.
         };
         Content = _root;
         // No default slides, deliberately: an unconfigured carousel is EMPTY rather than showing the
@@ -467,7 +476,8 @@ public partial class G9IntroCarousel : G9ControlBase
     private void ApplyOverlayVisual()
     {
         var bottomOpacity = Clamp01(OverlayOpacity);
-        _overlayDrawable.OverlayColor = OverlayColor;
+        // A binding can still push null into a Color property; the drawable dereferences it.
+        _overlayDrawable.OverlayColor = OverlayColor ?? Colors.Black;
         _overlayDrawable.BottomOpacity = bottomOpacity;
         _overlayDrawable.TopOpacity = ResolveOverlayTopOpacity(bottomOpacity);
         _overlayDrawable.UseGradient = UseGradientOverlay;
@@ -1553,6 +1563,10 @@ public partial class G9IntroCarousel : G9ControlBase
                 return;
             }
 
+            // Belt and braces with ApplyOverlayVisual: a null colour here used to throw a
+            // NullReferenceException from inside the platform draw pass, where nothing catches it.
+            var overlayColor = OverlayColor ?? Colors.Black;
+
             canvas.SaveState();
 
             if (UseGradient)
@@ -1564,8 +1578,8 @@ public partial class G9IntroCarousel : G9ControlBase
                     EndPoint = new Point(0, 1),
                     GradientStops =
                     [
-                        new PaintGradientStop(0f, OverlayColor.WithAlpha(topOpacity)),
-                        new PaintGradientStop(1f, OverlayColor.WithAlpha(bottomOpacity))
+                        new PaintGradientStop(0f, overlayColor.WithAlpha(topOpacity)),
+                        new PaintGradientStop(1f, overlayColor.WithAlpha(bottomOpacity))
                     ]
                 };
 
@@ -1573,7 +1587,7 @@ public partial class G9IntroCarousel : G9ControlBase
             }
             else
             {
-                canvas.FillColor = OverlayColor.WithAlpha(bottomOpacity);
+                canvas.FillColor = overlayColor.WithAlpha(bottomOpacity);
             }
 
             canvas.FillRectangle(dirtyRect);

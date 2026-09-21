@@ -1,3 +1,4 @@
+using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Maui.BindableProperty.Generator.Core;
 
@@ -20,6 +21,9 @@ public partial class G9Switch : G9ControlBase
     private readonly Label _titleLabel;
     private readonly Label _descriptionLabel;
     private bool _initialized;
+
+    // Membership in G9SwitchGroupRegistry, held only while the switch is live AND names a group.
+    private IDisposable? _groupRegistration;
 
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnIsOnChanged))]
     private bool _isOn;
@@ -90,6 +94,45 @@ public partial class G9Switch : G9ControlBase
     public event EventHandler? Toggled;
 
     private void OnVisualChanged() => RequestVisualUpdate();
+
+    /// <inheritdoc />
+    protected override void OnAttachedToLiveTree()
+    {
+        base.OnAttachedToLiveTree();
+        SyncGroupRegistration();
+    }
+
+    /// <inheritdoc />
+    protected override void OnDetachedFromLiveTree()
+    {
+        // The base has already disposed the tracked registration; forget it so the next
+        // attach registers afresh.
+        _groupRegistration = null;
+        base.OnDetachedFromLiveTree();
+    }
+
+    /// <summary>
+    ///     Keeps the registry entry in step with "live and grouped". Registration used to happen
+    ///     only as a side effect of <see cref="OnApplyVisuals" /> and was never undone, so a switch
+    ///     on a page that had been left stayed a sibling of every later page's switches for as
+    ///     long as the GC let it live.
+    /// </summary>
+    private void SyncGroupRegistration()
+    {
+        var wanted = IsAttachedToLiveTree && !string.IsNullOrWhiteSpace(SelectionGroup);
+        if (wanted == (_groupRegistration is not null)) return;
+
+        if (wanted)
+        {
+            _groupRegistration = G9SwitchGroupRegistry.Register(this);
+            TrackSubscription(_groupRegistration);
+        }
+        else
+        {
+            _groupRegistration?.Dispose();
+            _groupRegistration = null;
+        }
+    }
 
     private void OnIsOnChanged()
     {
@@ -192,7 +235,15 @@ public partial class G9Switch : G9ControlBase
         _formRow.HorizontalOptions = IsInFormRow ? LayoutOptions.Fill : LayoutOptions.Center;
         _formRow.ColumnDefinitions[0].Width = IsInFormRow ? GridLength.Star : new GridLength(0);
 
-        G9SwitchGroupRegistry.Register(this);
+        // SelectionGroup changes arrive here (it is a visual-changed property).
+        SyncGroupRegistration();
+
+        // The toggle is painted on a canvas, so a screen reader sees neither a role nor a state.
+        // Name = the switch's own title; state = the catalogue's "selected" while on. The
+        // catalogue has no dedicated on / off pair yet, so the off state is simply not announced.
+        ApplySemantics(
+            string.IsNullOrWhiteSpace(Title) ? null : Title,
+            IsOn ? G9Strings.Get(G9StringKey.Selected) : null);
     }
 }
 
@@ -231,31 +282,49 @@ public partial class G9SwitchGroup : VerticalStackLayout
 
         var total = Children.OfType<G9Switch>().Count();
         var active = ActiveSwitchCount;
-        _statusLabel.Text = $"{active} / {total}";
+        _statusLabel.Text = string.Create(G9Culture.CurrentCulture, $"{active} / {total}");
         _statusLabel.TextColor = MinOneActive && active <= 1 ? G9Palette.Current.Warning : G9Palette.Current.TextTertiary;
     }
 
     private void OnVisualChanged() => RefreshStatus();
 }
 
+/// <summary>
+///     Finds the other switches a grouped <see cref="G9Switch" /> must turn off.
+///     <para>
+///         <b>A group name is only unique within one page.</b> The registry is process-wide, but
+///         it used to match on the name alone — so two live pages that both used, say,
+///         <c>SelectionGroup="unit"</c> shared one group: turning a switch on in one page turned
+///         the other page's switch off and, because <see cref="G9Switch.IsOn" /> binds two-way,
+///         wrote <c>false</c> into that page's view model. Siblings are now additionally required
+///         to share the same scope (see <see cref="ResolveScope" />).
+///     </para>
+/// </summary>
 internal static class G9SwitchGroupRegistry
 {
     private static readonly List<WeakReference<G9Switch>> Items = [];
     private static readonly Lock Sync = new();
 
-    public static void Register(G9Switch sw)
+    /// <summary>Adds <paramref name="sw" />; dispose the result to remove it again.</summary>
+    public static IDisposable Register(G9Switch sw)
     {
-        if (string.IsNullOrWhiteSpace(sw.SelectionGroup)) return;
-
         lock (Sync)
         {
             Items.RemoveAll(static r => !r.TryGetTarget(out _));
-            if (Items.Any(r => r.TryGetTarget(out var target) && ReferenceEquals(target, sw)))
+            if (!Items.Any(r => r.TryGetTarget(out var target) && ReferenceEquals(target, sw)))
             {
-                return;
+                Items.Add(new WeakReference<G9Switch>(sw));
             }
+        }
 
-            Items.Add(new WeakReference<G9Switch>(sw));
+        return new Registration(sw);
+    }
+
+    private static void Unregister(G9Switch sw)
+    {
+        lock (Sync)
+        {
+            Items.RemoveAll(r => !r.TryGetTarget(out var target) || ReferenceEquals(target, sw));
         }
     }
 
@@ -264,23 +333,57 @@ internal static class G9SwitchGroupRegistry
         var group = sw.SelectionGroup;
         if (string.IsNullOrWhiteSpace(group)) return;
 
-        List<G9Switch> siblings;
+        List<G9Switch> candidates;
         lock (Sync)
         {
             Items.RemoveAll(static r => !r.TryGetTarget(out _));
-            siblings = Items
+            candidates = Items
                 .Select(r => r.TryGetTarget(out var t) ? t : null)
                 .Where(t => t is not null && t.SelectionGroup == group && !ReferenceEquals(t, sw))
                 .Cast<G9Switch>()
                 .ToList();
         }
 
-        foreach (var sibling in siblings)
+        if (candidates.Count == 0) return;
+
+        // Resolved NOW rather than at registration: a switch is often registered before it has
+        // a parent chain (templated cells, off-screen pre-build), and may be re-parented later.
+        var scope = ResolveScope(sw);
+
+        foreach (var sibling in candidates)
         {
-            if (sibling.IsOn)
+            if (sibling.IsOn && ReferenceEquals(ResolveScope(sibling), scope))
             {
                 sibling.IsOn = false;
             }
+        }
+    }
+
+    /// <summary>
+    ///     The boundary a group name is unique within: the nearest <see cref="Page" /> ancestor,
+    ///     or — for content hosted outside any page, such as a sheet on the window overlay — the
+    ///     <see cref="Window" />. Null (not in a tree at all) only ever matches null.
+    /// </summary>
+    private static object? ResolveScope(G9Switch sw)
+    {
+        Element? cursor = sw.Parent;
+        while (cursor is not null)
+        {
+            if (cursor is Page page) return page;
+            cursor = cursor.Parent;
+        }
+
+        return sw.Window;
+    }
+
+    private sealed class Registration(G9Switch owner) : IDisposable
+    {
+        private G9Switch? _owner = owner;
+
+        public void Dispose()
+        {
+            var target = Interlocked.Exchange(ref _owner, null);
+            if (target is not null) Unregister(target);
         }
     }
 }

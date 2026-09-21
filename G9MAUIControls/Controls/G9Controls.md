@@ -203,8 +203,38 @@ Responsibilities:
   `IServiceProvider has been disposed` crash that previously occurred when the page
   closed while a visual update was still pending in the dispatcher queue.
 
+- **Hidden-while-changed replay.** A theme / culture event that arrives while the control cannot
+  be seen (an ancestor has `IsVisible = false` — inactive `G9TabItem` content, collapsed
+  `G9Expander` content) is still skipped, but it is now *recorded* and replayed the moment the
+  control is effectively visible again: on its own `IsVisible → true`, on the hidden ancestor's
+  `IsVisible → true` (the base subscribes to that one ancestor only while a change is pending),
+  and on the first non-zero size allocation. `Loaded` alone was not enough — revealing an
+  ancestor raises nothing on its descendants, so a tab that was inactive during a theme or
+  language switch stayed in the old colours / direction.
+- **One lifetime model.** `OnAttachedToLiveTree()` / `OnDetachedFromLiveTree()` bracket the period
+  in which the control is loaded (detach = `Unloaded` OR handler-null, whichever is first), and
+  `TrackSubscription(IDisposable)` ties a subscription to that period. Anything that references
+  the control from something longer-lived — a command's `CanExecuteChanged`, a static registry,
+  a frame timer, a dictation session — goes through these instead of being wired once in a
+  constructor or a property-changed callback. Current users: the safe buttons
+  (`CanExecuteChanged`), `G9Switch` (group registry), `G9ProgressBar` (indeterminate timer),
+  `G9TextEntry` / `G9Editor` (stop dictation), `G9SearchEntry` (pending debounce),
+  `G9RangeSlider` (deferred normalization).
+- **Accessibility helper.** `ApplySemantics(description, hint)` sets
+  `SemanticProperties.Description` / `Hint` for custom-drawn controls. It never overwrites a value
+  the consumer set, and skips unchanged writes, so it is safe to call from every apply pass.
+
 Subclasses only have to implement `OnApplyVisuals()`. They never wire theme handlers,
 they never re-implement re-entrancy guards.
+
+**Shared press / icon helpers (`Shared/`).** `G9Press.Invoke` is the press pipeline for tappable
+controls that are not a `G9Button` (`G9NavCard`, `G9Expander`, `G9HeaderActionButton`): it acts
+FIRST, plays the press animation fire-and-forget, drops a second press within 300 ms, and routes
+a throwing handler to `G9Press.ReportFailure` instead of letting it escape an `async void`.
+`G9IconSlot.Apply` is the signature-cached icon host update required by §12 — the signature
+includes the `ImageSource` instance and the icon size. `G9Digits.NormalizeToAscii` maps Persian /
+Arabic-Indic digits to ASCII and is applied before every ASCII-digit filter (`G9InputType`
+numeric / phone types, `G9PinEntry`).
 
 ### 3. `G9OutlinedFieldBase` — one outline architecture for every input
 

@@ -1,4 +1,5 @@
 using G9MAUIControls.Helpers;
+using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Microsoft.Maui.Graphics;
 
@@ -32,6 +33,13 @@ internal sealed class G9RangeSliderDrawable : IDrawable
     public bool IsEnabled { get; set; } = true;
     public G9RangeSliderThumb ActiveThumb { get; set; }
 
+    // The fill gradient depends only on the Primary colour and the direction, yet it used to be
+    // rebuilt — paint, two stops, a lightened colour — on every paint, i.e. on every pointer
+    // event of a drag. Kept until one of the two inputs changes.
+    private LinearGradientPaint? _fillPaint;
+    private Color? _fillPaintPrimary;
+    private bool _fillPaintIsRtl;
+
     public void Draw(ICanvas canvas, RectF dirtyRect)
     {
         var palette = G9Palette.Current;
@@ -51,8 +59,10 @@ internal sealed class G9RangeSliderDrawable : IDrawable
         canvas.FillColor = palette.SurfaceVariant;
         canvas.FillRoundedRectangle(trackLeft, trackCenterY - (TrackHeight / 2), trackWidth, TrackHeight, TrackHeight / 2);
 
+        // Single mode fills from the MINIMUM edge — the left in LTR, the right in RTL — not from
+        // the physical left, or an inverted slider would fill the "remaining" side instead.
         var startX = Mode == G9RangeSliderMode.Single
-            ? trackLeft
+            ? XFromValue(Minimum, trackWidth, trackLeft)
             : XFromValue(RangeStart, trackWidth, trackLeft);
         var endX = Mode == G9RangeSliderMode.Single
             ? XFromValue(Value, trackWidth, trackLeft)
@@ -64,17 +74,7 @@ internal sealed class G9RangeSliderDrawable : IDrawable
 
         if (fillWidth > 0)
         {
-            var fillPaint = new LinearGradientPaint
-            {
-                StartPoint = new Point(0, 0),
-                EndPoint = new Point(1, 0),
-                GradientStops =
-                [
-                    new PaintGradientStop(0, palette.Primary),
-                    new PaintGradientStop(1, G9ColorHelper.Lighten(palette.Primary, 0.22))
-                ]
-            };
-            canvas.SetFillPaint(fillPaint, new RectF(fillLeft, trackCenterY - (TrackHeight / 2), fillWidth, TrackHeight));
+            canvas.SetFillPaint(ResolveFillPaint(palette.Primary), new RectF(fillLeft, trackCenterY - (TrackHeight / 2), fillWidth, TrackHeight));
             canvas.FillRoundedRectangle(fillLeft, trackCenterY - (TrackHeight / 2), fillWidth, TrackHeight, TrackHeight / 2);
         }
 
@@ -112,6 +112,30 @@ internal sealed class G9RangeSliderDrawable : IDrawable
         canvas.RestoreState();
     }
 
+    private LinearGradientPaint ResolveFillPaint(Color primary)
+    {
+        if (_fillPaint is not null && ReferenceEquals(_fillPaintPrimary, primary) && _fillPaintIsRtl == IsRtl)
+        {
+            return _fillPaint;
+        }
+
+        _fillPaintPrimary = primary;
+        _fillPaintIsRtl = IsRtl;
+        // Saturated at the minimum end, lighter towards the value — so the gradient runs the
+        // same way the values do in either direction.
+        _fillPaint = new LinearGradientPaint
+        {
+            StartPoint = new Point(IsRtl ? 1 : 0, 0),
+            EndPoint = new Point(IsRtl ? 0 : 1, 0),
+            GradientStops =
+            [
+                new PaintGradientStop(0, primary),
+                new PaintGradientStop(1, G9ColorHelper.Lighten(primary, 0.22))
+            ]
+        };
+        return _fillPaint;
+    }
+
     public G9RangeSliderThumb ResolveNearestThumb(float x, float width)
     {
         var trackWidth = Math.Max(1, width - (HorizontalInset * 2));
@@ -134,7 +158,11 @@ internal sealed class G9RangeSliderDrawable : IDrawable
 
     private float XFromValue(double value, float trackWidth, float trackLeft)
     {
-        var range = Math.Max(1, Maximum - Minimum);
+        // The real span, not Math.Max(1, …): that floor made every range narrower than 1 (0–0.5,
+        // a 0–1 opacity) draw its thumb short of the end while ValueFromX — which never had the
+        // floor — still mapped the full track, so the thumb and the finger disagreed.
+        var range = Maximum - Minimum;
+        if (range <= 0) range = 1;
         var ratio = (float)Math.Clamp((value - Minimum) / range, 0, 1);
         if (IsRtl) ratio = 1 - ratio;
         return trackLeft + (trackWidth * ratio);
@@ -189,8 +217,10 @@ internal sealed class G9RangeSliderDrawable : IDrawable
         canvas.DrawString(text, left, tooltipY, width, tooltipHeight, HorizontalAlignment.Center, VerticalAlignment.Center);
     }
 
-    private string FormatValue(double value)
+    internal string FormatValue(double value)
     {
-        return value.ToString(string.IsNullOrWhiteSpace(ValueFormat) ? "0" : ValueFormat);
+        // The library culture, like every other culture-dependent decision in the suite; the
+        // thread culture is only what it falls back to.
+        return value.ToString(string.IsNullOrWhiteSpace(ValueFormat) ? "0" : ValueFormat, G9Culture.CurrentCulture);
     }
 }

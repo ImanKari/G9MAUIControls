@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+        SQL-generation tests for G9MAUIControls.Persistence.Sqlite: every statement the query builders
+        produce is EXECUTED against an in-memory SQLite database, because "the SQL string looks right" is
+        exactly the kind of check that passes while the query returns the wrong rows.
+
+        WINDOWS ONLY, and that is forced rather than chosen. The satellite targets platform TFMs only
+        (03-PackageArchitecture -> "Target frameworks"), and net10.0-windows10.0.19041.0 is the single one
+        of them whose output a desktop test host can load and run. Off Windows this project therefore
+        collapses to an EMPTY net10.0 library - no sources, no references, not a test project - so
+        `dotnet build G9MAUIControls.slnx` still succeeds there instead of failing with NETSDK1100.
+
+        G9TestsOnWindows is a property rather than the inline call so the non-Windows shape can be
+        checked from a Windows machine: `dotnet build -p:G9TestsOnWindows=false`.
+    -->
+
+    <PropertyGroup>
+        <G9TestsOnWindows Condition="'$(G9TestsOnWindows)' == ''">$([MSBuild]::IsOSPlatform('windows'))</G9TestsOnWindows>
+
+        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework Condition="'$(G9TestsOnWindows)' == 'true'">net10.0-windows10.0.19041.0</TargetFramework>
+        <RootNamespace>G9MAUIControls.Persistence.Sqlite.Tests</RootNamespace>
+
+        <!-- Never ships. Also switches off the shared README / icon / LICENSE pack items and the
+             SourceLink reference, all of which Directory.Build.props conditions on IsPackable. -->
+        <IsPackable>false</IsPackable>
+        <IsTestProject Condition="'$(G9TestsOnWindows)' == 'true'">true</IsTestProject>
+        <EnableDefaultCompileItems Condition="'$(G9TestsOnWindows)' != 'true'">false</EnableDefaultCompileItems>
+
+        <!-- Directory.Build.props turns XML docs on so they ship in the packages. Nothing ships from
+             here, and xunit requires test classes to be public, so every one would raise CS1591. -->
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+        <!-- Win2D arrives transitively through the satellite's MAUI closure and warns (WIN2D0001) that an
+             AnyCPU project cannot load its native DLL. Nothing here touches graphics, so that is moot.
+             FALSE is what switches the warning off: the property means "warn", despite the warning's
+             own text saying "set Win2DWarnNoPlatform to suppress". -->
+        <Win2DWarnNoPlatform>false</Win2DWarnNoPlatform>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(G9TestsOnWindows)' == 'true'">
+        <ProjectReference Include="..\..\G9MAUIControls.Persistence.Sqlite\G9MAUIControls.Persistence.Sqlite.csproj" />
+
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="xunit" />
+        <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+
+        <Using Include="Xunit" />
+    </ItemGroup>
+
+</Project>

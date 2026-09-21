@@ -204,3 +204,8 @@ value.
 - `ItemsSource` accepts `ObservableCollection<G9SelectionItem>` — collection changes
   rebuild the chip strip. The cached bindings are cleared and rebuilt on full rebuild.
 - For the icon priority order, see `G9Button.md`.
+- `G9SelectionItem.IsEnabled = false` dims the chip and makes it non-toggleable.
+- `ChipHeight`, `ItemSpacing` and `IconSize` rebuild the strip when changed after the first build;
+  `SelectionMode` re-evaluates which chips are selected. Collection changes are coalesced into one
+  rebuild per dispatcher tick (and hop to the UI thread when raised from a worker), and the
+  `CollectionChanged` subscriptions are held only between `Loaded` and `Unloaded`.

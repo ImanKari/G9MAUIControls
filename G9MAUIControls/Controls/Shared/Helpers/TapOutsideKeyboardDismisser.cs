@@ -364,6 +364,14 @@ public static class TapOutsideKeyboardDismisser
         private FrameworkElement? _root;
         private PointerEventHandler? _handler;
 
+        // Set while we are still waiting for the page's handler. Dispose must be able to cancel
+        // that wait: a page that disappears before its handler arrives used to leave the
+        // HandlerChanged subscription alive, and the late callback then wired a pointer hook
+        // that nothing would ever remove.
+        private Page? _pendingPage;
+        private EventHandler? _pendingHandlerChanged;
+        private bool _disposed;
+
         public WindowsDismisser(Page page)
         {
             // Defer wiring until the page's platform view is available. If the
@@ -375,20 +383,32 @@ public static class TapOutsideKeyboardDismisser
             }
             else
             {
-                page.HandlerChanged += OnHandlerChanged;
+                _pendingPage = page;
+                _pendingHandlerChanged = OnHandlerChanged;
+                page.HandlerChanged += _pendingHandlerChanged;
 
                 void OnHandlerChanged(object? s, EventArgs _)
                 {
                     if (s is Page p)
                     {
-                        p.HandlerChanged -= OnHandlerChanged;
-                        if (p.Handler?.PlatformView is FrameworkElement root)
+                        StopWaitingForHandler();
+                        if (!_disposed && p.Handler?.PlatformView is FrameworkElement root)
                         {
                             Wire(root);
                         }
                     }
                 }
             }
+        }
+
+        private void StopWaitingForHandler()
+        {
+            if (_pendingPage is not null && _pendingHandlerChanged is not null)
+            {
+                _pendingPage.HandlerChanged -= _pendingHandlerChanged;
+            }
+            _pendingPage = null;
+            _pendingHandlerChanged = null;
         }
 
         private void Wire(FrameworkElement root)
@@ -405,6 +425,8 @@ public static class TapOutsideKeyboardDismisser
 
         public void Dispose()
         {
+            _disposed = true;
+            StopWaitingForHandler();
             if (_root is not null && _handler is not null)
             {
                 _root.RemoveHandler(UIElement.PointerPressedEvent, _handler);

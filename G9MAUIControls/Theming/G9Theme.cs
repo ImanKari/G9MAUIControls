@@ -13,6 +13,14 @@ public static class G9Theme
 
     private static ResourceDictionary? _activeTheme;
 
+    // The Application that Init() last wired up. Weak, so a test host that replaces Application.Current
+    // is neither pinned nor mistaken for "already initialised".
+    private static WeakReference<Application>? _initializedApplication;
+
+    // Main-thread only, like everything that touches Application.Resources. See ApplyCurrent.
+    private static bool _isApplying;
+    private static bool _reapplyRequested;
+
     /// <summary>
     ///     Applies the persisted (or system) theme and starts following system theme changes.
     ///     <para>
@@ -42,6 +50,17 @@ public static class G9Theme
     {
         var application = RequireApplication(nameof(Init));
 
+        // Double-call guard. A second Init() for the same Application used to subscribe a second
+        // RequestedThemeChanged handler, so every system theme change applied the theme twice.
+        if (_initializedApplication is not null &&
+            _initializedApplication.TryGetTarget(out var initialized) &&
+            ReferenceEquals(initialized, application))
+        {
+            return;
+        }
+
+        _initializedApplication = new WeakReference<Application>(application);
+
         // Seed the three resource keys the suite's XAML binds with DynamicResource. Unlike the C# metric
         // readers, DynamicResource has no fallback — an absent key silently leaves the property unset, so
         // a consumer who never heard of these keys would get zero corner radii and zero margins with
@@ -50,14 +69,30 @@ public static class G9Theme
 
         ApplyCurrent();
 
-        application.RequestedThemeChanged += (_, e) =>
+        // A STATIC, NAMED handler — not a lambda. Application.RequestedThemeChanged is backed by MAUI's
+        // WeakEventManager, which holds an instance handler's target only weakly. The lambda that used to
+        // be here captured `application`, so its target was a compiler-generated closure that nothing else
+        // referenced: once the GC took it, "follow the system theme" stopped silently — AppThemeBindings
+        // still flipped, G9Palette did not, and the UI came out half light and half dark. A static method
+        // has no target to collect.
+        application.RequestedThemeChanged -= OnRequestedThemeChanged;
+        application.RequestedThemeChanged += OnRequestedThemeChanged;
+    }
+
+    private static void OnRequestedThemeChanged(object? sender, AppThemeChangedEventArgs e)
+    {
+        // ApplyCurrent sets UserAppTheme itself, which raises this event from inside it. That apply has
+        // already resolved the theme it is switching to, so re-entering would only repeat the work.
+        if (_isApplying)
         {
-            // Only follow the system while the user has expressed no preference of their own.
-            if (application.UserAppTheme == AppTheme.Unspecified && e.RequestedTheme != AppTheme.Unspecified)
-            {
-                ApplyCurrent();
-            }
-        };
+            return;
+        }
+
+        // Only follow the system while the user has expressed no preference of their own.
+        if (Application.Current is { UserAppTheme: AppTheme.Unspecified } && e.RequestedTheme != AppTheme.Unspecified)
+        {
+            ApplyCurrent();
+        }
     }
 
     /// <summary>
@@ -91,49 +126,84 @@ public static class G9Theme
     public static void ApplyCurrent()
     {
         var application = RequireApplication(nameof(ApplyCurrent));
-        var theme = (AppTheme)G9Preferences.GetInt(ThemePreferenceKey);
 
-        application.UserAppTheme = theme;
+        // Re-entrancy. Everything below notifies synchronously, so a subscriber can land back here
+        // mid-switch (the framework's own RequestedThemeChanged is filtered out before it gets this far —
+        // see OnRequestedThemeChanged). Running a second switch inside the first would interleave two
+        // dictionary swaps; remember the request and run it once the current switch has finished.
+        if (_isApplying)
+        {
+            _reapplyRequested = true;
+            return;
+        }
 
-        ResourceDictionary dict =
-            theme != AppTheme.Unspecified
-            ? theme == AppTheme.Dark
-                ? new G9ThemeDark()
-                : new G9ThemeLight()
-            : application.RequestedTheme == AppTheme.Dark
-                ? new G9ThemeDark()
-                : new G9ThemeLight();
-
-        ReplaceMergedDictionary(dict);
-        ApplyPaletteFromDictionary(dict);
-    }
-
-    /// <summary>
-    ///     Applies colors from a freshly-built theme <see cref="ResourceDictionary" />
-    ///     onto the singleton <see cref="G9Palette.Current" />.
-    ///     <para>
-    ///         Wraps the ~100 colour setters in
-    ///         <see cref="G9Palette.BeginBatchUpdate" /> /
-    ///         <see cref="G9Palette.EndBatchUpdate" /> so that consumers see a
-    ///         single <c>PropertyChanged(string.Empty)</c> "all properties changed"
-    ///         event at the end instead of N individual events. The dense input
-    ///         showcase blocked the UI thread for over 240 seconds without this
-    ///         batching because every per-property event fanned out to every
-    ///         binding listening on the palette.
-    ///     </para>
-    /// </summary>
-    private static void ApplyPaletteFromDictionary(ResourceDictionary dict)
-    {
-        var p = G9Palette.Current;
-
-        p.BeginBatchUpdate();
+        _isApplying = true;
         try
         {
-            ApplyPaletteFromDictionaryCore(p, dict);
+            do
+            {
+                _reapplyRequested = false;
+                ApplyCurrentCore(application);
+            }
+            while (_reapplyRequested);
         }
         finally
         {
-            p.EndBatchUpdate();
+            _isApplying = false;
+        }
+    }
+
+    /// <summary>
+    ///     One theme switch, ordered so that <b>no notification is raised against a half-switched app</b>.
+    ///     <para>
+    ///         There are two kinds of listener, and each reads the other's state. Code hanging off
+    ///         <see cref="Application.RequestedThemeChanged" /> (or an <c>AppThemeBinding</c>) reads palette
+    ///         colours; code hanging off <see cref="G9Palette" /> reads <c>UserAppTheme</c> to pick a
+    ///         light / dark recipe — the tab bar, the edge panel, the switch and most of a consuming app's
+    ///         own palette-driven views do exactly that. Whichever of the two is switched first notifies its
+    ///         listeners while the other is still the outgoing theme. It used to be <c>UserAppTheme</c>, so
+    ///         theme-changed handlers painted with the previous palette; simply swapping the two would
+    ///         move the same defect onto every palette listener instead.
+    ///     </para>
+    ///     <para>
+    ///         So the palette VALUES go in first, silently, inside a batch; then <c>UserAppTheme</c> and
+    ///         the merged dictionary change, notifying listeners that already see the new colours; and
+    ///         only then does the batch close and raise the palette's single "everything changed" event,
+    ///         to listeners that already see the new <c>UserAppTheme</c>. The ORDER of the three
+    ///         notifications is unchanged.
+    ///     </para>
+    ///     <para>
+    ///         The batch is also what keeps a switch affordable: consumers get one
+    ///         <c>PropertyChanged(string.Empty)</c> instead of ~100 individual events. Without it the dense
+    ///         input showcase blocked the UI thread for over 240 seconds, because every per-property event
+    ///         fanned out to every binding listening on the palette.
+    ///     </para>
+    /// </summary>
+    private static void ApplyCurrentCore(Application application)
+    {
+        var theme = (AppTheme)G9Preferences.GetInt(ThemePreferenceKey);
+
+        // PlatformAppTheme, not RequestedTheme: UserAppTheme has not been written yet, and RequestedTheme
+        // would still answer with the OUTGOING user choice when switching back to "follow the system".
+        var effective = theme != AppTheme.Unspecified ? theme : application.PlatformAppTheme;
+
+        ResourceDictionary dict = effective == AppTheme.Dark
+            ? new G9ThemeDark()
+            : new G9ThemeLight();
+
+        var palette = G9Palette.Current;
+
+        palette.BeginBatchUpdate();
+        try
+        {
+            ApplyPaletteFromDictionaryCore(palette, dict);
+
+            application.UserAppTheme = theme;
+            ReplaceMergedDictionary(dict);
+        }
+        finally
+        {
+            palette.EndBatchUpdate();
         }
     }
 

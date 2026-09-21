@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/G9MAUIControls.Persistence.Sqlite.Tests/G9MAUIControls.Persistence.Sqlite.Tests.csproj" />
+    <Project Path="tests/G9MAUIControls.Tests/G9MAUIControls.Tests.csproj" />
+  </Folder>
   <Project Path="G9Controls.Gallery/G9Controls.Gallery.csproj" />
   <Project Path="G9MAUIControls.Barcode/G9MAUIControls.Barcode.csproj" />
   <Project Path="G9MAUIControls.IntroCarousel/G9MAUIControls.IntroCarousel.csproj" />

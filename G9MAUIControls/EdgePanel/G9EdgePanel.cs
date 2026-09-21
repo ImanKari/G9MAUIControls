@@ -713,6 +713,17 @@ public partial class G9EdgePanel : ContentView
             _cultureHandlerAttached = true;
         }
 
+        // Dropped on final teardown (see ReleaseExternalSubscriptions); a panel that is mounted again
+        // has to hear about list changes again. `-=` first keeps this idempotent across the ordinary
+        // unload / reload cycles, where it was never dropped.
+        if (_attachedMenuItems is INotifyCollectionChanged ncc)
+        {
+            ncc.CollectionChanged -= OnMenuItemsCollectionChanged;
+            ncc.CollectionChanged += OnMenuItemsCollectionChanged;
+        }
+
+        // Also what makes unsubscribing on EVERY unload safe: a theme or culture change missed while
+        // unloaded is caught up here, with the same two calls those handlers make.
         ApplyTheme();
         MeasureParent();
         ApplySideLayout(false);
@@ -729,6 +740,14 @@ public partial class G9EdgePanel : ContentView
 
     private void OnUnloaded(object? sender, EventArgs e)
     {
+        // The two STATIC subscriptions end on every unload, BEFORE the transient-unload guard below.
+        // They used to sit behind it, and the guard's condition (Parent is not null) is also true when
+        // the whole PAGE is torn down — the panel is never removed from its parent then, the page just
+        // goes away — so the static palette and culture events kept the panel, and through its Parent
+        // chain the page, alive for good. Dropping them on a transient unload costs nothing: OnLoaded
+        // re-subscribes idempotently and re-applies theme and layout.
+        ReleaseStaticSubscriptions();
+
         // On Android, a transient unload-reload cycle can fire during layout reflow even though
         // the panel is still in its parent's children collection. Only run final cleanup when
         // the panel has actually been removed from its parent — otherwise we would abort an
@@ -736,18 +755,6 @@ public partial class G9EdgePanel : ContentView
         if (Parent is not null)
         {
             return;
-        }
-
-        if (_themeHandlerAttached)
-        {
-            G9Palette.Current.PropertyChanged -= _themeChangedHandler;
-            _themeHandlerAttached = false;
-        }
-
-        if (_cultureHandlerAttached)
-        {
-            G9Culture.CultureChanged -= OnAppCultureChanged;
-            _cultureHandlerAttached = false;
         }
 
         this.AbortAnimation(PanelAnimationName);
@@ -761,6 +768,45 @@ public partial class G9EdgePanel : ContentView
 
         if (_attachedMenuItems is INotifyCollectionChanged ncc)
             ncc.CollectionChanged -= OnMenuItemsCollectionChanged;
+    }
+
+    private void ReleaseStaticSubscriptions()
+    {
+        if (_themeHandlerAttached)
+        {
+            G9Palette.Current.PropertyChanged -= _themeChangedHandler;
+            _themeHandlerAttached = false;
+        }
+
+        if (_cultureHandlerAttached)
+        {
+            G9Culture.CultureChanged -= OnAppCultureChanged;
+            _cultureHandlerAttached = false;
+        }
+    }
+
+    /// <summary>
+    ///     Final teardown. Unlike <c>Unloaded</c>, a null <c>NewHandler</c> is never transient, so this is
+    ///     where everything that can outlive the panel lets go of it: the static events, the consumer's
+    ///     menu collection (often owned by a long-lived view model) and the helper's active-panel slot.
+    /// </summary>
+    protected override void OnHandlerChanging(HandlerChangingEventArgs args)
+    {
+        base.OnHandlerChanging(args);
+
+        if (args.NewHandler is not null)
+        {
+            return;
+        }
+
+        ReleaseStaticSubscriptions();
+
+        if (_attachedMenuItems is INotifyCollectionChanged ncc)
+        {
+            ncc.CollectionChanged -= OnMenuItemsCollectionChanged;
+        }
+
+        G9EdgePanelHelper.ReleaseIfActive(this);
     }
 
     private void OnSizeChanged(object? sender, EventArgs e)
@@ -1715,6 +1761,45 @@ public partial class G9EdgePanel : ContentView
 
     private async void TransitionMenuContent(View incoming, G9MenuTransitionDirection direction)
     {
+        // `async void`, called from taps and from collection / theme / culture callbacks: an exception
+        // here has no caller to land on and is rethrown on the UI thread's synchronisation context,
+        // which ends the process. It awaits across two points where the panel can be torn down
+        // underneath it, so it has to be guarded.
+        try
+        {
+            await TransitionMenuContentCoreAsync(incoming, direction);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[G9EdgePanel] Menu transition failed: {ex}");
+
+            try
+            {
+                // Leave the menu usable rather than mid-fade: show the incoming list outright and hand
+                // the card height back to auto-size.
+                this.AbortAnimation(MenuContentAnimationName);
+                this.AbortAnimation(PanelHeightAnimationName);
+
+                if (!ReferenceEquals(incoming.Parent, _panelContentHost))
+                {
+                    _panelContentHost.Children.Add(incoming);
+                }
+
+                while (_panelContentHost.Children.Count > 1)
+                    _panelContentHost.Children.RemoveAt(0);
+
+                incoming.Opacity = 1;
+                _panelCard.HeightRequest = -1;
+            }
+            catch
+            {
+                // The tree is going away; nothing left to repair.
+            }
+        }
+    }
+
+    private async Task TransitionMenuContentCoreAsync(View incoming, G9MenuTransitionDirection direction)
+    {
         var gen = ++_menuTransitionGeneration;
         this.AbortAnimation(MenuContentAnimationName);
         this.AbortAnimation(PanelHeightAnimationName);
@@ -2304,6 +2389,24 @@ public partial class G9EdgePanel : ContentView
     public void Toggle()
     {
         IsOpen = !IsOpen;
+    }
+
+    /// <summary>
+    ///     Hardware / system back for this panel: closes it when it is open and reports whether the
+    ///     press was consumed. The suite has no back dispatcher of its own, so the host calls this from
+    ///     its back chain — for a helper-managed panel, through
+    ///     <see cref="G9EdgePanelHelper.HandleHardwareBackPressed" />. Call on the main thread.
+    /// </summary>
+    /// <returns><c>true</c> when an open panel was asked to close; <c>false</c> when there was nothing to do.</returns>
+    public bool HandleHardwareBackPressed()
+    {
+        if (!IsOpen)
+        {
+            return false;
+        }
+
+        Close();
+        return true;
     }
 
     /// <summary>

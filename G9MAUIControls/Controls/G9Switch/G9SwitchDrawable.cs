@@ -17,6 +17,20 @@ internal sealed class G9SwitchDrawable : IDrawable
     public bool IsRtl { get; set; }
     public float Progress { get; set; }
 
+    private static readonly Color TrackOutline = Colors.Black.WithAlpha(0.06f);
+
+    // Last blended track / thumb colours and the inputs they were blended from. A switch is
+    // repainted far more often at rest (scrolling, neighbours invalidating, theme passes) than
+    // mid-toggle, and at rest every input is identical — so the two Mix allocations per paint
+    // are skipped unless the progress or one of the four source colours actually moved.
+    private float _mixedProgress = float.NaN;
+    private Color? _mixedOffTrack;
+    private Color? _mixedOnTrack;
+    private Color? _mixedThumbOff;
+    private Color? _mixedThumbOn;
+    private Color _trackColor = Colors.Transparent;
+    private Color _thumbColor = Colors.Transparent;
+
     public void Draw(ICanvas canvas, RectF dirtyRect)
     {
         var palette = G9Palette.Current;
@@ -27,8 +41,23 @@ internal sealed class G9SwitchDrawable : IDrawable
         var thumbOff = G9Colors.SwitchThumbOff(palette);
         var thumbOn = G9Colors.SwitchThumbOn(palette);
 
-        var trackColor = G9ColorHelper.Mix(offTrack, onTrack, progress);
-        var thumbColor = G9ColorHelper.Mix(thumbOff, thumbOn, progress);
+        if (progress != _mixedProgress
+            || !ReferenceEquals(offTrack, _mixedOffTrack)
+            || !ReferenceEquals(onTrack, _mixedOnTrack)
+            || !ReferenceEquals(thumbOff, _mixedThumbOff)
+            || !ReferenceEquals(thumbOn, _mixedThumbOn))
+        {
+            _mixedProgress = progress;
+            _mixedOffTrack = offTrack;
+            _mixedOnTrack = onTrack;
+            _mixedThumbOff = thumbOff;
+            _mixedThumbOn = thumbOn;
+            _trackColor = G9ColorHelper.Mix(offTrack, onTrack, progress);
+            _thumbColor = G9ColorHelper.Mix(thumbOff, thumbOn, progress);
+        }
+
+        var trackColor = _trackColor;
+        var thumbColor = _thumbColor;
 
         canvas.SaveState();
         canvas.Antialias = true;
@@ -38,7 +67,7 @@ internal sealed class G9SwitchDrawable : IDrawable
         canvas.FillRoundedRectangle(0, 0, dirtyRect.Width, dirtyRect.Height, 16);
 
         canvas.StrokeSize = 1.5f;
-        canvas.StrokeColor = Colors.Black.WithAlpha(0.06f);
+        canvas.StrokeColor = TrackOutline;
         canvas.DrawRoundedRectangle(0.75f, 0.75f, dirtyRect.Width - 1.5f, dirtyRect.Height - 1.5f, 16);
 
         DrawTrackMark(canvas, dirtyRect, progress);

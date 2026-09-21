@@ -28,7 +28,7 @@ back-navigation header, and the RTL handling into one control.
 | **Directional entry** | `Direction` (or a per-push override) — `Auto` / `LeftToRight` / `RightToLeft` / `TopToBottom` / `BottomToTop`. `Auto` resolves to the reading direction (L→R in LTR, R→L in RTL). |
 | **Two transitions** | `Transition` — `Overlay` (default): new panel slides in over a stationary base; `Push`: base slides out as the new panel slides in (conveyor replace). |
 | **Arbitrary nesting** | Each `Push` adds a level; `Pop` removes the top; `PopToRoot` collapses back to depth 0. |
-| **Content-based scroll** | Every panel wraps its content in a `ScrollView`. Tall content scrolls; short content doesn't. |
+| **Content-based scroll** | By default every panel wraps its content in a `ScrollView`. Tall content scrolls; short content doesn't. Pass `wrapInScrollView: false` on a push whose content scrolls itself (a `CollectionView`) — see Methods. |
 | **Lazy loading** | `Push(Func<View>, …)` and `RootContentFactory` show a spinner and build the view one tick after the slide — same deferred-content idea as the bottom sheet. |
 | **Fixed-vs-animated root** | The root view appears with no animation by default (`AnimateRoot = false`); nested panels always animate. |
 | **Depth parallax (Overlay only)** | In `Overlay` mode the covered panel parallaxes + dims (`EnableParallax`, on by default) for an iOS-style depth cue. |
@@ -60,6 +60,7 @@ spinner and builds the factory one tick after load.
 | `Push(View content, string? title = null, G9CascadeDirection? direction = null)` | Push a built view as a new nested panel. |
 | `Push(Func<View> factory, string? title = null, G9CascadeDirection? direction = null)` | Push a lazily-built view; spinner shows until the factory returns. |
 | `PushAsync(View?, Func<View>?, string?, G9CascadeDirection?)` | Awaitable push; completes when the slide-in finishes. |
+| `Push(View, string?, G9CascadeDirection?, bool wrapInScrollView)` / `Push(Func<View>, string?, G9CascadeDirection?, bool wrapInScrollView)` / `PushAsync(View?, Func<View>?, string?, G9CascadeDirection?, bool wrapInScrollView)` | Same, with the scroll wrap explicit. `false` arranges the content in the panel's real, bounded height — required for a `CollectionView`, which inside a `ScrollView` is measured unbounded, realizes every row and nests two scrollers. The shorter overloads keep wrapping. |
 | `Pop()` / `PopAsync()` | Pop the top nested panel. No-op at the root. |
 | `PopToRoot()` / `PopToRootAsync()` | Pop every nested panel back to the root. |
 
@@ -129,8 +130,11 @@ RegionPanel.Push(BuildFilterPanel(), title: "Filters", direction: G9CascadeDirec
   setting `TranslationX/Y` before the platform handler is connected is silently dropped,
   which would make the panel snap into place with no motion (G9Controls.md §15 W2). A
   120 ms fallback keeps a collapsed-parent push from hanging.
-- **Re-entrancy guard.** Push / pop are guarded by an `_animating` flag so rapid taps can't
-  interleave two slides.
+- **Re-entrancy guard + one queued operation.** One slide runs at a time. A second operation of
+  the SAME kind during a slide is dropped (the double-tap guard: two taps must not push two panels
+  or pop two levels). An operation of the OTHER kind is parked and runs when the slide ends, so
+  `Pop(); Push(x);` and a `Push` from a `PanelPopped` handler no longer lose the push.
+  `PopToRootAsync` waits out a slide in flight instead of returning without popping.
 
 See `G9Controls.md` for the shared architecture (base class, metrics, RTL strategy,
 destruction-free animation, and the platform pitfall catalog).

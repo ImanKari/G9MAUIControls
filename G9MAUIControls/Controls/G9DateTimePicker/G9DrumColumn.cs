@@ -218,6 +218,7 @@ internal sealed class G9DrumColumn : Grid
         };
         _scroll.Scrolled += OnScrolled;
         _scroll.HandlerChanged += OnScrollHandlerChanged;
+        Unloaded += OnColumnUnloaded;
 
         _bandOverlay = new GraphicsView
         {
@@ -242,6 +243,13 @@ internal sealed class G9DrumColumn : Grid
     public int SelectedValue { get; private set; }
 
     public int ItemCount => _items.Count;
+
+    /// <summary>
+    ///     True when nothing is moving the column: no finger on it, no settle pending, no snap in
+    ///     flight. A caller that wants to rebuild the rows (<see cref="SetItems" />) outside a user
+    ///     gesture checks this first.
+    /// </summary>
+    public bool IsIdle => !_isFingerDown && _snapCts is null && _settleTimer?.IsRunning != true;
 
     /// <summary>
     ///     Smoothly animates the column to the specified value with a configurable
@@ -770,6 +778,11 @@ internal sealed class G9DrumColumn : Grid
 
     private void OnScrollHandlerChanged(object? sender, EventArgs e)
     {
+        if (_scroll.Handler is null)
+        {
+            ReleaseMotionState();
+        }
+
 #if ANDROID
         AttachAndroidTouchListener();
 #elif IOS || MACCATALYST
@@ -777,6 +790,22 @@ internal sealed class G9DrumColumn : Grid
 #elif WINDOWS
         AttachWindowsPointerHandlers();
 #endif
+    }
+
+    private void OnColumnUnloaded(object? sender, EventArgs e) => ReleaseMotionState();
+
+    /// <summary>
+    ///     Stops everything that keeps ticking on its own. The settle timer returns early while
+    ///     <see cref="_isFingerDown" /> is set and only a touch-UP clears that flag — but a sheet
+    ///     closed mid-drag (back gesture, programmatic close) never delivers the UP, so the 16 ms
+    ///     timer ran forever on a detached column and kept the whole sheet alive. Unloaded can also
+    ///     be a temporary detach; that is fine, the next scroll event re-arms the timer.
+    /// </summary>
+    private void ReleaseMotionState()
+    {
+        _isFingerDown = false;
+        CancelSnap();
+        StopSettleTimer();
     }
 
     /// <summary>

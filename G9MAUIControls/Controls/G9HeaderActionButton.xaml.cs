@@ -208,22 +208,22 @@ public partial class G9HeaderActionButton : ContentView
         ButtonBorder.SetDynamicResource(WidthRequestProperty, "ToolbarButtonSize");
     }
 
-    private async void OnTapped(object? sender, TappedEventArgs e)
+    private void OnTapped(object? sender, TappedEventArgs e)
     {
         if (!IsEnabled || IsBusy)
         {
             return;
         }
 
-        if (AnimatePress)
-        {
-            await AnimatePressAsync();
-        }
-
-        if (Command?.CanExecute(CommandParameter) == true)
-        {
-            Command.Execute(CommandParameter);
-        }
+        // Act first, animate afterwards. This used to await the 160 ms press animation before
+        // running the command, from an async void with no guard: the action felt late, a double
+        // tap ran it twice, and a throwing command crashed the app. G9Press owns all three.
+        G9Press.Invoke(
+            this,
+            raise: null,
+            Command,
+            CommandParameter,
+            AnimatePress ? AnimatePressAsync : null);
     }
 
     private void UpdateVisualState()

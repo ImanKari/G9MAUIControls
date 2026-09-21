@@ -29,3 +29,18 @@ public interface IDeferredSheetLoad
     /// </summary>
     Task LoadDeferredAsync(CancellationToken cancellationToken);
 }
+
+/// <summary>
+///     An <see cref="IDeferredSheetLoad" /> that may ask for its load to start while the sheet is
+///     still STAGED off-screen rather than after the open motion. Paired with
+///     <c>IDeferredContentReadiness</c>, which is what the open then waits on (bounded).
+/// </summary>
+/// <remarks>
+///     For content whose first render needs only data that is already on the device. See
+///     <c>LoadableSheetContentView.LoadWhileStaged</c>, the one implementation, for when to use it.
+/// </remarks>
+public interface IStagedSheetLoad : IDeferredSheetLoad
+{
+    /// <summary>True to start the load at stage time. Read once, when the sheet is staged.</summary>
+    bool LoadsWhileStaged { get; }
+}

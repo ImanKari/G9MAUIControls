@@ -85,6 +85,17 @@ public sealed class SqliteDeleteQueryBuilder<[DynamicallyAccessedMembers(Dynamic
         return this;
     }
 
+    /// <summary>
+    ///     States that this DELETE is meant to remove <b>every row</b>. Without it — and without a WHERE
+    ///     condition — building the statement throws, because a DELETE with no WHERE empties the table and
+    ///     the usual cause is a conditional <c>.Where(...)</c> that did not run.
+    /// </summary>
+    public SqliteDeleteQueryBuilder<T> AllRows()
+    {
+        _sqliteQueryBuilder.AllRows();
+        return this;
+    }
+
     #endregion
 
     #region Build

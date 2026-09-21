@@ -1,7 +1,7 @@
 namespace G9MAUIControls.Hosting;
 
 /// <summary>
-///     The single slot behind <see cref="G9OverlayHosts" />, and the adapter that narrows the internal
+///     The registry behind <see cref="G9OverlayHosts" />, and the adapter that narrows the internal
 ///     <c>ModalHost</c> down to the public <see cref="IG9OverlayHost" />.
 ///     <para>
 ///         Kept internal on purpose. The internal <c>ModalHost</c> record carries the popup and
@@ -9,18 +9,26 @@ namespace G9MAUIControls.Hosting;
 ///         through the helpers that own the queueing and animation contracts. This type is the wall between
 ///         the two views of the same registration.
 ///     </para>
+///     <para>
+///         Same most-recent-first stack as the internal registry (<see cref="G9PageHostStack{THost}" />),
+///         driven from the same call sites in <c>G9PageBase</c>, so the two views resolve the same page.
+///     </para>
 /// </summary>
 internal static class G9OverlayHostRegistry
 {
-    private static readonly Lock SyncRoot = new();
-    private static PublicHost? _current;
+    private static readonly G9PageHostStack<PublicHost> Stack = new();
 
-    /// <summary>Raised after <see cref="Set" /> or <see cref="Clear" /> changes the active host.</summary>
+    /// <summary>
+    ///     Raised when the RESOLVED host changes: a page became current, or the current page went away — in
+    ///     which case the argument is the page underneath that is current again, or <c>null</c> when none
+    ///     is left. Not raised when a page merely re-asserts a registration that is already current.
+    /// </summary>
     public static event EventHandler<IG9OverlayHost?>? CurrentChanged;
 
     /// <summary>
-    ///     Publishes the active page's layers. Called from <c>G9PageBase.OnApplyTemplate</c>, alongside the
-    ///     internal registry assignment, so the two never disagree about which page is current.
+    ///     Makes <paramref name="page" /> the current host (top of the stack, on screen). Called from
+    ///     <c>G9PageBase</c> alongside the internal registry assignment, so the two never disagree about
+    ///     which page is current.
     /// </summary>
     public static void Set(G9PageBase page, Layout toastLayer, Layout devLayer, Layout overlayLayer)
     {
@@ -29,47 +37,61 @@ internal static class G9OverlayHostRegistry
         ArgumentNullException.ThrowIfNull(devLayer);
         ArgumentNullException.ThrowIfNull(overlayLayer);
 
-        PublicHost host = new(page, toastLayer, devLayer, overlayLayer);
-        lock (SyncRoot)
+        if (Stack.Activate(page, new PublicHost(page, toastLayer, devLayer, overlayLayer), out var current))
         {
-            _current = host;
+            Raise(current);
         }
-
-        Raise(host);
     }
 
     /// <summary>
-    ///     Clears the slot when <paramref name="page" /> detaches. Ignores a page that is not the current
-    ///     one, so an out-of-order teardown cannot blank a newer page's registration.
+    ///     Construct-time registration from <c>G9PageBase.OnApplyTemplate</c>: adds the page without
+    ///     letting it displace a page that is on screen. See <c>G9ModalHostRegistry.Register</c>.
+    /// </summary>
+    public static void Register(G9PageBase page, Layout toastLayer, Layout devLayer, Layout overlayLayer)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(toastLayer);
+        ArgumentNullException.ThrowIfNull(devLayer);
+        ArgumentNullException.ThrowIfNull(overlayLayer);
+
+        if (Stack.Register(page, new PublicHost(page, toastLayer, devLayer, overlayLayer), out var current))
+        {
+            Raise(current);
+        }
+    }
+
+    /// <summary>Marks <paramref name="page" /> as no longer on screen without dropping its entry.</summary>
+    public static void MarkOffScreen(G9PageBase page)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+
+        if (Stack.MarkOffScreen(page, out var current))
+        {
+            Raise(current);
+        }
+    }
+
+    /// <summary>
+    ///     Removes <paramref name="page" /> when it detaches. If it was the current host, the entry beneath
+    ///     it becomes current again and <see cref="CurrentChanged" /> reports it; removing a page that is
+    ///     not current changes nothing, so an out-of-order teardown cannot blank a newer registration.
     /// </summary>
     public static void Clear(G9PageBase page)
     {
         ArgumentNullException.ThrowIfNull(page);
 
-        var cleared = false;
-        lock (SyncRoot)
+        if (Stack.Remove(page, out var current))
         {
-            if (_current is { } current && ReferenceEquals(current.Page, page))
-            {
-                _current = null;
-                cleared = true;
-            }
-        }
-
-        if (cleared)
-        {
-            Raise(null);
+            Raise(current);
         }
     }
 
     /// <summary>Returns the active host, or <c>false</c> when none is registered.</summary>
     public static bool TryGet(out IG9OverlayHost host)
     {
-        lock (SyncRoot)
-        {
-            host = _current!;
-            return _current is not null;
-        }
+        var found = Stack.TryGetCurrent(out var current);
+        host = current!;
+        return found;
     }
 
     private static void Raise(IG9OverlayHost? host)

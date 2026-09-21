@@ -99,9 +99,14 @@
                 WidthRequest="20"
                 Color="{theme:G9Color OnSurfaceVariant}" />
 
+            <!--
+                The horizontal margin is symmetric on purpose. With HorizontalOptions="End" only the
+                END-side margin takes part in the layout: that is the right one in LTR and the LEFT
+                one in RTL. "0,6,6,0" therefore left the badge flush against the edge in Persian.
+            -->
             <Border
                 x:Name="ActiveBadge"
-                Margin="0,6,6,0"
+                Margin="6,6,6,0"
                 BackgroundColor="{theme:G9Color Primary}"
                 HeightRequest="8"
                 HorizontalOptions="End"

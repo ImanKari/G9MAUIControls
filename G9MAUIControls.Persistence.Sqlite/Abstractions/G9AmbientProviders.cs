@@ -71,6 +71,14 @@ public interface IG9SqliteDatabaseLocator
     ///     returning a <b>different</b> path closes the old connection and opens the new one, which is what
     ///     makes user switching work without anything caching a stale connection.
     /// </summary>
+    /// <remarks>
+    ///     <b>Called while the provider holds its connection lock.</b> That is what makes "read the path,
+    ///     then decide whether to swap" one atomic step — read outside the lock, a thread holding a stale
+    ///     path could close the new user's connection and reopen the previous user's file. The price is one
+    ///     rule for implementers: do not block here on anything that itself waits for the provider (its
+    ///     <c>Connection</c>, a close, a query). Returning a field, or taking a short lock of your own that
+    ///     is never held while <see cref="DatabasePathChanged" /> is being raised, is fine.
+    /// </remarks>
     string GetDatabasePath();
 
     /// <summary>
@@ -315,6 +323,11 @@ public enum G9IdCase
 ///         them would corrupt them. Only a property literally named <c>Id</c> is recognised automatically.
 ///     </para>
 /// </summary>
+/// <remarks>
+///     <b>RESERVED — currently has NO effect.</b> The repository and the query builder do not read this
+///     attribute. The one they DO read is <see cref="SqliteGuidIdColumnAttribute" /> — use that. And the
+///     library declares no column <c>COLLATE NOCASE</c>; that is the schema's job.
+/// </remarks>
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class G9GuidIdAttribute : Attribute;
 

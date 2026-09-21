@@ -25,7 +25,8 @@ namespace G9MAUIControls.Hosting;
 ///         <see cref="LoadableSheetContentView{TData}" /> instead, which fills that method in.
 ///     </para>
 /// </summary>
-public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwareView, IDeferredSheetLoad
+public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwareView, IDeferredSheetLoad,
+    IStagedSheetLoad, IDeferredContentReadiness
 {
     /// <summary>
     ///     True while the deferred data load is in flight. Bind sheet content visibility to this
@@ -37,7 +38,20 @@ public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwar
             nameof(IsLoading),
             typeof(bool),
             typeof(LoadableSheetContentView),
-            true);
+            true,
+            propertyChanged: static (bindable, _, newValue) =>
+            {
+                // Leaving the loading state IS the readiness signal for a load that ran while the
+                // sheet was staged (see LoadWhileStaged). Not the end of RunDeferredLoadAsync: that
+                // routinely carries on into a background server refresh long after the body is
+                // showing what the local store had.
+                if (newValue is false)
+                {
+                    ((LoadableSheetContentView)bindable)._readiness.MarkReady();
+                }
+            });
+
+    private readonly DeferredContentReadinessSignal _readiness = new();
 
     private readonly Lock _loadLock = new();
     private CancellationTokenSource? _loadCts;
@@ -60,6 +74,53 @@ public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwar
     public bool IsClosed => Volatile.Read(ref _isClosed) != 0;
 
     /// <summary>
+    ///     Opt-in (default <c>false</c>): run <see cref="RunDeferredLoadAsync" /> WHILE THE SHEET IS
+    ///     STAGED off-screen, and hold the open — briefly — until the body has left its loading state,
+    ///     so the sheet arrives already filled instead of opening onto a spinner.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Turn it on for a body whose FIRST render needs only data that is already on the
+    ///         device</b> — a local-database read, a value passed in. "Open then fill" was written
+    ///         for loads that are slow; applied to a read that takes a few milliseconds it makes the
+    ///         fastest sheets in the app the ones that visibly load: the sheet opens on a spinner,
+    ///         the read finishes almost at once, the body waits out a glyph-settle window, fades in,
+    ///         and the sheet resizes to it. Staged, all of that happens below the screen edge.
+    ///     </para>
+    ///     <para>
+    ///         <b>Leave it off for a body whose first render waits on the network.</b> The hold is
+    ///         bounded by <c>G9BottomSheetSettings.PreOpenMaxHoldMs</c>, so such a sheet still opens —
+    ///         on its loading state, exactly as today — but only after sitting out that bound with
+    ///         nothing on screen, which is worse than opening at once.
+    ///     </para>
+    ///     <para>
+    ///         A background refresh AFTER the first render is fine and is the expected shape: the
+    ///         open waits for <see cref="IsLoading" /> to clear, not for
+    ///         <see cref="RunDeferredLoadAsync" /> to return. Nothing else changes for the subclass —
+    ///         it still renders and then calls <see cref="RevealLoadedContentAsync" />, which skips
+    ///         its cover and fade while the sheet is staged (there is nobody to hide the swap from).
+    ///     </para>
+    /// </remarks>
+    protected virtual bool LoadWhileStaged => false;
+
+    bool IStagedSheetLoad.LoadsWhileStaged => LoadWhileStaged;
+
+    bool IDeferredContentReadiness.IsContentReady => !LoadWhileStaged || !IsLoading || _readiness.IsReady;
+
+    event EventHandler? IDeferredContentReadiness.ContentReady
+    {
+        add => _readiness.Ready += value;
+        remove => _readiness.Ready -= value;
+    }
+
+    /// <summary>
+    ///     Drawn frames the loaded body is given, after its first layout, before it fades in. Bounded
+    ///     by the <c>glyphSettleDelayMs</c> argument of <see cref="RevealLoadedContentAsync" />, which
+    ///     is the hard cap on the whole window.
+    /// </summary>
+    protected virtual int RevealSettleFrames => 2;
+
+    /// <summary>
     ///     Reveals the loaded body with a glyph-settle window instead of a same-frame swap: the
     ///     body becomes part of layout immediately (hidden at <c>Opacity 0</c>) while the view's
     ///     <see cref="IsLoading" /> visual stays on screen, waits <paramref name="glyphSettleDelayMs" />
@@ -74,12 +135,49 @@ public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwar
     /// </summary>
     protected async Task RevealLoadedContentAsync(View contentRoot, int glyphSettleDelayMs = 220)
     {
+        ArgumentNullException.ThrowIfNull(contentRoot);
+
+        var hostSheet = FindHostSheet();
+
+        // STAGED: the sheet is still parked below the screen edge, so there is nothing to cover and
+        // nothing to fade — the body simply becomes the content. The staging pipeline measures it,
+        // lays it out and holds its settle frames before the open motion starts, which is the same
+        // protection the cover below provides, without the wait being visible.
+        if (hostSheet is { IsStaged: true })
+        {
+            contentRoot.Opacity = 1;
+            contentRoot.IsVisible = true;
+            IsLoading = false;
+            return;
+        }
+
         contentRoot.Opacity = 0;
         contentRoot.IsVisible = true;
 
+        // A load that was started while staged but outlived the hold lands here with the open motion
+        // possibly still running. Swapping the body in mid-motion is a layout pass inside the
+        // animation; wait the motion out first (bounded — a lost completion must not strand the body
+        // behind its spinner).
+        if (hostSheet is { IsMotionRunning: true })
+        {
+            await BottomSheet.G9FrameAwaiter.WaitUntilAsync(
+                    () => IsClosed || !hostSheet.IsMotionRunning,
+                    BottomSheet.G9FrameAwaiter.Deadline.After(800))
+                .ConfigureAwait(true);
+        }
+
+        // The settle window is measured in FRAMES, with glyphSettleDelayMs as its CAP. It used to be
+        // a flat delay of that length — sized for the slowest device and paid in full by every
+        // other one. What it was standing in for is "the body has been laid out and drawn", which
+        // is a couple of frames; the cap keeps the worst case exactly where it was.
         if (glyphSettleDelayMs > 0)
         {
-            await Task.Delay(glyphSettleDelayMs).ConfigureAwait(true);
+            var deadline = BottomSheet.G9FrameAwaiter.Deadline.After(glyphSettleDelayMs);
+            await BottomSheet.G9FrameAwaiter.WaitUntilAsync(
+                    () => IsClosed || contentRoot.Handler is null || (contentRoot.Width > 0 && contentRoot.Height > 0),
+                    deadline)
+                .ConfigureAwait(true);
+            await BottomSheet.G9FrameAwaiter.WaitFramesAsync(RevealSettleFrames, deadline).ConfigureAwait(true);
         }
 
         if (IsClosed)
@@ -186,6 +284,17 @@ public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwar
         }
         finally
         {
+            // Whatever happened — finished, cancelled, threw — the staged hold has nothing further
+            // to wait for. (A normal load already signalled when IsLoading cleared.)
+            if (MainThread.IsMainThread)
+            {
+                _readiness.MarkReady();
+            }
+            else
+            {
+                MainThread.BeginInvokeOnMainThread(_readiness.MarkReady);
+            }
+
             linkedCts.Dispose();
             lock (_loadLock)
             {
@@ -193,6 +302,19 @@ public abstract class LoadableSheetContentView : ContentView, IG9BottomSheetAwar
                 _loadCts = null;
             }
         }
+    }
+
+    private G9SheetView? FindHostSheet()
+    {
+        for (Element? element = Parent; element is not null; element = element.Parent)
+        {
+            if (element is G9SheetView sheet)
+            {
+                return sheet;
+            }
+        }
+
+        return null;
     }
 
     private void CancelLoad()
@@ -256,6 +378,28 @@ public abstract class LoadableSheetContentView<TData> : LoadableSheetContentView
         {
             return;
         }
+        catch (Exception exception)
+        {
+            // ⛔ A failing loader used to propagate with IsLoading still TRUE, and the helper runs
+            // this load fire-and-forget with its error popup off — so the sheet kept its loading
+            // skeleton for ever and nothing told the user why. Leave the loading state, give the
+            // view a chance to show something, and rethrow so the failure is still logged.
+            if (!IsClosed)
+            {
+                await MainThread.InvokeOnMainThreadAsync(() =>
+                {
+                    if (IsClosed)
+                    {
+                        return;
+                    }
+
+                    OnLoadFailed(exception);
+                    IsLoading = false;
+                }).ConfigureAwait(false);
+            }
+
+            throw;
+        }
 
         if (IsClosed || cancellationToken.IsCancellationRequested)
         {
@@ -293,6 +437,15 @@ public abstract class LoadableSheetContentView<TData> : LoadableSheetContentView
     ///     Default does nothing.
     /// </summary>
     protected virtual void OnLoadReturnedNull()
+    {
+    }
+
+    /// <summary>
+    ///     Called on the UI thread when the loader THREW, just before <see cref="LoadableSheetContentView.IsLoading" />
+    ///     is cleared. Override to show an error state or close the sheet. The exception is rethrown
+    ///     afterwards, so it is still logged by whoever started the load. Default does nothing.
+    /// </summary>
+    protected virtual void OnLoadFailed(Exception exception)
     {
     }
 }

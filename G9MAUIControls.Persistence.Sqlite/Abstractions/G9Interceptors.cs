@@ -112,6 +112,13 @@ public readonly record struct G9WriteDecision
 ///         so register the general ones before the specific ones.
 ///     </para>
 /// </summary>
+/// <remarks>
+///     <b>RESERVED — currently has NO effect.</b> This is the designed contract, but no write path in this
+///     version invokes it: an interceptor registered through <c>G9SqliteBuilder.AddInterceptor</c> is stored
+///     and never called. The same is true of <see cref="IG9WriteConditionProvider{T}" />,
+///     <see cref="IG9SqliteTransaction" />, <see cref="G9ConflictPolicy" /> and every
+///     <see cref="G9EntityDescriptor" /> property — declared, not yet consumed.
+/// </remarks>
 public interface IG9SqliteInterceptor
 {
     /// <summary>

@@ -39,8 +39,12 @@ public sealed class G9VoiceDictation
     private readonly Action _onStateChanged;
     private readonly Action<string> _writeText;
 
-    private string? _baseText;
-    private CancellationTokenSource? _cancellation;
+    // Everything one session owns — its base text and its cancellation — lives on ONE object, and every
+    // path that ends or writes for a session first checks it is still the current one. As loose fields
+    // they were shared between sessions: a second microphone tap while the permission prompt was up
+    // started session 2 over session 1's CancellationTokenSource, and session 1's `finally` then tore
+    // session 2 down.
+    private Session? _session;
 
     /// <summary>Creates a session bound to one field's text.</summary>
     /// <param name="readText">Reads the field's current value. Called once, when a session starts.</param>
@@ -99,7 +103,9 @@ public sealed class G9VoiceDictation
     /// </summary>
     public async Task StartAsync()
     {
-        if (IsListening)
+        // `_session`, not IsListening: a start that is still waiting on the permission prompt is not
+        // "listening" yet, but it IS a session, and a second one must not be started over it.
+        if (_session is not null)
         {
             return;
         }
@@ -111,41 +117,48 @@ public sealed class G9VoiceDictation
             return;
         }
 
-        _cancellation = new CancellationTokenSource();
+        var session = new Session();
+        _session = session;
 
         try
         {
             // Always re-checked: the permission may have been revoked between sessions.
-            if (!await provider.RequestPermissionAsync(_cancellation.Token).ConfigureAwait(true))
+            if (!await provider.RequestPermissionAsync(session.Cancellation.Token).ConfigureAwait(true))
             {
                 Failed?.Invoke(this, G9Strings.Get(G9StringKey.MicrophonePermissionDenied));
-                Reset();
+                End(session);
                 return;
             }
         }
         catch (OperationCanceledException)
         {
-            Reset();
+            End(session);
             return;
         }
         catch (Exception ex)
         {
             Failed?.Invoke(this, G9Strings.Format(G9StringKey.PermissionErrorFormat, ex.Message));
-            Reset();
+            End(session);
+            return;
+        }
+
+        // StopAsync ran while the prompt was up (the field unloaded, or the user tapped again).
+        if (!ReferenceEquals(_session, session))
+        {
             return;
         }
 
         IsListening = true;
-        _baseText = _readText() ?? string.Empty;
+        session.BaseText = _readText() ?? string.Empty;
         ListeningStarted?.Invoke(this, EventArgs.Empty);
         _onStateChanged();
 
-        var partial = new Progress<string>(Apply);
+        var partial = new Progress<string>(transcript => Apply(session, transcript));
 
         try
         {
             var result = await provider
-                .ListenAsync(Culture ?? G9Culture.CurrentCulture, partial, _cancellation.Token)
+                .ListenAsync(Culture ?? G9Culture.CurrentCulture, partial, session.Cancellation.Token)
                 .ConfigureAwait(true);
 
             switch (result.Status)
@@ -153,7 +166,7 @@ public sealed class G9VoiceDictation
                 case G9SpeechStatus.Recognized:
                     if (!string.IsNullOrEmpty(result.Text))
                     {
-                        Apply(result.Text!);
+                        Apply(session, result.Text!);
                     }
 
                     break;
@@ -183,50 +196,65 @@ public sealed class G9VoiceDictation
         }
         finally
         {
-            Reset();
+            End(session);
         }
     }
 
-    /// <summary>Stops the running session. Safe to call when none is running.</summary>
+    /// <summary>
+    ///     Stops the running session — including one that is still waiting on the permission prompt.
+    ///     Safe to call when none is running, which makes it the call for a host's unload path.
+    /// </summary>
     public async Task StopAsync()
     {
-        if (!IsListening)
+        var session = _session;
+        if (session is null)
         {
             return;
         }
 
         try
         {
-            if (_cancellation is { } cancellation)
-            {
-                await cancellation.CancelAsync().ConfigureAwait(true);
-            }
+            await session.Cancellation.CancelAsync().ConfigureAwait(true);
         }
         catch (Exception)
         {
-            // Best-effort stop; Reset() cleans up regardless. A recognizer that throws on
+            // Best-effort stop; End() cleans up regardless. A recognizer that throws on
             // cancellation must not leave the field stuck in its listening visual — which is the
             // state where the user can no longer reach the button that would have fixed it.
         }
 
-        Reset();
+        End(session);
     }
 
-    private void Apply(string transcript)
+    private void Apply(Session session, string transcript)
     {
-        _writeText(string.IsNullOrEmpty(_baseText)
+        // Progress<T> POSTS its callbacks, so a partial can be delivered after its session has ended.
+        // It used to find the shared base text already cleared and replace the WHOLE field with the
+        // bare partial — discarding what the user had before they tapped the microphone.
+        if (!ReferenceEquals(_session, session))
+        {
+            return;
+        }
+
+        _writeText(string.IsNullOrEmpty(session.BaseText)
             ? transcript
-            : $"{_baseText} {transcript}".TrimEnd());
+            : $"{session.BaseText} {transcript}".TrimEnd());
     }
 
-    private void Reset()
+    private void End(Session session)
     {
-        var wasListening = IsListening;
+        // Only the current session may end "the" session. StopAsync and StartAsync's own `finally` both
+        // arrive here for the same one; the second is a no-op, and neither can touch a newer session.
+        if (!ReferenceEquals(_session, session))
+        {
+            return;
+        }
 
+        _session = null;
+
+        var wasListening = IsListening;
         IsListening = false;
-        _baseText = null;
-        _cancellation?.Dispose();
-        _cancellation = null;
+        session.Cancellation.Dispose();
 
         if (wasListening)
         {
@@ -234,5 +262,12 @@ public sealed class G9VoiceDictation
         }
 
         _onStateChanged();
+    }
+
+    private sealed class Session
+    {
+        public CancellationTokenSource Cancellation { get; } = new();
+
+        public string BaseText { get; set; } = string.Empty;
     }
 }

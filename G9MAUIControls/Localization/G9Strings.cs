@@ -51,7 +51,9 @@ public static class G9Strings
     // Applied ONLY to G9StringKey lookups, never to Resolve. See UseResources.
     private static string _keyPrefix = string.Empty;
 
-    private static readonly Dictionary<G9StringKey, string> Defaults = new()
+    // Concurrent because Override() writes it while Get() is called from any thread that formats a
+    // message — a plain Dictionary is not safe for one writer alongside readers.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<G9StringKey, string> Defaults = new()
     {
         [G9StringKey.Ok] = "OK",
         [G9StringKey.Cancel] = "Cancel",

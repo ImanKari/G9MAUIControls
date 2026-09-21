@@ -240,6 +240,40 @@ public partial class G9TextEntry : G9OutlinedFieldBase
         {
             try { _entry.Unfocus(); } catch { /* ignore */ }
         }
+
+        StopDictation();
+    }
+
+    /// <inheritdoc />
+    protected override void OnDetachedFromLiveTree()
+    {
+        // Unloaded, or the handler was nulled: the page is going away.
+        StopDictation();
+        base.OnDetachedFromLiveTree();
+    }
+
+    /// <summary>
+    ///     Ends a running dictation session when the field can no longer be seen. Nothing used to
+    ///     stop it: leaving the page (or switching tab) with the mic on left the microphone hot
+    ///     and kept writing transcripts into a field nobody could see — or into a closed page.
+    ///     Only touches an EXISTING session; it never creates the dictation engine.
+    /// </summary>
+    private void StopDictation()
+    {
+        if (_voice is not { IsListening: true } voice) return;
+        _ = StopDictationAsync(voice);
+    }
+
+    private static async Task StopDictationAsync(G9VoiceDictation voice)
+    {
+        try
+        {
+            await voice.StopAsync().ConfigureAwait(true);
+        }
+        catch (Exception)
+        {
+            // Best-effort: this runs during tear-down, where there is nobody left to tell.
+        }
     }
 
     protected override void OnTrailingTap()

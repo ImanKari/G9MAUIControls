@@ -1,3 +1,4 @@
+using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Maui.BindableProperty.Generator.Core;
 
@@ -18,13 +19,14 @@ public partial class G9RangeSlider : G9ControlBase
     private readonly G9RangeSliderDrawable _drawable = new();
     private G9RangeSliderThumb _activeThumb = G9RangeSliderThumb.None;
     private bool _normalizing;
+    private bool _normalizeScheduled;
 
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _minimum;
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _maximum;
+    [AutoBindable(OnChanged = nameof(OnBoundsChanged))] private double _minimum;
+    [AutoBindable(OnChanged = nameof(OnBoundsChanged))] private double _maximum;
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnValueChanged))] private double _value;
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnValueChanged))] private double _rangeStart;
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnValueChanged))] private double _rangeEnd;
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _step;
+    [AutoBindable(OnChanged = nameof(OnBoundsChanged))] private double _step;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9RangeSliderMode _mode;
     /// <summary>
     ///     Toggles the min / max edge labels rendered below the track. When false the
@@ -92,34 +94,101 @@ public partial class G9RangeSlider : G9ControlBase
         _view.MinimumHeightRequest = height;
     }
 
+    /// <summary>Minimum / Maximum / Step moved: the stored values may no longer fit them.</summary>
+    private void OnBoundsChanged()
+    {
+        ScheduleNormalize();
+        RequestVisualUpdate();
+    }
+
     private void OnValueChanged()
     {
-        NormalizeValues();
-        ValueChanged?.Invoke(this, Mode == G9RangeSliderMode.Single ? Value : RangeEnd);
+        ScheduleNormalize();
+        // Report what the slider SHOWS. The raw property may briefly hold a value the bounds
+        // have not caught up with (see ScheduleNormalize); handlers never see that.
+        ValueChanged?.Invoke(this, Mode == G9RangeSliderMode.Single ? CoerceValue(Value) : CoerceRange().End);
         RequestVisualUpdate();
+    }
+
+    /// <inheritdoc />
+    protected override void OnAttachedToLiveTree()
+    {
+        base.OnAttachedToLiveTree();
+        ScheduleNormalize();
+    }
+
+    /// <summary>
+    ///     The bounds used for every calculation. <see cref="Maximum" /> itself is NEVER corrected:
+    ///     an inverted or empty range used to be "fixed" with <c>Maximum = Minimum + 1</c>, which
+    ///     overwrote — and, being a local value, detached — the consumer's binding on it.
+    /// </summary>
+    private (double Min, double Max) EffectiveBounds =>
+        Maximum > Minimum ? (Minimum, Maximum) : (Minimum, Minimum + 1);
+
+    private double CoerceValue(double value)
+    {
+        var (min, max) = EffectiveBounds;
+        return Snap(Math.Clamp(value, min, max));
+    }
+
+    private (double Start, double End) CoerceRange()
+    {
+        var start = CoerceValue(RangeStart);
+        var end = CoerceValue(RangeEnd);
+        return start <= end ? (start, end) : (end, start);
+    }
+
+    /// <summary>
+    ///     Queues the write-back of clamped / snapped / reordered values for the NEXT dispatcher
+    ///     turn instead of doing it inside the property-changed callback.
+    ///     <para>
+    ///         Bindings are applied one property at a time, in XAML order. Normalizing inline meant
+    ///         that when <see cref="Value" /> arrived before <see cref="Maximum" /> it was clamped
+    ///         against the default 0–100 and — the property being two-way — the clamped number was
+    ///         written straight back into the view model, silently destroying the stored value.
+    ///         A whole binding pass runs in one call stack, so by the next turn every bound has
+    ///         arrived and the clamp is against the real range. Painting does not wait for any of
+    ///         this: <see cref="OnApplyVisuals" /> always coerces for display.
+    ///     </para>
+    /// </summary>
+    private void ScheduleNormalize()
+    {
+        if (_normalizing || _normalizeScheduled || !NeedsNormalization()) return;
+
+        _normalizeScheduled = true;
+        Dispatcher.Dispatch(() =>
+        {
+            _normalizeScheduled = false;
+            NormalizeValues();
+        });
+    }
+
+    /// <summary>Pure arithmetic — keeps a drag (whose values are already normal) from queuing work per pointer event.</summary>
+    private bool NeedsNormalization()
+    {
+        if (CoerceValue(Value) != Value) return true;
+        var (start, end) = CoerceRange();
+        return start != RangeStart || end != RangeEnd;
     }
 
     /// <summary>
     ///     Reorders / clamps / snaps stored values without recursing through the OnChanged callback.
+    ///     Only ever writes while the control is live and the bounds describe a real range — until
+    ///     then the consumer's values are left exactly as they set them.
     /// </summary>
     private void NormalizeValues()
     {
         if (_normalizing) return;
+        if (!IsAttachedToLiveTree) return;
+        if (!(Maximum > Minimum)) return;
 
         _normalizing = true;
         try
         {
-            if (Maximum <= Minimum) Maximum = Minimum + 1;
-
-            var snappedValue = Snap(Math.Clamp(Value, Minimum, Maximum));
+            var snappedValue = CoerceValue(Value);
             if (snappedValue != Value) Value = snappedValue;
 
-            var snappedStart = Snap(Math.Clamp(RangeStart, Minimum, Maximum));
-            var snappedEnd = Snap(Math.Clamp(RangeEnd, Minimum, Maximum));
-            if (snappedStart > snappedEnd)
-            {
-                (snappedStart, snappedEnd) = (snappedEnd, snappedStart);
-            }
+            var (snappedStart, snappedEnd) = CoerceRange();
             if (snappedStart != RangeStart) RangeStart = snappedStart;
             if (snappedEnd != RangeEnd) RangeEnd = snappedEnd;
         }
@@ -131,28 +200,47 @@ public partial class G9RangeSlider : G9ControlBase
 
     private double Snap(double value)
     {
+        var (min, max) = EffectiveBounds;
         if (Step <= 0) return value;
 
-        var snapped = Minimum + (Math.Round((value - Minimum) / Step) * Step);
-        return Math.Clamp(snapped, Minimum, Maximum);
+        var snapped = min + (Math.Round((value - min) / Step) * Step);
+        return Math.Clamp(snapped, min, max);
     }
 
     protected override void OnApplyVisuals()
     {
         Opacity = IsEnabled ? 1 : 0.45;
-        _drawable.Minimum = Minimum;
-        _drawable.Maximum = Maximum;
-        _drawable.Value = Value;
-        _drawable.RangeStart = RangeStart;
-        _drawable.RangeEnd = RangeEnd;
+
+        // The drawable only ever sees coerced numbers, so the thumbs, the tooltip and the edge
+        // labels are always consistent with each other even while the stored properties are
+        // waiting for their deferred normalization.
+        var (min, max) = EffectiveBounds;
+        var (start, end) = CoerceRange();
+        var value = CoerceValue(Value);
+        _drawable.Minimum = min;
+        _drawable.Maximum = max;
+        _drawable.Value = value;
+        _drawable.RangeStart = start;
+        _drawable.RangeEnd = end;
         _drawable.Mode = Mode;
         _drawable.ShowLabels = ShowLabels;
         _drawable.ValueFormat = ValueFormat;
-        // We inherit the parent FlowDirection on the GraphicsView, so the canvas coordinates
-        // already mirror in RTL. The drawable paints in pure left-to-right order.
-        _drawable.IsRtl = false;
+        // The GraphicsView is pinned to LeftToRight in the constructor, so the canvas never
+        // mirrors by itself and the drawable is the single owner of direction — exactly like
+        // G9Switch. (This line used to force `false` under a comment claiming the canvas inherited
+        // the parent's flow direction; it does not, so the slider simply never inverted in RTL
+        // although this control's guide and G9Controls.md §9 both promise that it does.)
+        _drawable.IsRtl = G9Visuals.IsRtl;
         _drawable.IsEnabled = IsEnabled;
         _view.Invalidate();
+
+        // Custom-drawn: no role, no value for a screen reader unless we say it. The slider has no
+        // label of its own, so the name stays with the consumer; the VALUE is ours to report.
+        ApplySemantics(
+            null,
+            Mode == G9RangeSliderMode.Single
+                ? _drawable.FormatValue(value)
+                : $"{_drawable.FormatValue(start)} – {_drawable.FormatValue(end)}");
     }
 
     private void OnStartInteraction(object? sender, TouchEventArgs e)
@@ -228,12 +316,13 @@ public partial class G9RangeSlider : G9ControlBase
         }
         else if (_activeThumb == G9RangeSliderThumb.Start)
         {
-            var clamped = Math.Min(value, RangeEnd);
+            // Against the DISPLAYED other thumb, which is what the finger is being kept off.
+            var clamped = Math.Min(value, CoerceRange().End);
             if (Math.Abs(RangeStart - clamped) > double.Epsilon) RangeStart = clamped;
         }
         else if (_activeThumb == G9RangeSliderThumb.End)
         {
-            var clamped = Math.Max(value, RangeStart);
+            var clamped = Math.Max(value, CoerceRange().Start);
             if (Math.Abs(RangeEnd - clamped) > double.Epsilon) RangeEnd = clamped;
         }
 

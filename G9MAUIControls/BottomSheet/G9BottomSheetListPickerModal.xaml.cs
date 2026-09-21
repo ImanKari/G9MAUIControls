@@ -27,7 +27,8 @@ namespace G9MAUIControls.BottomSheet;
 ///         freshly-constructed items as the initial selection.
 ///     </para>
 /// </summary>
-public partial class G9BottomSheetListPickerModal : Grid, IG9BottomSheetAwareView, IDeferredContentReadiness
+public partial class G9BottomSheetListPickerModal : Grid, IG9BottomSheetAwareView, IDeferredContentReadiness,
+    IG9BottomSheetContentHeightProvider
 {
     #region Fields And Properties
 
@@ -135,6 +136,62 @@ public partial class G9BottomSheetListPickerModal : Grid, IG9BottomSheetAwareVie
 
     /// <inheritdoc />
     public IG9BottomSheetHandle G9BottomSheetHandle { get; set; } = G9BottomSheetHelper.InitG9BottomSheet();
+
+    /// <summary>
+    ///     The picker's natural height, for a fit-to-content host.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The body is a <see cref="CollectionView" />, which reports its VIEWPORT rather than
+    ///         its content — so to the sizing engine a list picker is unmeasurable, and a
+    ///         fit-to-content sheet around one could only ever open at the cap. That is why
+    ///         <c>ShowListG9BottomSheetAsync</c> used to force every picker full-screen whatever the
+    ///         caller asked for. With a count-based height the caller's sizing can be honoured: a
+    ///         six-row action menu opens six rows tall, a long list stops at the cap and scrolls.
+    ///     </para>
+    ///     <para>
+    ///         ⛔ Counted from the FULL list, never the filtered one, so the sheet does not resize
+    ///         under the keyboard while the user is typing in the search box.
+    ///     </para>
+    /// </remarks>
+    double IG9BottomSheetContentHeightProvider.GetDesiredG9BottomSheetContentHeight(double availableWidth, double maxHeight)
+    {
+        var rowHeight = Math.Max(ListItemEstimatedHeight, G9Metrics.SelectionRowHeight);
+        var height = (_allItems.Count * rowHeight) + PickerList.Margin.VerticalThickness;
+
+        if (ShowSearch)
+        {
+            height += MeasureChrome(PickerSearchEntry, availableWidth, G9Metrics.SelectionRowHeight);
+        }
+
+        if (ShowApplyButton)
+        {
+            foreach (var child in Children)
+            {
+                if (child is G9Button applyButton)
+                {
+                    height += MeasureChrome(applyButton, availableWidth, G9Metrics.ButtonHeightLarge);
+                }
+            }
+        }
+
+        return height;
+    }
+
+    /// <summary>The picker's height is fixed for its lifetime (see above), so this never fires.</summary>
+    event EventHandler? IG9BottomSheetContentHeightProvider.G9BottomSheetContentHeightChanged
+    {
+        add { }
+        remove { }
+    }
+
+    private static double MeasureChrome(View view, double availableWidth, double fallbackHeight)
+    {
+        var width = Math.Max(0, availableWidth - view.Margin.HorizontalThickness);
+        var measured = view.Measure(width, double.PositiveInfinity).Height;
+        var height = double.IsNaN(measured) || measured <= 0 ? fallbackHeight : measured;
+        return height + view.Margin.VerticalThickness;
+    }
 
     /// <summary>
     ///     Raised once, with the final selection, when the picker finishes — whether by Apply, by

@@ -2,6 +2,7 @@ using G9MAUIControls.Localization;
 using G9MAUIControls.Toast;
 using G9MAUIControls.Helpers;
 using G9MAUIControls.Theming;
+using Microsoft.Extensions.Logging;
 using Microsoft.Maui.Controls.Shapes;
 using G9PageBase = G9MAUIControls.Hosting.G9PageBase;
 using System.Globalization;
@@ -47,6 +48,23 @@ public static class G9ToastHelper
     private const double MobileBottomInsetExtraGap = 8;
     private const double EstimatedSyncProgressHeight = 72;
 
+    // Most toasts one (parent, position) stack shows at once. A loop that raises a toast per item
+    // used to build a column that climbed off the screen and took minutes to drain; past this many
+    // the OLDEST is dismissed to make room, so the newest news is always the one on screen.
+    private const int MaxToastsPerStack = 4;
+
+    // A toast action is consumer code run from a tap. Neither guard of G9SafeCommand fits it: the
+    // key is shared by every toast, so throttling or the concurrency guard would silently drop the
+    // "Undo" of a second toast tapped while the first one's action is still running.
+    private static readonly G9SafeCommandOptions ToastActionOptions = new()
+    {
+        Source = nameof(G9ToastHelper),
+        ThrottleKey = "G9ToastHelper.ToastAction",
+        EnableThrottle = false,
+        PreventConcurrentExecution = false,
+        ShowErrorG9Popup = true
+    };
+
     // ZIndex is no longer set on individual toast / loader / progress visuals because the
     // helper mounts everything into the dedicated ToastHost grid in G9PageTemplate, which
     // already paints above OverlayHost (popup + sheet) via document order. See the layer
@@ -55,6 +73,10 @@ public static class G9ToastHelper
     private static G9InlineToastHandle? _activeToast;
     private static readonly List<G9InlineToastHandle> _activeToasts = [];
     private static InlineFullScreenLoadingHandle? _activeLoading;
+
+    // One entry per outstanding ShowLoadingAsync / BeginLoadingAsync, oldest first. UI thread only.
+    // The blocker stays up while this is non-empty — see ShowLoadingAsync for why it is counted.
+    private static readonly List<LoadingRequest> _loadingRequests = [];
     private static G9InlineToastHandle? _activeLoadingToast;
     private static ProgressToastState? _activeProgressToast;
 
@@ -75,6 +97,10 @@ public static class G9ToastHelper
             }
 
             _activeToast = null;
+
+            // "Dismiss ALL" outranks the loading ref-count: it is the escape hatch for a blocker whose
+            // owner never released it. Leases released afterwards find nothing to remove (no-op).
+            _loadingRequests.Clear();
             DismissFullScreenLoadingImmediate();
             DismissInlineToast(ref _activeLoadingToast);
             DismissProgressToast();
@@ -98,6 +124,17 @@ public static class G9ToastHelper
     {
         var theme = G9Palette.Current;
         var font = ResolveCulturalFont();
+
+        // Held by the handle: a second ShowLoadingAsync re-labels the overlay that is already up
+        // instead of tearing it down and fading a new one in.
+        var textLabel = new Label
+        {
+            Text = text,
+            FontSize = 15,
+            FontFamily = font,
+            TextColor = theme.InverseOnSurface,
+            HorizontalTextAlignment = TextAlignment.Center
+        };
 
         var card = new Border
         {
@@ -123,14 +160,7 @@ public static class G9ToastHelper
                         HeightRequest = 50,
                         HorizontalOptions = LayoutOptions.Center
                     },
-                    new Label
-                    {
-                        Text = text,
-                        FontSize = 15,
-                        FontFamily = font,
-                        TextColor = theme.InverseOnSurface,
-                        HorizontalTextAlignment = TextAlignment.Center
-                    }
+                    textLabel
                 }
             }
         };
@@ -154,7 +184,7 @@ public static class G9ToastHelper
             Command = new Command(() => { /* swallow */ })
         });
 
-        return new InlineFullScreenLoadingHandle(parent, overlay);
+        return new InlineFullScreenLoadingHandle(parent, overlay, textLabel);
     }
 
     #endregion
@@ -252,13 +282,27 @@ public static class G9ToastHelper
                 Margin = new Thickness(10, 0, 0, 0),
                 VerticalOptions = LayoutOptions.Center
             };
-            button.Clicked += async (_, _) =>
+            var actionInvoked = 0;
+            button.Clicked += (_, _) =>
             {
-                onDismiss();
-                if (opts.Action is not null)
+                // The toast stays tappable through its 200 ms exit animation, so a quick second tap
+                // used to run the action twice. One toast, one action.
+                if (Interlocked.Exchange(ref actionInvoked, 1) != 0)
                 {
-                    await opts.Action();
+                    return;
                 }
+
+                onDismiss();
+
+                if (opts.Action is not { } action)
+                {
+                    return;
+                }
+
+                // This was `async (_, _) => await opts.Action()` — an async void event handler, so a
+                // throwing action was an unhandled exception on the UI thread: the app crashed
+                // because an "Undo" failed. RunSafe catches it, logs it and tells the user.
+                G9SafeCommand.RunSafe(action, ToastActionOptions);
             };
             Grid.SetColumn(button, 2);
             contentGrid.Add(button);
@@ -556,6 +600,16 @@ public static class G9ToastHelper
         {
             var opts = options ?? G9ToastOptions.Default;
             var position = opts.Position ?? DefaultPosition();
+            var hasAction = !string.IsNullOrWhiteSpace(opts.ActionText);
+
+            // The same message again, while its toast is still the newest in the stack: give that
+            // toast a fresh lifetime instead of stacking an identical copy on top of it.
+            if (!hasAction &&
+                TryRefreshDuplicateToast(context.Value.Parent, position, message, type, opts.DurationMs))
+            {
+                return;
+            }
+
             G9InlineToastHandle? handle = null;
             var toastVisual = BuildInlineToastView(message, type, opts, () =>
             {
@@ -573,19 +627,92 @@ public static class G9ToastHelper
 
             handle = new G9InlineToastHandle(context.Value.Parent, toastView, position)
             {
-                FillLayer = toastVisual.fillLayer
+                FillLayer = toastVisual.fillLayer,
+                Message = message,
+                Type = type,
+                HasAction = hasAction
             };
             _activeToasts.Add(handle);
             _activeToast = handle;
-            _ = ReflowToastStackAsync(context.Value.Parent, position, handle, true);
 
-            if (opts.DurationMs > 0)
-            {
-                handle.AutoDismissCts = new CancellationTokenSource();
-                StartInlineToastFillAnimation(handle, opts.DurationMs);
-                _ = AutoDismissInlineToastAsync(handle, opts.DurationMs);
-            }
+            // Before the reflow: a trimmed toast is flagged IsDismissing synchronously, so the reflow
+            // below already lays the stack out without it.
+            TrimToastStack(context.Value.Parent, position);
+            Observe(ReflowToastStackAsync(context.Value.Parent, position, handle, true), "toast stack reflow");
+
+            ArmAutoDismiss(handle, opts.DurationMs);
         });
+    }
+
+    /// <summary>
+    ///     Collapses "the same toast again". Only the NEWEST live toast of the stack is a candidate —
+    ///     consecutive duplicates, not "this was said at some point" — and never one with an action
+    ///     button (see <see cref="G9InlineToastHandle.HasAction" />).
+    /// </summary>
+    private static bool TryRefreshDuplicateToast(
+        Layout parent,
+        G9ToastPosition position,
+        string message,
+        G9ToastType type,
+        int durationMs)
+    {
+        var newest = _activeToasts.LastOrDefault(x =>
+            !x.IsDismissing && ReferenceEquals(x.Parent, parent) && x.Position == position);
+
+        if (newest is null ||
+            newest.HasAction ||
+            newest.Type != type ||
+            newest.Layer.Parent is null ||
+            !string.Equals(newest.Message, message, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _activeToast = newest;
+        ArmAutoDismiss(newest, durationMs);
+        return true;
+    }
+
+    /// <summary>(Re)starts a toast's lifetime: the auto-dismiss timer and the fill bar that shows it.</summary>
+    private static void ArmAutoDismiss(G9InlineToastHandle handle, int durationMs)
+    {
+        handle.AutoDismissCts?.Cancel();
+        handle.AutoDismissCts?.Dispose();
+        handle.AutoDismissCts = null;
+
+        if (durationMs <= 0)
+        {
+            // Sticky. Also reached when a duplicate is re-shown as sticky: stop the old countdown bar.
+            handle.FillLayer?.AbortAnimation(InlineToastFillAnimationName);
+            return;
+        }
+
+        handle.AutoDismissCts = new CancellationTokenSource();
+
+        try
+        {
+            StartInlineToastFillAnimation(handle, durationMs);
+        }
+        catch (Exception ex)
+        {
+            // The bar is decoration; the timer below is what actually removes the toast.
+            LogErrorSafe(ex, "G9ToastHelper: toast fill animation failed.");
+        }
+
+        Observe(AutoDismissInlineToastAsync(handle, durationMs), "toast auto-dismiss");
+    }
+
+    /// <summary>Dismisses the oldest toasts of a stack once it exceeds <see cref="MaxToastsPerStack" />.</summary>
+    private static void TrimToastStack(Layout parent, G9ToastPosition position)
+    {
+        var live = _activeToasts
+            .Where(x => !x.IsDismissing && ReferenceEquals(x.Parent, parent) && x.Position == position)
+            .ToList();
+
+        for (var i = 0; i < live.Count - MaxToastsPerStack; i++)
+        {
+            _ = DismissG9InlineToastHandleAsync(live[i], true);
+        }
     }
 
     /// <summary>
@@ -616,17 +743,68 @@ public static class G9ToastHelper
     /// <summary>
     ///     Shows a full-screen loading overlay with a busy indicator and text.
     ///     Blocks interaction until <see cref="DismissLoadingAsync" /> is called.
+    ///     <para>
+    ///         <b>Reference-counted.</b> There is one blocker, shared by the whole app, and it stays
+    ///         up until every <c>ShowLoadingAsync</c> has been matched by a
+    ///         <see cref="DismissLoadingAsync" />. It used to be a single slot: operation A's dismiss
+    ///         removed the blocker operation B had just raised, and the user could tap through B's
+    ///         "please wait". Pair the calls with <c>try / finally</c> — or use
+    ///         <see cref="BeginLoadingAsync" />, which cannot be left unpaired.
+    ///         <see cref="DismissAllAsync" /> clears the blocker regardless of the count.
+    ///     </para>
     /// </summary>
-    public static async Task ShowLoadingAsync(string text)
+    public static Task ShowLoadingAsync(string text)
     {
-        var context = ResolveHostContext();
-        if (context is null)
-        {
-            return;
-        }
+        return AcquireLoadingAsync(text, false);
+    }
+
+    /// <summary>
+    ///     Lease form of <see cref="ShowLoadingAsync" />: the blocker is held until the returned lease
+    ///     is disposed, and disposing it twice is harmless.
+    ///     <code>
+    ///     await using (await G9ToastHelper.BeginLoadingAsync("Signing in..."))
+    ///     {
+    ///         await SignInAsync();
+    ///     }
+    ///     </code>
+    ///     A full-screen, input-opaque overlay whose release depends on a hand-written
+    ///     <c>finally</c> is one missed code path away from a dead app; the lease makes the release
+    ///     structural. It shares the count with <see cref="ShowLoadingAsync" />, so the two forms mix.
+    /// </summary>
+    public static async Task<IAsyncDisposable> BeginLoadingAsync(string text)
+    {
+        var request = await AcquireLoadingAsync(text, true).ConfigureAwait(false);
+        return new LoadingLease(request);
+    }
+
+    private static async Task<LoadingRequest> AcquireLoadingAsync(string text, bool isLeased)
+    {
+        var request = new LoadingRequest(text, isLeased);
 
         await MainThread.InvokeOnMainThreadAsync(async () =>
         {
+            // Counted even when there is no host to show it on: the caller's dismiss WILL come, and
+            // an uncounted show would let that dismiss take down somebody else's blocker.
+            _loadingRequests.Add(request);
+
+            var context = ResolveHostContext();
+            if (context is null)
+            {
+                return;
+            }
+
+            // Already up on this host: re-label it (the newest request's text wins, as it did when
+            // every show replaced the overlay) rather than rebuilding and fading it in again.
+            var existing = _activeLoading;
+            if (existing is not null &&
+                ReferenceEquals(existing.Parent, context.Value.Parent) &&
+                existing.Layer.Parent is not null)
+            {
+                existing.TextLabel.Text = text;
+                return;
+            }
+
+            // None yet, or it belongs to a page that is no longer the host.
             DismissFullScreenLoadingImmediate();
 
             var handle = BuildFullScreenLoadingOverlay(context.Value.Parent, text);
@@ -642,20 +820,65 @@ public static class G9ToastHelper
             }
             catch
             {
-                // Animation aborted (e.g. another DismissAllAsync ran before this completed).
-                // The handle is already tracked — DismissFullScreenLoadingImmediate cleans up.
+                // The animator refused (no MauiContext yet). The overlay is input-opaque from the
+                // moment it is added, so it must not stay at opacity 0 — an invisible blocker is the
+                // worst of both worlds. Only if it is still ours: a dismiss may have raced us.
+                if (ReferenceEquals(_activeLoading, handle))
+                {
+                    handle.Layer.Opacity = 1;
+                }
             }
-        });
+        }).ConfigureAwait(false);
+
+        return request;
     }
 
     /// <summary>
-    ///     Dismisses the full-screen loading overlay.
+    ///     Dismisses the full-screen loading overlay — or, while other <see cref="ShowLoadingAsync" />
+    ///     calls are still outstanding, releases this caller's hold on it.
     /// </summary>
-    public static async Task DismissLoadingAsync()
+    public static Task DismissLoadingAsync()
     {
-        await MainThread.InvokeOnMainThreadAsync(async () =>
+        return ReleaseLoadingAsync(null);
+    }
+
+    /// <param name="request">
+    ///     The lease's own entry, or <c>null</c> for the anonymous <see cref="DismissLoadingAsync" />,
+    ///     which releases the most recent non-leased hold.
+    /// </param>
+    private static Task ReleaseLoadingAsync(LoadingRequest? request)
+    {
+        return MainThread.InvokeOnMainThreadAsync(async () =>
         {
+            if (request is not null)
+            {
+                if (!_loadingRequests.Remove(request))
+                {
+                    // Already cleared by DismissAllAsync. Nothing of ours is left to release.
+                    return;
+                }
+            }
+            else
+            {
+                var index = _loadingRequests.FindLastIndex(x => !x.IsLeased);
+                if (index >= 0)
+                {
+                    _loadingRequests.RemoveAt(index);
+                }
+            }
+
             var handle = _activeLoading;
+            if (_loadingRequests.Count > 0)
+            {
+                // Someone else still needs the blocker. Show what is still running, not what finished.
+                if (handle is not null)
+                {
+                    handle.TextLabel.Text = _loadingRequests[^1].Text;
+                }
+
+                return;
+            }
+
             if (handle is null)
             {
                 return;
@@ -752,7 +975,7 @@ public static class G9ToastHelper
 
             var handle = new G9InlineToastHandle(context.Value.Parent, visual.Root, pos);
             _activeProgressToast = new ProgressToastState(handle, visual);
-            _ = AnimateToastEnterAsync(handle, 0d);
+            Observe(AnimateToastEnterAsync(handle, 0d), "progress toast enter animation");
         });
     }
 
@@ -834,6 +1057,10 @@ public static class G9ToastHelper
         _ = DismissG9InlineToastHandleAsync(state.Handle, true);
     }
 
+    /// <summary>
+    ///     Dismisses one toast. <b>Never throws</b> — every caller discards the task (a tap handler, a
+    ///     timer), so anything that escaped would be an unobserved exception nobody ever saw.
+    /// </summary>
     private static async Task DismissG9InlineToastHandleAsync(G9InlineToastHandle handle, bool animate)
     {
         if (handle.IsDismissing)
@@ -842,31 +1069,47 @@ public static class G9ToastHelper
         }
 
         handle.IsDismissing = true;
-        handle.AutoDismissCts?.Cancel();
-        handle.AutoDismissCts?.Dispose();
-        handle.AutoDismissCts = null;
-        handle.FillLayer?.CancelAnimations();
 
-        var wasStacked = _activeToasts.Remove(handle);
-
-        if (ReferenceEquals(_activeToast, handle))
+        try
         {
-            _activeToast = _activeToasts.LastOrDefault(x =>
-                               !x.IsDismissing && ReferenceEquals(x.Parent, handle.Parent) &&
-                               x.Position == handle.Position)
-                           ?? _activeToasts.LastOrDefault(x => !x.IsDismissing);
+            handle.AutoDismissCts?.Cancel();
+            handle.AutoDismissCts?.Dispose();
+            handle.AutoDismissCts = null;
+            handle.FillLayer?.CancelAnimations();
+
+            var wasStacked = _activeToasts.Remove(handle);
+
+            if (ReferenceEquals(_activeToast, handle))
+            {
+                _activeToast = _activeToasts.LastOrDefault(x =>
+                                   !x.IsDismissing && ReferenceEquals(x.Parent, handle.Parent) &&
+                                   x.Position == handle.Position)
+                               ?? _activeToasts.LastOrDefault(x => !x.IsDismissing);
+            }
+
+            try
+            {
+                if (animate)
+                {
+                    await AnimateToastExitAsync(handle);
+                }
+            }
+            finally
+            {
+                // In a finally because the exit animation can throw (a host torn down under it), and
+                // the toast is input-opaque: skipping the removal left an invisible, opacity-0 view in
+                // the tree that kept swallowing taps on whatever was behind it.
+                DismissG9InlineToastHandleImmediate(handle);
+            }
+
+            if (wasStacked)
+            {
+                await ReflowToastStackAsync(handle.Parent, handle.Position, null, true);
+            }
         }
-
-        if (animate)
+        catch (Exception ex)
         {
-            await AnimateToastExitAsync(handle);
-        }
-
-        DismissG9InlineToastHandleImmediate(handle);
-
-        if (wasStacked)
-        {
-            await ReflowToastStackAsync(handle.Parent, handle.Position, null, true);
+            LogErrorSafe(ex, "G9ToastHelper: dismissing a toast failed.");
         }
     }
 
@@ -987,9 +1230,20 @@ public static class G9ToastHelper
         handle.Layer.Opacity = 0;
         handle.Layer.TranslationY = startOffset;
 
-        await Task.WhenAll(
-            handle.Layer.FadeToAsync(1, EnterAnimDurationMs, Easing.SinOut),
-            handle.Layer.TranslateToAsync(0, targetOffset, EnterAnimDurationMs, Easing.SinOut));
+        try
+        {
+            await Task.WhenAll(
+                handle.Layer.FadeToAsync(1, EnterAnimDurationMs, Easing.SinOut),
+                handle.Layer.TranslateToAsync(0, targetOffset, EnterAnimDurationMs, Easing.SinOut));
+        }
+        catch
+        {
+            // Same rule as the exit: the toast is already in the tree and input-opaque, so a failed
+            // enter animation must not strand it at the opacity 0 set above. Snap it into place.
+            handle.Layer.Opacity = 1;
+            handle.Layer.TranslationY = targetOffset;
+            throw;
+        }
     }
 
     private static async Task AnimateToastExitAsync(G9InlineToastHandle handle)
@@ -1228,6 +1482,39 @@ public static class G9ToastHelper
         return G9Culture.ResolveAppFont("CulturalFont", G9Culture.RtlFontFamily);
     }
 
+    /// <summary>
+    ///     Observes a task this helper starts and does not await (a reflow, an enter animation, the
+    ///     auto-dismiss timer), so a fault is logged instead of vanishing as an unobserved exception.
+    ///     Same shape as <c>G9SafeCommand.SafeFireAndForget</c>.
+    /// </summary>
+    private static async void Observe(Task task, string operation)
+    {
+        try
+        {
+            await task;
+        }
+        catch (Exception ex)
+        {
+            LogErrorSafe(ex, $"G9ToastHelper: {operation} failed.");
+        }
+    }
+
+    private static void LogErrorSafe(Exception ex, string message)
+    {
+        try
+        {
+            // GetServiceNullable throws while G9ServiceProvider is uninitialized; a toast must work
+            // (and fail) quietly before the host has wired logging up.
+            G9ServiceProvider.GetServiceNullable<ILoggerFactory>()
+                ?.CreateLogger("G9ToastHelper")
+                .LogError(ex, "{Message}", message);
+        }
+        catch
+        {
+            // Logging is best-effort by definition.
+        }
+    }
+
     private sealed record ProgressToastVisual(
         View Root,
         Label TitleLabel,
@@ -1237,7 +1524,34 @@ public static class G9ToastHelper
 
     private sealed record ProgressToastState(G9InlineToastHandle Handle, ProgressToastVisual Visual);
 
-    private sealed record InlineFullScreenLoadingHandle(Layout Parent, View Layer);
+    private sealed record InlineFullScreenLoadingHandle(Layout Parent, View Layer, Label TextLabel);
+
+    /// <summary>One outstanding request for the full-screen blocker. See <see cref="ShowLoadingAsync" />.</summary>
+    private sealed class LoadingRequest(string text, bool isLeased)
+    {
+        public string Text { get; } = text;
+
+        /// <summary>
+        ///     True when a <see cref="BeginLoadingAsync" /> lease owns this entry. The anonymous
+        ///     <see cref="DismissLoadingAsync" /> never removes a leased entry — it cannot know whose it
+        ///     is, and taking one would leave that lease's own release with nothing to remove and the
+        ///     blocker up for good.
+        /// </summary>
+        public bool IsLeased { get; } = isLeased;
+    }
+
+    private sealed class LoadingLease(LoadingRequest request) : IAsyncDisposable
+    {
+        private int _released;
+
+        public ValueTask DisposeAsync()
+        {
+            // Interlocked: a lease disposed twice must not release someone else's hold.
+            return Interlocked.Exchange(ref _released, 1) != 0
+                ? ValueTask.CompletedTask
+                : new ValueTask(ReleaseLoadingAsync(request));
+        }
+    }
 
     #endregion
 }

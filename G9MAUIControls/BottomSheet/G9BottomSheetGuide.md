@@ -209,6 +209,57 @@ var selectedItems = await G9BottomSheetHelper.ShowListG9BottomSheetAsync(
     closeOnSingleSelection: false);
 ```
 
+### Replace by hand-off — `G9BottomSheetOptions.ReplaceCurrentSheet`
+
+For a step that takes the PLACE of the sheet it was launched from, across sizing models (a fit-to-content
+detail sheet → a full-screen view), where `ReplaceG9BottomSheet`'s in-place morph does not apply.
+
+Close-then-open leaves the page with no sheet on it for a close + a cleanup + the next view's construction
++ its staging pass — a device trace measured **970 ms** from the tap to the next sheet starting to rise.
+With `ReplaceCurrentSheet = true` on the NEW sheet's options, and exactly one sheet open (the primary,
+nothing stacked on it):
+
+1. the new sheet is attached and **staged while the current one stays on screen**, unchanged — only its
+   input is taken away (`InputTransparent`), so the button that started this cannot start it twice;
+2. in the frame the new sheet is ready, `CompleteReplace` closes the current sheet and the new one rises:
+   two pure translations crossing, no layout work inside either;
+3. **the dim is handed over, never dropped**: the new overlay is inserted UNDER the outgoing sheet (so that
+   sheet is not itself dimmed while it leaves), takes the outgoing overlay's alpha as a FLOOR, and the
+   outgoing overlay goes transparent and stops being written (`IsOverlayHandedOff`). The new sheet's own
+   dim rises from zero with its position; the page stays at the floor until that passes it, after which
+   the floor is dropped so a later drag-to-close fades to zero as usual.
+
+Semantics: the replaced sheet closes normally — `ClosingCommand` / `ClosedCommand` run — but AFTER its
+successor is attached. Closing the successor lands on the page, not on the replaced sheet (that is
+stacking). Anything else open / stacked, or `StageBeforeShow` off → the option is ignored and the sheet
+stacks or opens as usual. A successor closed while still staged gives the primary slot and the input back.
+`G9BottomSheetHelper.IsBeingReplaced(handle)` lets the launching sheet tell "my successor is on its way"
+from "nothing was opened". `CleanupPrimarySheet` only clears the primary slot / resets the backdrop
+transform / drains the pending queue when the sheet being cleaned up is STILL the primary.
+
+**Build the successor before showing it**, with the current sheet still up: a view construction inside the
+outgoing sheet's close motion is a hitch in that motion.
+
+### The dim while a sheet is staged — zero
+
+A staged sheet's overlay is attached with alpha **0**, and `UpdateModalOverlayBackground` keeps it there
+while `IsStaged`. It used to be painted at the sheet's RESTING dim the moment it was attached — 0.69 for a
+full-screen sheet — and a staged sheet is off-screen for up to a few hundred ms: the page went fully dark
+with nothing on it, then the open motion (whose dim tracks the sheet's position) started again from zero.
+Dark → lighter → dark. It now rises once, with the sheet.
+
+⛔ **Zero while staged means something must RAISE it, for every modal sheet.** `StageAndShowAsync` calls
+`UpdateModalOverlayBackground(sheet, animated: true)` right after `ShowSheetNow` — a fade to the resting
+dim over the open motion's own duration — and `OnOpenMotionCompleted` repeats it as a no-op safety net.
+Do not rely on position tracking for this: `AttachPositionTracking` only wires draggable, NON-fit sheets,
+and a fit-to-content sheet's `State` does not change when it is shown, so neither path ever fires for it.
+The first version of the staged-dim fix left that out, and every fit-to-content sheet opened with no dim
+at all.
+
+Same family: a STACKED child's parent recedes in the frame the child starts to RISE
+(`SheetBehaviorState.BeforeShow`), not when the child is attached — otherwise the parent faded away
+while its child was still being staged.
+
 ### Processing Sheet (instant spinner → async build → error popup/close)
 
 `ShowProcessingG9BottomSheet` is the entry point for **heavy** sheet bodies whose synchronous
@@ -312,50 +363,112 @@ The five "global default" fields specifically:
 - `EnableBackdropCardEffect` — app-wide kill switch for the page recede effect. When `false`, every sheet skips the effect even if its own `G9BottomSheetOptions.EnableBackdropCardEffect` is `true`. When `true`, the per-sheet option still acts as an extra opt-out.
 - `BackdropCardColor` — color applied to the always-present `BackdropHost` `BoxView` in `G9PageTemplate.xaml`. Read once per page when its control template is applied, so this must be configured before any page in the app initialises. Defaults to `Colors.Black` to match the iOS native bottom-sheet look and keep the receded area dark in both Light and Dark themes.
 
-## Animation Duration And Easing
+## Sheet Motion — Platform-Native By Default
 
-The app-wide open and close durations are configured independently:
+Every motion of a sheet — open, close, detent change, the settle after a drag — goes through ONE method,
+`G9SheetView.AnimateG9BottomSheet`, and its shape (duration **and** curve) is resolved per motion by
+`G9BottomSheetSettings.MotionStyle`:
 
-- `G9BottomSheetSettings.OpenAnimationDurationMs` (default **300 ms**) — sheet rising / expanding.
-- `G9BottomSheetSettings.CloseAnimationDurationMs` (default **300 ms**) — sheet receding / collapsing.
-- `G9BottomSheetSettings.SizeScaledAnimationDuration` (default **true**) — when on, those durations represent a *full-height* traversal and partial state changes scale proportionally.
+| `MotionStyle` | Duration | Curve |
+|---|---|---|
+| `PlatformNative` (**default**) | resolved from the distance travelled and the release velocity, by the platform's own model | the platform's own |
+| `Timed` | `OpenAnimationDurationMs` / `CloseAnimationDurationMs`, scaled by distance when `SizeScaledAnimationDuration` is on | `CubicOut` |
 
-`G9SheetView.AnimateG9BottomSheet` consults a helper-installed `AnimationDurationProvider` on every motion (open, close, drag-release snap, programmatic `State = …`). The provider:
+### Why `Timed` stopped being the default
 
-1. **Picks direction** — if the target `TranslationY` is above the current position (sheet rising), the Open duration is used; otherwise the Close duration. Drag-release snaps land on the correct side automatically because the provider sees the live `TranslationY` for that motion.
-2. **Optionally size-scales** — when `SizeScaledAnimationDuration` is `true`, the picked value is multiplied by `|target − current| / Height`, clamped to `[0, 1]`. So:
-   - `Hidden → HalfExpanded` takes ~`OpenDuration × 0.5`.
-   - `Hidden → FullExpanded` takes the full `OpenDuration`.
-   - `HalfExpanded → FullExpanded` takes ~`OpenDuration × 0.5`.
-   - `FullExpanded → Hidden` takes the full `CloseDuration`.
-   - `HalfExpanded → Hidden` takes ~`CloseDuration × 0.5`.
-   The visual velocity stays constant across every state transition, matching the iOS native sheet feel.
+Scaling a fixed duration by the fraction of the screen travelled gives every sheet the same constant
+**speed**, so a short sheet barely animates: with the 199 ms the AgriPad app configured, a device trace
+showed a 200 dp picker "opening" in **40 ms — five frames**, and a 720 dp sheet in 144 ms. No native sheet
+is timed like that. Both platforms take roughly 250–500 ms **whatever the distance** and spend most of it
+decelerating. The old text of this section claimed constant velocity "matches the iOS native sheet feel";
+it does not, and that claim is withdrawn.
 
-Helper-side animations that *don't* size-scale (per design — keeps them readable on short snaps) still pick the right open/close direction via `ResolveOpenAnimationDurationMs` / `ResolveCloseAnimationDurationMs`:
+### The two native models (`G9SheetMotionModel`, unit-tested)
 
-- **Modal overlay fade** — fades to 0 alpha using Close duration when `sheet.State == Hidden`; otherwise uses Open duration.
-- **Fit-to-content resize** — uses Open duration when content is growing (`targetHeight ≥ previousHeight`), Close duration when shrinking.
-- **Opened work (OpenedCommand + deferred "open then fill" load)** — fires from the sheet's `OpenMotionCompleted` event, i.e. at the ACTUAL end of the (size-scaled) open motion; a fit-to-content open completes its opened work in ~80 ms instead of waiting the full configured duration. The full (non-scaled) Open-duration timer remains only as a fallback for opens that never animate.
-- **Close cleanup wait** — uses Close duration (we must wait for the worst-case full-height close before tearing down visuals).
+**Material — Android, and Windows (which has no sheet of its own).** A Material sheet is moved by androidx
+`ViewDragHelper` (`BottomSheetBehavior.startSettling` → `smoothSlideViewTo` / `settleCapturedViewAt`). The
+numbers are ViewDragHelper's own, read from source, and the tests assert its arithmetic:
 
-`G9SheetView.AnimateG9BottomSheet` uses `Easing.CubicOut` for both translation and overlay alpha, so motion decelerates into the snap target instead of stopping abruptly. The helper's modal overlay (separate from the sheet's own internal overlay, which stays disabled because `IsModal = false`) uses the same easing for visual consistency. `G9SheetViewStateChangedEventArgs.AnimationDurationMs` exposes the static `AnimationDuration` value as a coarse hint for external subscribers; helper consumers don't depend on it.
+- curve: always the quintic ease-out `(t−1)^5 + 1` — 90 % of the distance in the first 37 % of the time;
+- programmatic motion: `(distance / range + 1) × 256 ms` → 256 ms for a nudge, 512 ms for the full range;
+- released motion: `4 × round(1000 × d′ / |v|)` ms, with `d′` derived from the parent **width** (sic) —
+  for a quintic that makes the sheet leave the hand at 1.25 × the hand's speed, so there is no change of
+  pace at release;
+- a release under 50 dp/s counts as none, velocity is clamped at 8000 dp/s, everything is capped at 600 ms;
+- one deliberate departure: a release that points AWAY from where the sheet is going (flicked down, snaps
+  back up) is ignored, where ViewDragHelper would hurry the snap-back.
+
+**UIKit — iOS and Mac Catalyst.** Apple publishes no figures for `UISheetPresentationController`. What is
+documented is UIKit's default transition spring (`UISpringTimingParameters.init()`: mass 3, stiffness 1000,
+damping 500); Core Animation solves that over-damped spring as critically damped, i.e. **ζ = 1,
+ω₀ = 18.26 rad/s, ≈ 0.5 s**. That the sheet uses exactly this spring is an *inference*. It is evaluated in
+closed form — `x(t) = (1 + (ω − v₀)·t)·e^(−ω·t)` — with the release velocity as `v₀` (capped so it can
+never overshoot: this body is exactly as tall as its detent, and an overshoot would show the page under
+it), and handed over as a curve across the time it takes to come within half a dp of rest.
+
+### What the configured durations still do
+
+- Under `PlatformNative`, the **app-wide** `OpenAnimationDurationMs` / `CloseAnimationDurationMs` /
+  `SizeScaledAnimationDuration` are **not used**.
+- A **per-sheet** `G9BottomSheetOptions.OpenAnimationDurationMs` / `CloseAnimationDurationMs` still wins
+  for that sheet in that direction: it keeps the native curve and takes the stated time. `0` is still an
+  instant snap.
+- Under `Timed` everything behaves as it did in 1.0 (direction-picked, optionally size-scaled, `CubicOut`,
+  fling-shortened).
+
+### What accompanies a motion follows THAT motion
+
+Because a duration is now resolved per motion, nothing may assume a configured constant:
+
+- **Modal overlay fade** — fades over `sheet.CurrentMotionDurationMs` when a motion is running (natively the
+  scrim is driven by the same transition), and falls back to the configured open/close value otherwise.
+- **Close cleanup** — waits the closing motion's own duration, and then for `IsMotionRunning` to clear
+  (bounded by `CloseAnimationTimeoutMs`). The motion can outlast its nominal duration — see the driver
+  below — and tearing a sheet down under a close that is still on screen is a visible pop.
+- **Opened work** (`OpenedCommand`, the deferred load) — unchanged: it fires from `OpenMotionCompleted`.
+- **Quick close for a queued replacement** — `CloseDurationScale` scales whatever the model resolved.
+
+### The motion driver (`G9SheetMotionDriver`, `G9FrameClock`)
+
+On Android the motion runs against the display's **frame clock** (one `Choreographer` callback for the whole
+process) instead of MAUI's animation ticker — `G9BottomSheetSettings.UseFrameClockMotion`, default `true`,
+is the kill switch. Three things differ, all of them measured problems (34 of 119 traced motions had a frame
+gap over 25 ms, almost always the first):
+
+1. **The clock starts on the first frame the motion draws** (`START_ON_FIRST_FRAME`, as the platform's own
+   animators do). The first frame is the expensive one — the hardware layer is allocated and the body is
+   rasterised — and an ease-out is at its fastest at the start: 32 ms into a 300 ms quintic the sheet is
+   already 43 % of the way. Charged to the curve, a late first frame makes the sheet *appear half open*.
+2. **A hitch is absorbed as a pause, not a jump.** A frame more than 2.5 intervals late advances the motion
+   by one interval. The motion ends that much later and stays continuous (`hitchAbsorbedMs` in the trace).
+3. **Positions are evaluated at the frame's vsync time**, not at the time the callback ran, so scheduling
+   jitter does not become positional jitter.
+
+The motion also ends as soon as it is within 0.5 dp of its target: the tail of an ease-out is invisible,
+and what waits on the motion should not wait on pixels nobody can see. iOS, Mac Catalyst and Windows run the
+same curve and duration on MAUI's ticker (display-link driven on Apple platforms).
+
+`G9FrameClock` owns the **only** Java frame-callback object in the process. That matters more than it looks:
+every managed object with a Java peer is a GC-bridge object, and the first version of `G9FrameAwaiter`
+allocated one per awaited frame — garbage that forces a bridged collection, in exactly the window where a
+UI-thread stall is most visible.
+
+### Fling threshold
+
+`FlingVelocityThreshold` is **300 dp/s** (was 700). Material's `significantVelocityThreshold` is 500 **px**/s
+(≈ 170 dp/s on a current phone) and Compose's sheet uses 125 dp/s, so a gentle flick that moves a native
+sheet used to spring back here. The fling must still agree with the direction the finger travelled.
 
 ```csharp
-// App-wide retune in MauiProgram.cs — drives every sheet that leaves Open/Close at null:
+// MauiProgram.cs — nothing to configure for native motion. To go back:
 G9BottomSheetHelper.Configure(new G9BottomSheetSettings
 {
-    OpenAnimationDurationMs  = 320, // a slightly longer, more deliberate open
-    CloseAnimationDurationMs = 220, // snappier close, iOS-like
-    SizeScaledAnimationDuration = true
+    MotionStyle = G9SheetMotionStyle.Timed,
+    OpenAnimationDurationMs  = 320,
+    CloseAnimationDurationMs = 220
 });
 
-// Disable size-scaling globally if a flat duration is preferred:
-G9BottomSheetHelper.Configure(new G9BottomSheetSettings
-{
-    SizeScaledAnimationDuration = false
-});
-
-// One-off per-sheet override (rare):
+// One-off per-sheet override (works under either style):
 var options = G9BottomSheetOptions.FullScreenModalOptions("Edit") with
 {
     OpenAnimationDurationMs = 180,
@@ -381,6 +494,154 @@ Large-only fixed full-screen modal sheet with the shared 3-slot header (RTL-awar
 
 `FullScreenEdgeToEdgeModalOptions(hardwareBackCloses = true)`:
 The shared **diagnostics-chrome** preset: a full-screen sheet for a view that paints its OWN full-bleed header / coloured background. Derives from `FullScreenModalOptions(showCloseButton: false)` but flips `ShowToolbar = false` and zeroes the whole top safe-area band (`UseTopSafeAreaPadding = false` + `TopSafeAreaPaddingOverride = 0` + `AdditionalTopSafeAreaPadding = 0`) so the view's own header reaches the very top edge (the camera/cutout overlays it, no helper padding band above it). The hosted view MUST set `SafeAreaEdges="None"` on its root. This is ONE recipe shared by all diagnostics surfaces that draw their own header: `AdminDiagnosticsG9BottomSheetOptions.FullScreen()` (delegates to it), the Live Diagnostic overlay (`LiveDiagnosticModalService.OpenAsync`), and the Send / Save full-diagnostic-report sheet (`DiagnosticReportSheetView`). Do NOT hand-assemble the `with { ShowToolbar = false, UseTopSafeAreaPadding = false, … }` block at a new diagnostics call site — call this preset. See "Full-Screen Safe Area" below and `Views/Pages/AdminDiagnostics/AdminDiagnostics.md`.
+
+## Stage Before Show (1.1.0) — read this BEFORE the sizing sections
+
+> Decision record: `AiGuides/10-Decisions.md` → **ADR-0022** (and **ADR-0023** for the motion model).
+> What the same pass found and did NOT fix: `AiGuides/11-EngineeringLog.md` → **RSK-0003**.
+> **Status: built and compile-verified on all four TFMs, not yet run on a device.** Everything below has
+> a rollback switch for exactly that reason.
+
+**The rule.** A sheet's body is attached BELOW the screen edge, given its platform handlers, measured
+for real, laid out and drawn — and only then does the open motion start. What the user sees is one
+translation of a body that already has its exact height, its layout and its glyphs.
+
+```
+ShowG9BottomSheet
+  → build shell + content root            (ConfigureSheetContent — ⛔ NO sizing here any more)
+  → overlayHost.Children.Add(sheet)       handlers exist from HERE
+  → sheet.Stage()                         body visible, real height, parked at TranslationY = host height
+  → StageAndShowAsync
+       1. ApplySheetContentSizing         the first REAL measure
+       2. wait: IsStagedLayoutReady       one layout pass at that height
+       3. ApplySheetContentSizing again   confirms step 1 (matters for wrapping text)
+       4. wait: PreOpenSettleFrames       drawn frames — late layout passes, async icon images
+       5. wait: IDeferredContentReadiness if the body asks for it
+       6. sheet.Show()                    a pure translation
+     every wait is bounded by ONE deadline: PreOpenMaxHoldMs
+```
+
+**Why the old explanation was wrong.** The section further down still says "the first measure of a
+sheet body on Android is ALWAYS cold … platform reality". It was cold because
+`ConfigureSheetContent` measured BEFORE `overlayHost.Children.Add(sheet)`: a view outside the tree has
+no handler, and a handler-less MAUI view reports a desired size of zero. The settle passes, the
+`MeasureInvalidated`-as-first-measure, the persisted height memo and the seed table were all built to
+hide that zero. They still exist — for the legacy pipeline and for open-then-fill bodies — but a
+pre-built body no longer needs any of them.
+
+**⛔ Staging is a TRANSLATION, never `IsVisible = false`.** An invisible view is skipped by layout, so
+nothing would be realized and the measure would still be zero.
+
+**A pre-built `View` is never deferred.** `DeferContent = true` (the default) used to wrap even an
+already-constructed view in a `DeferredContentView` and hide it behind a placeholder for a fixed
+369 + 220 + 160 ms — after its construction had been paid for on the tap. `DeferContent` now only
+means something for FACTORY content, whose build starts from the **open-motion-completed signal**
+(`TriggerDeferredViews`), not from a timer sized to outlast the animation.
+
+**On icon "tofu".** The guide used to attribute late icon glyphs to a MAUI typeface race and cite
+dotnet/maui #25783, #19846 and #5157. Reading those issues and MAUI's Android font path says
+otherwise: a `Label`'s typeface is applied SYNCHRONOUSLY (`LabelHandler.MapFont` →
+`FontManager.GetTypeface`, cached by family / weight / italic), and all three issues are about
+`FontImageSource`, which resolves through the platform image loader a frame or two LATE (blank, then
+icon — never a box). The exact cause on a given device is therefore unconfirmed; what is certain is
+that whatever it is settles within the first frames after attach, which is why the off-screen hold is
+counted in drawn frames. If a device still shows it, raise `PreOpenSettleFrames` first, then check with
+Layout Inspector whether the late views are `AppCompatImageView` (image path) or `MauiTextView` (label).
+
+**The trade, stated honestly.** Handler creation and first layout now happen BEFORE the motion
+instead of during or after it. Tap → motion-start is longer by exactly that work; tap → usable is
+much shorter, and nothing runs during the animation. The modal scrim appears at once, so the tap is
+acknowledged immediately. A body that is genuinely heavy should be shown from a **factory** (opens
+first, builds after) or through `ShowProcessingG9BottomSheet`.
+
+### Settings (`G9BottomSheetSettings`, via `G9BottomSheetHelper.Configure`)
+
+> Motion has its own section — **Sheet Motion — Platform-Native By Default** — and two settings of its
+> own: `MotionStyle` (`PlatformNative`) and `UseFrameClockMotion` (`true`).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `StageBeforeShow` | `true` | Master switch. `false` restores the pre-1.1 pipeline wholesale — a rollback, not a preference. |
+| `PreOpenSettleFrames` | `2` | Drawn frames held off-screen after layout settles. Raise it if a device still shows icons arriving late; `0` opens on the first ready frame. |
+| `PreOpenMaxHoldMs` | `250` | Hard cap on the whole off-screen hold. A sheet ALWAYS opens by this deadline. |
+| `DeferPrebuiltContent` | `false` | Legacy: wrap an already-built view in a `DeferredContentView` again. |
+| `UseHardwareLayerDuringMotion` | `true` | Android: composite the body from a hardware layer while it moves. Kill switch for a device that shows artefacts. |
+
+### Motion rules (`G9SheetView`)
+
+- **Layout happens once per size; motion is translation.** A drag grows the body to its LARGEST
+  detent on the first move (one layout pass) and only translates after that; the settle applies the
+  resting height when it arrives (`CompleteMotion`). It used to set `HeightRequest` on every
+  touch-move — a full measure/arrange of the body per frame.
+- **`SetFitHeight(height, animate)` is the resize.** Grow: take the new height first (the extra hangs
+  below the screen edge, so the frame is identical), then slide up. Shrink: slide down, then take the
+  height. One layout pass either way. It replaces the tween that rewrote the three detent metrics on
+  every tick, and it retargets a motion that is already running instead of starting a second one.
+- **`BottomPinnedView`** (the helper sets it to the shared footer) is kept at the screen edge by
+  counter-translation while the body is taller than what is visible. It is capped at the distance to
+  the smallest detent, so a sheet being dragged AWAY takes its footer with it, and frozen during a
+  close.
+- **An aborted motion does not complete.** `finished` honours `cancelled`. A retargeted motion
+  inherits the completion of the one it replaces, so `OpenMotionCompleted` fires exactly once, at the
+  real end — never mid-animation, which is what used to start a deferred load inside the open.
+- **`ApplyBodyHeightForState` has one rule per situation:** staged → stay parked; under a finger →
+  leave it to the finger; moving → RETARGET; at rest → animate a large host change (keyboard,
+  rotation), follow a small one instantly (a window being dragged). It used to write the position
+  unconditionally from three call sites, including mid-animation.
+- **Release is judged on velocity too.** Above ~700 dp/s a gesture is a fling and steps ONE detent in
+  its direction (or dismisses, from the smallest). Below it the distance rules apply unchanged.
+  Android feeds its `VelocityTracker` SCREEN coordinates — the view moves with the finger, so a
+  view-relative velocity reads as almost zero.
+- **A finger landing on a moving sheet takes it over** (`Pressed` aborts the motion).
+
+### API additions
+
+- `Task<IG9BottomSheetHandle?> ShowG9BottomSheetAsync(View | Func<View>, options)` — completes with the
+  handle once the sheet is attached, with `null` when the open throttle swallowed the request, and
+  FAULTS when the pipeline throws. The `void` overloads now route a pipeline failure to the standard
+  error reporting instead of letting it escape on the dispatcher.
+- `ShowListG9BottomSheetAsync` honours the caller's `SizeMode`. `G9BottomSheetListPickerModal`
+  implements `IG9BottomSheetContentHeightProvider` (count × row height, from the FULL list so the sheet
+  does not resize while the user types in the search box). A throttled or failed picker completes its
+  task instead of hanging.
+- `LoadableSheetContentView<T>.OnLoadFailed(Exception)` — a throwing loader no longer leaves
+  `IsLoading` set for ever. `DeferredContentView` releases its latch and rethrows when its factory
+  throws, and its reveal hold is `RevealSettleFrames` frames with `FadeRevealDelayMs` as the CAP.
+
+### Loading WHILE staged — `LoadableSheetContentView.LoadWhileStaged`, `IStagedSheetLoad`
+
+"Open then fill" (`IDeferredSheetLoad`) starts a body's load after the open motion, behind the body's own
+loading state. That is right for a slow load and wrong for a fast one: a sheet whose first render needs
+only on-device data opened on a spinner, swapped, faded and resized, all in view.
+
+- A `LoadableSheetContentView` subclass opts in with `protected override bool LoadWhileStaged => true;`.
+  The base implements `IStagedSheetLoad` and `IDeferredContentReadiness` for it: ready means **`IsLoading`
+  has cleared** (or the load ended some other way), NOT that `RunDeferredLoadAsync` returned — that
+  routinely continues into a background refresh.
+- `StageAndShowAsync` starts such a load at stage time (`TriggerDeferredLoad` is once-only, so the
+  after-open call becomes a no-op) and **waits for content readiness FIRST, before the first measure**,
+  on its own `PreOpenMaxHoldMs` budget. Readiness used to be awaited last, after the settle frames —
+  harmless while the only such bodies were pickers ready within a frame, wrong for a body that swaps a
+  spinner for content: the sheet was measured and settled around the spinner, then opened un-laid-out.
+- `RevealLoadedContentAsync` skips its cover and fade while the host sheet `IsStaged`, and, for a load
+  that outlived the hold, waits out a running open motion before swapping the body in.
+- Do NOT opt in a body whose first render waits on the network: it sits out the hold with nothing on
+  screen and then opens on its spinner anyway.
+
+Pickers: `ShowListG9BottomSheetAsync` (fit-to-content) and `G9SelectionSheet` (≤ `EagerBuildItemLimit`)
+build eagerly **even when called off the UI thread** — they marshal to it. Falling back to the factory
+path there is what opened a six-row picker at the 180 dp loading floor and grew it to 415 dp in view.
+
+### Do not regress
+
+- ⛔ No sizing before the sheet is in the tree.
+- ⛔ No `HeightRequest` write per frame — not in a drag, not in a resize, not in a position listener.
+- ⛔ No native tree walk from a `PositionChanged` listener. The backdrop card's Android sweep belongs to
+  cleanup only; per frame it is a field compare (`BackdropCardBinding._isTransformed`).
+- ⛔ Every animation `finished` callback checks `cancelled`.
+- ⛔ Do not rename `G9SheetViewBorder` — the consuming app's QA layer finds sheets by that type name.
+- The regression surface is `G9Controls.Gallery` → **Sheet Lab**: one button per rule above, each
+  captioned with what must be true when it is pressed.
 
 ## Sizing Rules
 
@@ -926,7 +1187,11 @@ A full per-sheet lifecycle trace (26+ real sheets, Debug/emulator; the reusable 
 `AiGuides/06-Android-Debug-Loop.md`) established the facts these rules rest on. Keep them in mind
 before "simplifying" any of the machinery below:
 
-- **The first measure of a sheet body on Android is ALWAYS cold** (`raw=0`, every sheet, every
+- ⚠️ **SUPERSEDED 2026-09 — see "Stage Before Show" above.** The measure was cold because it ran
+  BEFORE the sheet was attached (no handler → desired size zero), not because of Android. The
+  paragraph is kept as the record of what was believed, and because it still describes the LEGACY
+  pipeline (`StageBeforeShow = false`).
+  **The first measure of a sheet body on Android is ALWAYS cold** (`raw=0`, every sheet, every
   time): an unattached / not-yet-laid-out MAUI tree measures 0 or garbage. This is platform
   reality, not an app bug — see
   [dotnet/maui #4880](https://github.com/dotnet/maui/issues/4880),
@@ -945,7 +1210,9 @@ before "simplifying" any of the machinery below:
   the opened-work timer waited the full non-scaled 399ms although a fit open's real motion is
   ~80ms, starting deferred loads ~300ms late; the close-then-open replace chain added ~400ms dead
   time per step and rebuilt the previous view from scratch on every back.
-- **Font-glyph "tofu"**: icons render as empty rectangles for the first frames after a body
+- ⚠️ **The cause given in this bullet is unsupported — see "On icon tofu" above.** The three cited
+  issues are about `FontImageSource`, not a `Label` typeface race.
+  **Font-glyph "tofu"**: icons render as empty rectangles for the first frames after a body
   attaches — a MAUI-Android first-draw race
   ([#25783](https://github.com/dotnet/maui/issues/25783),
   [#19846](https://github.com/dotnet/maui/issues/19846),

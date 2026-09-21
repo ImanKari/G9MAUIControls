@@ -15,10 +15,12 @@ internal sealed class G9RippleDrawable : IDrawable
         var maxRadius = MathF.Sqrt((dirtyRect.Width * dirtyRect.Width) + (dirtyRect.Height * dirtyRect.Height));
         var p = Math.Clamp(Progress, 0f, 1f);
         var radius = maxRadius * p;
-        var alpha = (1f - p) * Color.Alpha;
 
         canvas.SaveState();
-        canvas.FillColor = Color.WithAlpha(alpha);
+        // Fade through the canvas alpha (which multiplies the colour's own alpha) instead of
+        // allocating a new Color per animation frame. Scoped by Save/RestoreState.
+        canvas.FillColor = Color;
+        canvas.Alpha = 1f - p;
         canvas.FillCircle(
             dirtyRect.Left + (Center.X * dirtyRect.Width),
             dirtyRect.Top + (Center.Y * dirtyRect.Height),

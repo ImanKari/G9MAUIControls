@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+        The first tests in the repository (XC-05): pure logic that needs no device.
+
+        This project does NOT reference G9MAUIControls. Every package in the family targets platform TFMs
+        only (03-PackageArchitecture -> "Target frameworks"), so a plain net10.0 project cannot reference
+        one. Instead the dependency-free helpers are FILE-LINKED below and compiled into this assembly,
+        which is why each of them carries the note "deliberately free of any MAUI dependency". A helper
+        that grows a MAUI type stops compiling HERE, which is the point: the break is loud and immediate.
+
+        Runs anywhere `dotnet test` does - no workload, no emulator, no Windows requirement.
+    -->
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>G9MAUIControls.Tests</RootNamespace>
+
+        <!-- Never ships. Also switches off the shared README / icon / LICENSE pack items and the
+             SourceLink reference, all of which Directory.Build.props conditions on IsPackable. -->
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+
+        <!-- Directory.Build.props turns XML docs on so they ship in the packages. Nothing ships from
+             here, and xunit requires test classes to be public, so every one would raise CS1591. -->
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="..\..\G9MAUIControls\Controls\Shared\G9Digits.cs" Link="Linked\G9Digits.cs" />
+        <Compile Include="..\..\G9MAUIControls\Controls\Shared\G9TimeSpanMath.cs" Link="Linked\G9TimeSpanMath.cs" />
+        <Compile Include="..\..\G9MAUIControls\Controls\Shared\G9Calendar.cs" Link="Linked\G9Calendar.cs" />
+        <Compile Include="..\..\G9MAUIControls\BottomSheet\G9SheetView\G9SheetMotionModel.cs" Link="Linked\G9SheetMotionModel.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="xunit" />
+        <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Xunit" />
+    </ItemGroup>
+
+</Project>

@@ -44,7 +44,7 @@ public static partial class SqliteDtoCache<
             CacheDebounceCts = null;
         }
 
-        debounceCts?.Cancel();
+        G9SqliteFireAndForget.CancelQuietly(debounceCts);
     }
 
     private static void ResetCacheForSession()
@@ -54,13 +54,21 @@ public static partial class SqliteDtoCache<
         {
             debounceCts = CacheDebounceCts;
             CacheDebounceCts = null;
-            CacheProvider = null;
+
+            // Invalidates every refresh already in flight — it noted the old generation before querying,
+            // so it discards its result instead of publishing the previous user's DTOs into the next
+            // session. Cancelling the debounce below does not stop a refresh that is past its delay.
+            CacheGeneration++;
+
+            // CacheProvider is deliberately KEPT (it used to be nulled here). CacheDefined stays true
+            // across a reset, so without a provider every read threw until DefineCache was called again.
+            // The provider is not session state: it re-resolves the database on every acquisition.
             CacheRows = null;
             CacheInitialized = false;
             EmptyCacheRetryAttempted = false;
         }
 
-        debounceCts?.Cancel();
+        G9SqliteFireAndForget.CancelQuietly(debounceCts);
         NotifyCacheListeners([]);
     }
 
@@ -119,39 +127,72 @@ public static partial class SqliteDtoCache<
                 "but no query factory is available.");
         }
 
+        var published = false;
+
         await CacheRefreshLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            var repository = new SqliteRepository<TEntity>(provider, options);
-            var cacheRows = await queryFactory(repository).ConfigureAwait(false);
+            // Noted BEFORE the query resolves its connection (the repository asks the provider per call).
+            // The other way round, a session switch between the two would pair the old user's connection
+            // with the new generation and let the check below wave those rows through.
+            int generation;
+            lock (CacheStateLock)
+            {
+                generation = CacheGeneration;
+            }
+
+            List<TDto> cacheRows;
+            try
+            {
+                var repository = new SqliteRepository<TEntity>(provider, options);
+                cacheRows = await queryFactory(repository).ConfigureAwait(false);
+            }
+            catch (SQLiteException ex) when (
+                ex.Result == SQLite3.Result.Error
+                && ex.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+            {
+                cacheRows = [];
+            }
 
             lock (CacheStateLock)
             {
-                CacheRows = cacheRows;
-                CacheInitialized = true;
-                if (cacheRows.Count > 0)
+                if (generation == CacheGeneration)
                 {
-                    EmptyCacheRetryAttempted = false;
+                    CacheRows = cacheRows;
+                    CacheInitialized = true;
+                    if (cacheRows.Count > 0)
+                    {
+                        EmptyCacheRetryAttempted = false;
+                    }
+
+                    published = true;
                 }
             }
-
-            NotifyCacheListeners(cacheRows);
         }
-        catch (SQLiteException ex) when (
-            ex.Result == SQLite3.Result.Error
-            && ex.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        catch
         {
+            // Mark the cache dirty. A debounced refresh's failure is swallowed by its runner, and with
+            // CacheInitialized left true nothing would ever try again — reads would serve the pre-write
+            // DTOs indefinitely. Cleared, the next read refreshes, and that one is awaited by its caller.
             lock (CacheStateLock)
             {
-                CacheRows = [];
-                CacheInitialized = true;
+                CacheInitialized = false;
             }
 
-            NotifyCacheListeners([]);
+            throw;
         }
         finally
         {
             CacheRefreshLock.Release();
+        }
+
+        // After the lock is released: a listener that calls the synchronous GetCacheData() would otherwise
+        // wait on a lock held by the refresh that is calling it. The CURRENT rows are delivered rather than
+        // the ones loaded above, so two refreshes notifying out of order still end on the newest data; if a
+        // reset slipped in there is nothing to deliver, and the reset already announced "empty".
+        if (published && TryGetCacheRows(out var currentRows))
+        {
+            NotifyCacheListeners(currentRows);
         }
     }
 
@@ -194,7 +235,7 @@ public static partial class SqliteDtoCache<
 
     private static void NotifyCacheListeners(List<TDto> cacheRows)
     {
-        var listeners = GetAliveListeners();
+        var listeners = GetListenersSnapshot();
         if (listeners.Length == 0)
         {
             return;
@@ -206,30 +247,13 @@ public static partial class SqliteDtoCache<
         }
     }
 
-    private static Action<List<TDto>>[] GetAliveListeners()
+    // A snapshot, so a listener that subscribes or unsubscribes from inside its own callback cannot
+    // invalidate the enumeration, and no listener runs while CacheListenerLock is held.
+    private static Action<List<TDto>>[] GetListenersSnapshot()
     {
         lock (CacheListenerLock)
         {
-            if (CacheListeners.Count == 0)
-            {
-                return [];
-            }
-
-            var aliveListeners = new List<Action<List<TDto>>>(CacheListeners.Count);
-            for (var i = CacheListeners.Count - 1; i >= 0; i--)
-            {
-                if (CacheListeners[i].TryGetTarget(out var listener))
-                {
-                    aliveListeners.Add(listener);
-                }
-                else
-                {
-                    CacheListeners.RemoveAt(i);
-                }
-            }
-
-            aliveListeners.Reverse();
-            return aliveListeners.ToArray();
+            return CacheListeners.Count == 0 ? [] : CacheListeners.ToArray();
         }
     }
 

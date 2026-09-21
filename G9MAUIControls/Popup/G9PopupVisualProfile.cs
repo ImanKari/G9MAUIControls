@@ -52,8 +52,13 @@ public sealed record G9PopupVisualProfile(
             _ => palette.OnInfo
         };
 
+        // The dim behind the card is the palette's Scrim token (black in both themes), the same one
+        // the full-screen toast loader uses. It used to be OnSurface — which is a DARK colour in the
+        // light theme but a LIGHT one in the dark theme, so dark-mode popups sat on a pale veil that
+        // washed the page out instead of receding it. Only the hue comes from the token: the alpha
+        // stays the caller's OverlayOpacity, which G9PopupView re-applies to whatever colour it gets.
         var overlayOpacity = settings.OverlayOpacity ?? 0.45f;
-        var overlayColor = settings.OverlayColor ?? themeOnSurface.WithAlpha(overlayOpacity);
+        var overlayColor = settings.OverlayColor ?? palette.Scrim.WithAlpha(overlayOpacity);
 
         var icon = settings.IconOverride ?? descriptor.Type switch
         {

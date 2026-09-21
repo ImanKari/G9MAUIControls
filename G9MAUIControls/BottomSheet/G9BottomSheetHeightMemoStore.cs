@@ -84,7 +84,21 @@ internal static class G9BottomSheetHeightMemoStore
 
         if (Entries.Count >= MaxEntries && !Entries.ContainsKey(key))
         {
-            Entries.Clear();
+            // Evict ONE entry, not all of them. This used to Clear() — so the 65th distinct sheet
+            // threw away every height the device had learned, and the next open of each of the
+            // other 64 started from its loading floor again. Which one goes is not important (the
+            // memo is only ever an opening guess that the engine corrects); that the rest survive is.
+            string? evicted = null;
+            foreach (var existingKey in Entries.Keys)
+            {
+                evicted = existingKey;
+                break;
+            }
+
+            if (evicted is not null)
+            {
+                Entries.Remove(evicted);
+            }
         }
 
         Entries[key] = bodyHeight;

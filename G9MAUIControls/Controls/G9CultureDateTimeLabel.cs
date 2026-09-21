@@ -21,14 +21,6 @@ namespace G9MAUIControls.Controls;
 public partial class G9CultureDateTimeLabel : Label
 {
     /// <summary>
-    ///     The language this label formats with the Persian (Jalali) calendar. It is a constant
-    ///     rather than a comparison against the ambient culture: the label's whole purpose is to
-    ///     render Persian dates in the Persian calendar even when the thread culture is something
-    ///     else, so "is the current culture Persian" is the wrong question to ask.
-    /// </summary>
-    private const string PersianLanguageCode = "fa";
-
-    /// <summary>
     ///     Unicode LEFT-TO-RIGHT EMBEDDING / POP DIRECTIONAL FORMATTING. Wrapping the formatted value in
     ///     these keeps the whole numeric run left-to-right inside a right-to-left paragraph, which is what
     ///     the label used to buy by pinning its own <see cref="VisualElement.FlowDirection" /> — see
@@ -59,7 +51,27 @@ public partial class G9CultureDateTimeLabel : Label
         DisplayMode = G9CultureDateTimeDisplayMode.DateTime;
         EmptyText = string.Empty;
 
+        // G9Culture.CultureChanged is STATIC, so a subscription roots this label — and through its
+        // parent chain the whole page. It used to be held from "handler connected" to "handler
+        // disconnected", but a page popped off the stack, a recycled list cell or a closed sheet
+        // keeps its handlers long after it left the screen. The subscription now follows
+        // Loaded / Unloaded; the handler-null path stays as the last line of defence.
+        Loaded += OnLabelLoaded;
+        Unloaded += OnLabelUnloaded;
+
         UpdateText();
+    }
+
+    private void OnLabelLoaded(object? sender, EventArgs e)
+    {
+        AttachCultureChanged();
+        // Re-sync: a language switch that happened while the label was detached was not heard.
+        UpdateText();
+    }
+
+    private void OnLabelUnloaded(object? sender, EventArgs e)
+    {
+        DetachCultureChanged();
     }
 
     protected override void OnHandlerChanged()
@@ -71,7 +83,12 @@ public partial class G9CultureDateTimeLabel : Label
             return;
         }
 
-        AttachCultureChanged();
+        // A handler re-created while the label is already in the live tree raises no new Loaded.
+        if (IsLoaded)
+        {
+            AttachCultureChanged();
+        }
+
         UpdateText();
     }
 
@@ -174,21 +191,16 @@ public partial class G9CultureDateTimeLabel : Label
             return G9RelativeTimeFormatter.FormatAgoWithTime(value, culture);
         }
 
-        return IsPersianCulture(culture)
+        // Language decides the calendar (fa → Jalali); the rule and the range guard are shared
+        // with G9DateTimePicker through G9Calendar so the three cannot drift apart again.
+        return G9Calendar.IsPersianLanguage(culture)
             ? FormatPersian(value, displayMode, culture)
             : FormatGregorian(value, displayMode, culture);
     }
 
-    private static bool IsPersianCulture(CultureInfo culture)
-    {
-        return culture.TwoLetterISOLanguageName.Equals(
-            PersianLanguageCode,
-            StringComparison.OrdinalIgnoreCase);
-    }
-
     private static string FormatPersian(DateTime value, G9CultureDateTimeDisplayMode displayMode, CultureInfo culture)
     {
-        if (value < PersianCalendar.MinSupportedDateTime || value > PersianCalendar.MaxSupportedDateTime)
+        if (!G9Calendar.IsSupportedByPersianCalendar(value))
         {
             return FormatGregorian(value, displayMode, culture);
         }
@@ -217,6 +229,11 @@ public partial class G9CultureDateTimeLabel : Label
 
     private static string FormatGregorian(DateTime value, G9CultureDateTimeDisplayMode displayMode, CultureInfo culture)
     {
+        // ToString formats in the CULTURE's calendar. Under fa-IR that is the Persian one, so this
+        // method — the fallback for a date the Persian calendar cannot represent — threw the same
+        // ArgumentOutOfRangeException it was reached to avoid. Swap in a Gregorian-calendar culture.
+        culture = G9Calendar.GetGregorianFormatCulture(culture);
+
         return displayMode switch
         {
             G9CultureDateTimeDisplayMode.Date => value.ToString("yyyy/MM/dd", culture),

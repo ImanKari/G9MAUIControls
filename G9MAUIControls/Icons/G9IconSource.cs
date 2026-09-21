@@ -171,7 +171,11 @@ public readonly struct G9IconSource : IEquatable<G9IconSource>
         return resolved;
     }
 
-    private static readonly Dictionary<(Type, string), G9IconSource> EnumGlyphCache = [];
+    // Concurrent: icons are resolved wherever a view model or a view is built, which includes
+    // background threads, and a plain Dictionary written from two threads can corrupt its buckets (the
+    // classic symptom is a reader spinning forever). A lost race here only repeats the reflection once.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Type, string), G9IconSource>
+        EnumGlyphCache = new();
 
     /// <summary>Any icon-font enum member becomes an icon. See <see cref="FromEnum" />.</summary>
     /// <remarks>

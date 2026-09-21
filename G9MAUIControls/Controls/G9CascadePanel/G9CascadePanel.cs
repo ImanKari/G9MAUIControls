@@ -65,6 +65,18 @@ public partial class G9CascadePanel : G9ControlBase
     private bool _rootBuilt;
     private bool _animating;
 
+    /// <summary>Kind of the slide in flight — only meaningful while <see cref="_animating" /> is true.</summary>
+    private bool _animatingIsPush;
+
+    /// <summary>True while ONE operation is parked behind the slide in flight (see <see cref="EnterOperationAsync" />).</summary>
+    private bool _operationQueued;
+
+    /// <summary>Completed when the slide in flight ends; what a parked operation waits on.</summary>
+    private TaskCompletionSource? _animationDone;
+
+    /// <summary>Corner radius currently on <see cref="_clip" />, so an apply pass only rebuilds the shape when it moved.</summary>
+    private double _appliedCornerRadius = G9Metrics.RadiusLg;
+
     /// <summary>The root view shown at depth 0. Replaced live if it changes after load.</summary>
     [AutoBindable(OnChanged = nameof(OnRootContentChanged))] private View? _rootContent;
 
@@ -85,8 +97,12 @@ public partial class G9CascadePanel : G9ControlBase
     /// <summary>When true the root view animates in on first appearance; default false (root is fixed).</summary>
     [AutoBindable] private bool _animateRoot;
 
-    /// <summary>Show the built-in back+title header on nested panels. Default true.</summary>
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _showHeader = true;
+    /// <summary>
+    ///     Show the built-in back+title header on nested panels. Default true — declared through
+    ///     <c>DefaultValue</c> because <c>[AutoBindable]</c> ignores a field initializer (the generated
+    ///     BindableProperty default was <c>false</c>, so nested panels shipped with no way back).
+    /// </summary>
+    [AutoBindable(DefaultValue = "true", OnChanged = nameof(OnVisualChanged))] private bool _showHeader = true;
 
     /// <summary>Show the built-in header on the root panel too (usually false — the root has nowhere to go back to).</summary>
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _showRootHeader;
@@ -102,7 +118,7 @@ public partial class G9CascadePanel : G9ControlBase
     ///     When true (default) and in <see cref="G9CascadeTransition.Overlay" /> mode the
     ///     panel beneath parallaxes + dims slightly while covered, for an iOS-style depth cue.
     /// </summary>
-    [AutoBindable] private bool _enableParallax = true;
+    [AutoBindable(DefaultValue = "true")] private bool _enableParallax = true;
 
     /// <summary>
     ///     Corner radius of the panel surface (clipped on every platform). Defaults to
@@ -189,18 +205,38 @@ public partial class G9CascadePanel : G9ControlBase
     public void Push(Func<View> contentFactory, string? title = null, G9CascadeDirection? direction = null)
         => _ = PushAsync(null, contentFactory, title, direction);
 
+    /// <summary>
+    ///     Push a built view and choose whether the panel wraps it in its own <see cref="ScrollView" />.
+    ///     Pass <paramref name="wrapInScrollView" /> = <c>false</c> for content that scrolls itself
+    ///     (a <see cref="CollectionView" />, a map, a nested <see cref="ScrollView" />): inside the
+    ///     panel's scroller such a view is measured with unbounded height, so a list realizes every
+    ///     row and two scrollers fight over the same drag.
+    /// </summary>
+    public void Push(View content, string? title, G9CascadeDirection? direction, bool wrapInScrollView)
+        => _ = PushAsync(content, null, title, direction, wrapInScrollView);
+
+    /// <summary>Lazy counterpart of <see cref="Push(View, string?, G9CascadeDirection?, bool)" />.</summary>
+    public void Push(Func<View> contentFactory, string? title, G9CascadeDirection? direction, bool wrapInScrollView)
+        => _ = PushAsync(null, contentFactory, title, direction, wrapInScrollView);
+
     /// <summary>Awaitable push; completes when the slide-in animation finishes.</summary>
-    public async Task PushAsync(View? content, Func<View>? contentFactory, string? title = null, G9CascadeDirection? direction = null)
+    public Task PushAsync(View? content, Func<View>? contentFactory, string? title = null, G9CascadeDirection? direction = null)
+        => PushAsync(content, contentFactory, title, direction, wrapInScrollView: true);
+
+    /// <summary>
+    ///     Awaitable push with the scroll wrap made explicit — see
+    ///     <see cref="Push(View, string?, G9CascadeDirection?, bool)" />.
+    /// </summary>
+    public async Task PushAsync(View? content, Func<View>? contentFactory, string? title, G9CascadeDirection? direction, bool wrapInScrollView)
     {
         EnsureRootBuilt();
-        if (_animating) return;
-        _animating = true;
+        if (!await EnterOperationAsync(isPush: true).ConfigureAwait(true)) return;
         try
         {
             var resolved = ResolveDirection(direction ?? Direction);
             var under = _levels.Count > 0 ? _levels[^1] : null;
 
-            var level = BuildLevel(resolved, title, showHeaderDefault: ShowHeader, isRoot: false);
+            var level = BuildLevel(resolved, title, showHeaderDefault: ShowHeader, isRoot: false, wrapInScrollView);
             _levels.Add(level);
             _stack.Add(level.Container);
 
@@ -224,7 +260,7 @@ public partial class G9CascadePanel : G9ControlBase
         }
         finally
         {
-            _animating = false;
+            ExitOperation();
         }
     }
 
@@ -234,11 +270,13 @@ public partial class G9CascadePanel : G9ControlBase
     /// <summary>Awaitable pop; completes when the slide-out animation finishes.</summary>
     public async Task PopAsync()
     {
-        if (_animating) return;
-        if (_levels.Count <= 1) return; // never pop the root
-        _animating = true;
+        if (_levels.Count <= 1 && !_animating) return; // never pop the root
+        if (!await EnterOperationAsync(isPush: false).ConfigureAwait(true)) return;
         try
         {
+            // Re-checked: a pop that waited behind a slide may find only the root left.
+            if (_levels.Count <= 1) return;
+
             var top = _levels[^1];
             var under = _levels[^2];
 
@@ -253,17 +291,78 @@ public partial class G9CascadePanel : G9ControlBase
         }
         finally
         {
-            _animating = false;
+            ExitOperation();
         }
     }
 
     /// <summary>Pop every nested panel back down to the root, one slide at a time.</summary>
     public async Task PopToRootAsync()
     {
-        while (_levels.Count > 1 && !_animating)
+        // Wait out a slide already in flight. The loop below used to carry `&& !_animating`, so a
+        // PopToRoot issued mid-slide ended before it started and left every panel open.
+        while (_animating && _animationDone is { } done)
         {
-            await PopAsync().ConfigureAwait(true);
+            await done.Task.ConfigureAwait(true);
         }
+
+        while (_levels.Count > 1)
+        {
+            var before = _levels.Count;
+            await PopAsync().ConfigureAwait(true);
+
+            // A refused pop (another operation slipped in between two slides) must not spin.
+            if (_levels.Count >= before) break;
+        }
+    }
+
+    /// <summary>
+    ///     Claims the single animation slot for a push or a pop. Returns <c>false</c> when the
+    ///     operation must be dropped.
+    ///     <para>
+    ///         An operation of the SAME kind as the slide in flight is still dropped — that is the
+    ///         double-tap guard (two taps on a row must not push two panels; two taps on the back
+    ///         chevron must not pop two levels). An operation of the OTHER kind is parked until the
+    ///         slide ends and then runs: <c>Pop(); Push(x);</c> and a <c>Push</c> issued from a
+    ///         <see cref="PanelPopped" /> handler used to lose the push silently. One operation can
+    ///         be parked at a time; a second one is dropped.
+    ///     </para>
+    /// </summary>
+    private async Task<bool> EnterOperationAsync(bool isPush)
+    {
+        if (_animating)
+        {
+            if (_animatingIsPush == isPush || _operationQueued) return false;
+
+            _operationQueued = true;
+            try
+            {
+                while (_animating && _animationDone is { } done)
+                {
+                    await done.Task.ConfigureAwait(true);
+                }
+            }
+            finally
+            {
+                _operationQueued = false;
+            }
+
+            if (_animating || Handler is null) return false; // slot taken again, or torn down meanwhile
+        }
+
+        _animating = true;
+        _animatingIsPush = isPush;
+        // Continuations run asynchronously so a parked operation never starts inside the finally
+        // block of the one it waited for.
+        _animationDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        return true;
+    }
+
+    private void ExitOperation()
+    {
+        _animating = false;
+        var done = _animationDone;
+        _animationDone = null;
+        done?.TrySetResult();
     }
 
     /// <summary>Synchronous fire-and-forget <see cref="PopToRootAsync" />.</summary>
@@ -273,7 +372,13 @@ public partial class G9CascadePanel : G9ControlBase
     {
         EnsureRootBuilt();
 
-        _clip.StrokeShape = new RoundRectangle { CornerRadius = (float)CornerRadius };
+        // Only when it moved: a fresh shape per pass re-clips the whole stack (G9Controls.md §12).
+        if (Math.Abs(_appliedCornerRadius - CornerRadius) > 0.001)
+        {
+            _appliedCornerRadius = CornerRadius;
+            _clip.StrokeShape = new RoundRectangle { CornerRadius = (float)CornerRadius };
+        }
+
         Opacity = IsEnabled ? 1 : 0.5;
 
         foreach (var level in _levels)
@@ -310,7 +415,7 @@ public partial class G9CascadePanel : G9ControlBase
         if (_rootBuilt) return;
         _rootBuilt = true;
 
-        var root = BuildLevel(ResolveDirection(Direction), RootTitle, showHeaderDefault: ShowRootHeader, isRoot: true);
+        var root = BuildLevel(ResolveDirection(Direction), RootTitle, showHeaderDefault: ShowRootHeader, isRoot: true, wrapInScrollView: true);
         _levels.Add(root);
         _stack.Add(root.Container);
         ApplyLevelColors(root);
@@ -336,7 +441,7 @@ public partial class G9CascadePanel : G9ControlBase
         BuildDeferredContent(root);
     }
 
-    private CascadeLevel BuildLevel(G9CascadeDirection direction, string? title, bool showHeaderDefault, bool isRoot)
+    private CascadeLevel BuildLevel(G9CascadeDirection direction, string? title, bool showHeaderDefault, bool isRoot, bool wrapInScrollView)
     {
         var spinner = new ActivityIndicator
         {
@@ -353,13 +458,19 @@ public partial class G9CascadePanel : G9ControlBase
             FlowDirection = CultureFlow()
         };
 
-        var scroll = new ScrollView
-        {
-            Orientation = ScrollOrientation.Vertical,
-            HorizontalOptions = LayoutOptions.Fill,
-            VerticalOptions = LayoutOptions.Fill,
-            Content = contentHost
-        };
+        // The body is the content host inside a ScrollView by default. A push can opt out so
+        // self-scrolling content (a CollectionView) is arranged in the panel's real, bounded
+        // height instead of being measured unbounded inside a scroller — which makes a list
+        // realize every row and nests two scrollers on one drag.
+        View body = wrapInScrollView
+            ? new ScrollView
+            {
+                Orientation = ScrollOrientation.Vertical,
+                HorizontalOptions = LayoutOptions.Fill,
+                VerticalOptions = LayoutOptions.Fill,
+                Content = contentHost
+            }
+            : contentHost;
 
         // Header (row 0) — back chevron + title. Built once; visibility toggled per level.
         var backIcon = new ContentView { VerticalOptions = LayoutOptions.Center, HorizontalOptions = LayoutOptions.Center };
@@ -422,7 +533,7 @@ public partial class G9CascadePanel : G9ControlBase
             }
         };
         inner.Add(headerHost, 0, 0);
-        inner.Add(scroll, 0, 1);
+        inner.Add(body, 0, 1);
         inner.Add(spinner, 0, 1);
 
         // Opaque surface so panels fully occlude whatever is beneath during a slide.
@@ -452,7 +563,7 @@ public partial class G9CascadePanel : G9ControlBase
             BackIconHost = backIcon,
             TitleLabel = titleLabel,
             HeaderDivider = headerDivider,
-            Scroll = scroll,
+            Body = body,
             ContentHost = contentHost,
             Spinner = spinner,
             Direction = direction,
@@ -484,10 +595,26 @@ public partial class G9CascadePanel : G9ControlBase
 
         if (!level.IsRoot)
         {
-            // Culture-aware back chevron (points to the leading edge — "back").
-            var icon = G9Visuals.IsRtl ? G9Glyphs.ChevronForward : G9Glyphs.ChevronBack;
-            level.BackIconHost.Content = G9IconFactory.Create(
-                null, icon, null, null, palette.Primary, G9Metrics.CascadePanelBackIconSize);
+            // Culture-aware back chevron (points to the leading edge — "back"). Built once per
+            // level and mutated afterwards: this runs on every apply pass and every palette flip,
+            // and a fresh icon view each time costs a platform handler plus, on Android, a frame
+            // of tofu while the new glyph rasterizes (G9Controls.md §12a).
+            G9IconSource icon = G9Visuals.IsRtl ? G9Glyphs.ChevronForward : G9Glyphs.ChevronBack;
+            if (level.BackIcon is null)
+            {
+                level.BackIcon = new G9IconView
+                {
+                    Icon = icon,
+                    Color = palette.Primary,
+                    Size = G9Metrics.CascadePanelBackIconSize
+                };
+                level.BackIconHost.Content = level.BackIcon;
+            }
+            else
+            {
+                level.BackIcon.Icon = icon;
+                level.BackIcon.Color = palette.Primary;
+            }
         }
     }
 
@@ -506,7 +633,7 @@ public partial class G9CascadePanel : G9ControlBase
             // slide settles so view construction never janks the animation.
             level.PendingFactory = factory;
             level.ContentHost.Content = null;
-            level.Scroll.IsVisible = false;
+            level.Body.IsVisible = false;
             level.Spinner.IsVisible = true;
             level.Spinner.IsRunning = true;
             return;
@@ -542,7 +669,7 @@ public partial class G9CascadePanel : G9ControlBase
     {
         level.Spinner.IsVisible = false;
         level.Spinner.IsRunning = false;
-        level.Scroll.IsVisible = true;
+        level.Body.IsVisible = true;
         level.ContentHost.Content = content;
     }
 
@@ -754,9 +881,12 @@ public partial class G9CascadePanel : G9ControlBase
         public required Border Card { get; init; }
         public required ContentView HeaderHost { get; init; }
         public required ContentView BackIconHost { get; init; }
+        /// <summary>The cached back chevron — created on the first colour pass, mutated afterwards.</summary>
+        public G9IconView? BackIcon { get; set; }
         public required Label TitleLabel { get; init; }
         public required BoxView HeaderDivider { get; init; }
-        public required ScrollView Scroll { get; init; }
+        /// <summary>Row-1 body: a <see cref="ScrollView" /> around <see cref="ContentHost" />, or the host itself when the push opted out of the wrap.</summary>
+        public required View Body { get; init; }
         public required ContentView ContentHost { get; init; }
         public required ActivityIndicator Spinner { get; init; }
         public G9CascadeDirection Direction { get; init; }

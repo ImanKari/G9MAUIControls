@@ -25,8 +25,13 @@ public partial class G9PlusButton : ContentView
         MainIconRotationExpanded = 45;
 
         InitializeComponent();
-        BindingContext = this;
+        // NOTE: no `BindingContext = this` here. Nothing in this control's XAML binds against the
+        // control (the item views get their own per-item context from BindableLayout), but the
+        // assignment cut the control off from the page's context, so a consumer's
+        // Items="{Binding MenuItems}" resolved against the BUTTON and silently produced nothing.
         Loaded += OnLoaded;
+        Loaded += OnLoadedObserveItems;
+        Unloaded += OnUnloadedStopObservingItems;
     }
 
     private void OnLoaded(object? sender, EventArgs e)
@@ -254,17 +259,65 @@ public partial class G9PlusButton : ContentView
         }
     }
 
+    // The collection currently observed for CollectionChanged. It is consumer-owned and usually
+    // outlives this control, so it is only observed while the control is loaded — a permanent
+    // subscription from it would keep the button, and its page, alive after the page is gone.
+    private ObservableCollection<G9PlusButtonItem>? _observedItems;
+
     private void OnItemsChanged()
     {
-        if (Items != null)
-        {
-            foreach (var item in Items)
-            {
-                item.CloseMenuAsync = CloseMenuFromItemSelectionAsync;
-            }
-        }
+        WireItems();
+        ObserveItems(IsLoaded ? Items : null);
 
         BindableLayout.SetItemsSource(ItemsContainer, Items);
+        OnMenuFlowDirectionChanged();
+        UpdateHitAreaSize(_isExpanded);
+    }
+
+    private void WireItems()
+    {
+        if (Items is null) return;
+
+        foreach (var item in Items)
+        {
+            item.CloseMenuAsync = CloseMenuFromItemSelectionAsync;
+        }
+    }
+
+    private void ObserveItems(ObservableCollection<G9PlusButtonItem>? items)
+    {
+        if (ReferenceEquals(items, _observedItems)) return;
+
+        if (_observedItems is not null) _observedItems.CollectionChanged -= OnItemsCollectionChanged;
+        _observedItems = items;
+        if (_observedItems is not null) _observedItems.CollectionChanged += OnItemsCollectionChanged;
+    }
+
+    private void OnLoadedObserveItems(object? sender, EventArgs e)
+    {
+        // Items added while we were not listening still need their close callback.
+        WireItems();
+        ObserveItems(Items);
+    }
+
+    private void OnUnloadedStopObservingItems(object? sender, EventArgs e) => ObserveItems(null);
+
+    /// <summary>
+    ///     Items added AFTER the collection was assigned used to be displayed (BindableLayout
+    ///     follows the collection) but never wired: tapping one ran its command and left the menu
+    ///     open, and the hit area still had the old item count so the new row was not tappable.
+    /// </summary>
+    private void OnItemsCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        if (!MainThread.IsMainThread)
+        {
+            MainThread.BeginInvokeOnMainThread(() => OnItemsCollectionChanged(sender, e));
+            return;
+        }
+
+        if (!ReferenceEquals(sender, _observedItems)) return;
+
+        WireItems();
         OnMenuFlowDirectionChanged();
         UpdateHitAreaSize(_isExpanded);
     }
@@ -454,6 +507,13 @@ public partial class G9PlusButton : ContentView
                 return;
             }
 
+            // Items may have changed since this step was queued — the index can be stale.
+            if (index >= ItemsContainer.Children.Count)
+            {
+                tcs.TrySetResult(true);
+                return;
+            }
+
             var child = ItemsContainer.Children[index];
             if (child is not VisualElement ve)
             {
@@ -497,6 +557,13 @@ public partial class G9PlusButton : ContentView
             if (token.IsCancellationRequested)
             {
                 tcs.TrySetCanceled(token);
+                return;
+            }
+
+            // Items may have changed since this step was queued — the index can be stale.
+            if (index >= ItemsContainer.Children.Count)
+            {
+                tcs.TrySetResult(true);
                 return;
             }
 
@@ -546,7 +613,9 @@ public partial class G9PlusButton : ContentView
                 return;
             }
 
-            if (ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
+            // Items may have changed since this step was queued — the index can be stale.
+            if (index >= ItemsContainer.Children.Count
+                || ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
             {
                 tcs.TrySetResult(true);
                 return;
@@ -592,7 +661,9 @@ public partial class G9PlusButton : ContentView
                 return;
             }
 
-            if (ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
+            // Items may have changed since this step was queued — the index can be stale.
+            if (index >= ItemsContainer.Children.Count
+                || ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
             {
                 tcs.TrySetResult(true);
                 return;
@@ -638,7 +709,9 @@ public partial class G9PlusButton : ContentView
                 return;
             }
 
-            if (ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
+            // Items may have changed since this step was queued — the index can be stale.
+            if (index >= ItemsContainer.Children.Count
+                || ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
             {
                 tcs.TrySetResult(true);
                 return;
@@ -684,7 +757,9 @@ public partial class G9PlusButton : ContentView
                 return;
             }
 
-            if (ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
+            // Items may have changed since this step was queued — the index can be stale.
+            if (index >= ItemsContainer.Children.Count
+                || ItemsContainer.Children[index] is not G9G9PlusButtonItemView itemView)
             {
                 tcs.TrySetResult(true);
                 return;

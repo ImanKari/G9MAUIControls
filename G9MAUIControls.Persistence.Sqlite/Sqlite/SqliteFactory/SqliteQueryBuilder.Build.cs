@@ -58,12 +58,18 @@ public sealed partial class SqliteQueryBuilder<T> where T : class, new()
     }
 
     /// <summary>Builds an UPDATE statement using <see cref="Set{TValue}" /> clauses and WHERE conditions.</summary>
+    /// <exception cref="InvalidOperationException">
+    ///     No SET clause; or no WHERE condition and <see cref="AllRows" /> was not called; or both a WHERE
+    ///     condition and <see cref="AllRows" />.
+    /// </exception>
     public (string Sql, object[] Parameters) BuildUpdate()
     {
         if (_setClauses.Count == 0)
         {
             throw new InvalidOperationException("No SET clauses. Use .Set(x => x.Column, value) before BuildUpdate().");
         }
+
+        EnsureWriteIsScoped("UPDATE");
 
         var sb = new StringBuilder(128);
         var allParams = new List<object>();
@@ -102,8 +108,14 @@ public sealed partial class SqliteQueryBuilder<T> where T : class, new()
     }
 
     /// <summary>Builds a DELETE statement using WHERE conditions.</summary>
+    /// <exception cref="InvalidOperationException">
+    ///     No WHERE condition and <see cref="AllRows" /> was not called; or both a WHERE condition and
+    ///     <see cref="AllRows" />.
+    /// </exception>
     public (string Sql, object[] Parameters) BuildDelete()
     {
+        EnsureWriteIsScoped("DELETE");
+
         var sb = new StringBuilder(64);
         var allParams = new List<object>();
 
@@ -139,6 +151,34 @@ public sealed partial class SqliteQueryBuilder<T> where T : class, new()
     #endregion
 
     #region Clause Appenders
+
+    /// <summary>
+    ///     Refuses to build an UPDATE or DELETE whose scope was never stated.
+    /// </summary>
+    /// <remarks>
+    ///     With no predicate the statement is simply emitted without a WHERE — and SQL reads that as
+    ///     "every row". The usual way to get there is not intent but a conditional:
+    ///     <c>if (id is not null) query.Where(x =&gt; x.Id == id);</c> skips the filter on the one path nobody
+    ///     tested, and the table is wiped or overwritten with no error anywhere. Whole-table writes stay
+    ///     possible; they just have to be asked for by name, with <see cref="AllRows" />.
+    /// </remarks>
+    private void EnsureWriteIsScoped(string verb)
+    {
+        if (_whereParts.Count == 0 && !_allRows)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to build {verb} for '{typeof(T).Name}' without a WHERE condition: it would affect " +
+                "EVERY row of the table. Add .Where(...) — and check that a conditional .Where(...) actually " +
+                "ran — or call .AllRows() if the whole table really is the target.");
+        }
+
+        if (_whereParts.Count > 0 && _allRows)
+        {
+            throw new InvalidOperationException(
+                $"{verb} for '{typeof(T).Name}' has both .AllRows() and a WHERE condition. They contradict " +
+                "each other, and guessing which one was meant is how rows get lost — remove one.");
+        }
+    }
 
     private void AppendWhere(StringBuilder sb, List<object> allParams)
     {
@@ -186,6 +226,12 @@ public sealed partial class SqliteQueryBuilder<T> where T : class, new()
         if (_limit.HasValue)
         {
             sb.Append(" LIMIT ").Append(_limit.Value);
+        }
+        else if (_offset.HasValue)
+        {
+            // SQLite has no bare OFFSET: the grammar is LIMIT n [OFFSET m], so .Offset() without .Limit()
+            // was a syntax error. A negative LIMIT is SQLite's documented spelling of "no upper bound".
+            sb.Append(" LIMIT -1");
         }
 
         if (_offset.HasValue)

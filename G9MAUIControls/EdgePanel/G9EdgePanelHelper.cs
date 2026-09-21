@@ -17,7 +17,10 @@ public static class G9EdgePanelHelper
     private static ILogger? Logger =>
         G9ServiceProvider.GetServiceNullable<ILoggerFactory>()?.CreateLogger("G9EdgePanelHelper");
 
-    private static G9EdgePanel? _activePanel;
+    // Weak on purpose. A strong static reference kept the panel — and, through its Parent chain, the
+    // page it was mounted on — alive after that page was torn down without Dismiss() being called.
+    // While the panel is mounted its parent layout holds it strongly, so weak loses nothing.
+    private static WeakReference<G9EdgePanel>? _activePanelRef;
 
     /// <summary>
     ///     Attaches an edge peek panel containing a custom <see cref="View" /> to the current page.
@@ -62,7 +65,7 @@ public static class G9EdgePanelHelper
     /// </summary>
     public static void Dismiss()
     {
-        if (_activePanel is null) return;
+        if (ActivePanel is null) return;
 
         DetachActive();
     }
@@ -70,7 +73,43 @@ public static class G9EdgePanelHelper
     /// <summary>
     ///     Returns the currently active <see cref="G9EdgePanel" />, if any.
     /// </summary>
-    public static G9EdgePanel? ActivePanel => _activePanel;
+    public static G9EdgePanel? ActivePanel
+    {
+        get => _activePanelRef is not null && _activePanelRef.TryGetTarget(out var panel) ? panel : null;
+        private set => _activePanelRef = value is null ? null : new WeakReference<G9EdgePanel>(value);
+    }
+
+    /// <summary>
+    ///     Hardware / system back for the helper-managed panel: closes it when it is open and reports
+    ///     whether the press was consumed.
+    ///     <para>
+    ///         The suite has no back dispatcher of its own (back arrives at a platform activity the
+    ///         library cannot see), so the HOST puts this in its back chain — typically after popups and
+    ///         bottom sheets and before the page's own in-app back. Without it an open panel has no
+    ///         hardware-back path at all. Call on the main thread.
+    ///     </para>
+    /// </summary>
+    /// <returns><c>true</c> when an open panel was asked to close; otherwise <c>false</c>.</returns>
+    public static bool HandleHardwareBackPressed()
+    {
+        // Mounted and attached, not merely not-yet-collected: a panel whose page has gone must not
+        // swallow a back press for something the user cannot see.
+        if (ActivePanel is not { Parent: not null, Handler: not null } panel)
+        {
+            return false;
+        }
+
+        return panel.HandleHardwareBackPressed();
+    }
+
+    /// <summary>Called by a panel whose handler is being torn down, so the slot never outlives it.</summary>
+    internal static void ReleaseIfActive(G9EdgePanel panel)
+    {
+        if (ReferenceEquals(ActivePanel, panel))
+        {
+            ActivePanel = null;
+        }
+    }
 
     #region Internal
 
@@ -150,12 +189,12 @@ public static class G9EdgePanelHelper
     private static void Attach(Layout host, G9EdgePanel panel, bool autoOpen)
     {
         // Detach any previously active panel before adding the new one.
-        if (_activePanel is not null)
+        if (ActivePanel is { } previous)
         {
-            DetachPanel(_activePanel);
+            DetachPanel(previous);
         }
 
-        _activePanel = panel;
+        ActivePanel = panel;
         PrepareLayoutSlot(host, panel);
         panel.IsVisible = true;
 
@@ -172,7 +211,7 @@ public static class G9EdgePanelHelper
 
         void OpenOnce()
         {
-            if (opened || !ReferenceEquals(_activePanel, panel))
+            if (opened || !ReferenceEquals(ActivePanel, panel))
             {
                 return;
             }
@@ -217,12 +256,11 @@ public static class G9EdgePanelHelper
 
     private static void DetachActive()
     {
-        if (_activePanel is null)
+        if (ActivePanel is not { } panel)
         {
             return;
         }
 
-        var panel = _activePanel;
         if (panel.IsOpen)
         {
             // Animate the close, then detach when finished.
@@ -276,9 +314,9 @@ public static class G9EdgePanelHelper
     {
         void Detach()
         {
-            if (ReferenceEquals(_activePanel, panel))
+            if (ReferenceEquals(ActivePanel, panel))
             {
-                _activePanel = null;
+                ActivePanel = null;
             }
 
             if (panel.Parent is Layout parent)

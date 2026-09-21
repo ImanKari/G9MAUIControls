@@ -1,6 +1,5 @@
 using G9MAUIControls.Controls;
 using G9MAUIControls.Helpers;
-using CommunityToolkit.Mvvm.Input;
 using System.Windows.Input;
 
 namespace G9MAUIControls.Controls;
@@ -19,7 +18,7 @@ namespace G9MAUIControls.Controls;
 ///         <see cref="G9SafeIconButton" /> instead.
 ///     </para>
 /// </summary>
-public class G9SafeButton : G9Button
+public class G9SafeButton : G9Button, IG9SafeExecutionHost
 {
     public static readonly BindableProperty ButtonTypeProperty =
         BindableProperty.Create(
@@ -123,15 +122,17 @@ public class G9SafeButton : G9Button
             typeof(G9SafeButton),
             TimeSpan.Zero);
 
-    private bool _isExecuting;
-    private bool _isRoutingLegacyCommand;
+    // Throttle / busy / CanExecute / Command→SafeCommand routing. Shared with G9SafeIconButton.
+    private readonly G9SafeExecution _safe;
     private bool _isMirroringBackground;
-    private bool _wasEnabledBeforeExecution = true;
 
     public G9SafeButton()
     {
-        // G9Button raises Clicked on tap (before running its own Command, which we
-        // null out via legacy routing) — that's our entry point for safe execution.
+        _safe = new G9SafeExecution(this);
+
+        // G9Button raises Clicked on tap — that's our entry point for safe execution. The base
+        // class's own direct Command run is switched off below (ExecutesCommandOnTap), so a
+        // plain Command="{Binding …}" goes through the safe runner exactly once.
         Clicked += OnG9SafeButtonClicked;
     }
 
@@ -243,18 +244,15 @@ public class G9SafeButton : G9Button
     {
         base.OnPropertyChanged(propertyName ?? string.Empty);
 
-        if (_isRoutingLegacyCommand)
-        {
-            return;
-        }
-
         switch (propertyName)
         {
+            // Legacy routing: a plain Command / CommandParameter is run through the safe layer.
+            // It is READ when needed, never copied into SafeCommand and never cleared, so the
+            // consumer's bindings on both stay alive (see G9SafeExecution). The null-conditional
+            // covers property writes made by the base constructor, before _safe exists.
             case nameof(Command):
-                RouteLegacyCommandBinding();
-                break;
             case nameof(CommandParameter):
-                RouteLegacyCommandParameter();
+                _safe?.OnCommandSourceChanged();
                 break;
             case nameof(BackgroundColor):
             case nameof(Background):
@@ -328,22 +326,10 @@ public class G9SafeButton : G9Button
 
     private static void OnSafeCommandPropertyChanged(BindableObject bindable, object? oldValue, object? newValue)
     {
-        if (bindable is not G9SafeButton button)
+        if (bindable is G9SafeButton button)
         {
-            return;
+            button._safe.OnCommandSourceChanged();
         }
-
-        if (oldValue is ICommand oldCommand)
-        {
-            oldCommand.CanExecuteChanged -= button.OnBoundCommandCanExecuteChanged;
-        }
-
-        if (newValue is ICommand newCommand)
-        {
-            newCommand.CanExecuteChanged += button.OnBoundCommandCanExecuteChanged;
-        }
-
-        button.UpdateIsEnabledFromCommand();
     }
 
     private static void OnSafeCommandParameterPropertyChanged(BindableObject bindable, object? oldValue,
@@ -351,187 +337,52 @@ public class G9SafeButton : G9Button
     {
         if (bindable is G9SafeButton button)
         {
-            button.UpdateIsEnabledFromCommand();
+            button._safe.OnCommandSourceChanged();
         }
     }
 
-    private void OnBoundCommandCanExecuteChanged(object? sender, EventArgs e)
+    /// <inheritdoc />
+    private protected override bool IsInteractionBlocked => _safe.IsInteractionBlocked;
+
+    /// <inheritdoc />
+    /// <remarks>Always false: the command is run by the safe layer from <c>Clicked</c>, never directly.</remarks>
+    private protected override bool ExecutesCommandOnTap => false;
+
+    /// <inheritdoc />
+    protected override void OnAttachedToLiveTree()
     {
-        UpdateIsEnabledFromCommand();
+        base.OnAttachedToLiveTree();
+        _safe.Attach();
     }
 
-    private void UpdateIsEnabledFromCommand()
+    /// <inheritdoc />
+    protected override void OnDetachedFromLiveTree()
     {
-        if (SafeCommand is null)
-        {
-            return;
-        }
-
-        if (_isExecuting && DisableWhileLoading)
-        {
-            return;
-        }
-
-        if (IsLoading && DisableWhileLoading)
-        {
-            return;
-        }
-
-        var canRun = SafeCommand.CanExecute(SafeCommandParameter);
-        if (IsEnabled != canRun)
-        {
-            IsEnabled = canRun;
-        }
-    }
-
-    private void RouteLegacyCommandBinding()
-    {
-        if (Command is null)
-        {
-            return;
-        }
-
-        _isRoutingLegacyCommand = true;
-        try
-        {
-            if (SafeCommand is null)
-            {
-                SafeCommand = Command;
-            }
-
-            if (SafeCommandParameter is null && CommandParameter is not null)
-            {
-                SafeCommandParameter = CommandParameter;
-            }
-
-            Command = null!;
-            CommandParameter = null!;
-        }
-        finally
-        {
-            _isRoutingLegacyCommand = false;
-        }
-    }
-
-    private void RouteLegacyCommandParameter()
-    {
-        if (CommandParameter is null || SafeCommandParameter is not null)
-        {
-            return;
-        }
-
-        _isRoutingLegacyCommand = true;
-        try
-        {
-            SafeCommandParameter = CommandParameter;
-            CommandParameter = null!;
-        }
-        finally
-        {
-            _isRoutingLegacyCommand = false;
-        }
+        _safe.Detach();
+        base.OnDetachedFromLiveTree();
     }
 
     private async void OnG9SafeButtonClicked(object? sender, EventArgs e)
     {
-        if (!EnableSafeExecution || _isExecuting)
-        {
-            return;
-        }
-
-        if (SafeCommand is null && SafeClickedCallbackAsync is null && SafeClickedAsync is null)
-        {
-            return;
-        }
-
-        _isExecuting = true;
-
-        try
-        {
-            await G9SafeCommand.RunAsync(
-                _ => ExecuteSafeActionAsync(),
-                BuildSafeCommandOptions());
-        }
-        finally
-        {
-            _isExecuting = false;
-            UpdateIsEnabledFromCommand();
-        }
-    }
-
-    private G9SafeCommandOptions BuildSafeCommandOptions()
-    {
-        return new G9SafeCommandOptions
-        {
-            Source = Source ?? nameof(G9SafeButton),
-            ErrorMessage = ErrorMessage,
-            ErrorTitle = ErrorTitle,
-            ShowErrorG9Popup = ShowErrorG9Popup,
-            EnableThrottle = EnableThrottle,
-            ThrottleKey = string.IsNullOrWhiteSpace(ThrottleKey)
-                ? $"{nameof(G9SafeButton)}:{GetHashCode()}"
-                : ThrottleKey,
-            ThrottleInterval = ThrottleInterval,
-            BusyDelay = BusyDelay,
-            SetBusy = SetLoadingState
-        };
-    }
-
-    private async Task ExecuteSafeActionAsync()
-    {
-        var parameter = SafeCommandParameter;
-
-        if (SafeClickedCallbackAsync is not null)
-        {
-            await SafeClickedCallbackAsync(parameter);
-        }
-
-        if (SafeClickedAsync is not null)
-        {
-            foreach (var handler in SafeClickedAsync.GetInvocationList().Cast<Func<object?, Task>>())
-            {
-                await handler(parameter);
-            }
-        }
-
-        if (SafeCommand is null || !SafeCommand.CanExecute(parameter))
-        {
-            return;
-        }
-
-        if (SafeCommand is IAsyncRelayCommand asyncRelayCommand)
-        {
-            await asyncRelayCommand.ExecuteAsync(parameter);
-            return;
-        }
-
-        SafeCommand.Execute(parameter);
+        await _safe.HandleClickAsync();
     }
 
     /// <summary>
     ///     Toggles the base loading spinner and the disable-while-loading guard. Wired into
     ///     <see cref="G9SafeCommandOptions.SetBusy" /> so it runs on operation start/finish.
+    ///     <para>
+    ///         The guard is an internal flag — <see cref="VisualElement.IsEnabled" /> is never
+    ///         written, so a consumer's <c>IsEnabled="{Binding …}"</c> keeps working.
+    ///     </para>
     /// </summary>
-    public void SetLoadingState(bool isLoading)
-    {
-        if (ShowSpinnerWhileLoading)
-        {
-            IsLoading = isLoading;
-        }
+    public void SetLoadingState(bool isLoading) => _safe.SetLoadingState(isLoading);
 
-        if (!DisableWhileLoading)
-        {
-            return;
-        }
+    string IG9SafeExecutionHost.SafeExecutionName => nameof(G9SafeButton);
 
-        if (isLoading)
-        {
-            _wasEnabledBeforeExecution = IsEnabled;
-            IsEnabled = false;
-        }
-        else
-        {
-            IsEnabled = _wasEnabledBeforeExecution;
-        }
-    }
+    IReadOnlyList<Func<object?, Task>> IG9SafeExecutionHost.GetSafeClickedHandlers() =>
+        SafeClickedAsync is null
+            ? []
+            : [.. SafeClickedAsync.GetInvocationList().Cast<Func<object?, Task>>()];
+
+    void IG9SafeExecutionHost.OnInteractionBlockChanged() => RequestVisualUpdate();
 }

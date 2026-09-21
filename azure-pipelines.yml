@@ -1,5 +1,5 @@
 # ==============================================================================================
-#  G9MAUIControls — build, pack, mirror to GitHub, publish to nuget.org
+#  G9MAUIControls — test, build, pack, mirror to GitHub, publish to nuget.org
 # ==============================================================================================
 #
 #  Requires three SECRET pipeline variables (Pipeline → Edit → Variables, "Keep this value secret"):
@@ -23,6 +23,7 @@
 #  without a bump republishes nothing — --skip-duplicate makes that a no-op rather than a failure.
 
 trigger:
+  batch: true   # one run at a time: two pushes must never interleave packages of one version
   branches:
     include:
       - main
@@ -153,6 +154,22 @@ steps:
       git remote -v
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────
+# Tests BEFORE pack, so a red test means nothing is packed, mirrored or published. This is the pure
+# logic project only (plain net10.0, source-linked helpers, no workload needed). The SQLite
+# SQL-generation tests are deliberately NOT run here yet: they build a net10.0-windows test host
+# and have only ever been run on a developer machine, never on a hosted agent — an unproven step
+# in front of a publish is a way to block a release for the wrong reason. Add them once proven.
+- task: PowerShell@2
+  displayName: 'Run unit tests'
+  inputs:
+    targetType: 'inline'
+    workingDirectory: '$(Build.SourcesDirectory)'
+    script: |
+      $ErrorActionPreference = 'Continue'   # see "Add github remote"; $LASTEXITCODE is the signal
+      dotnet test "tests/G9MAUIControls.Tests/G9MAUIControls.Tests.csproj" -c $(buildConfiguration) --nologo
+      if ($LASTEXITCODE -ne 0) { throw "unit tests failed ($LASTEXITCODE)" }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
 # The five libraries only. The Gallery is deliberately not built here: it is an application, and
 # a net10.0-ios APP bundle cannot be produced on a Windows agent. It stays a local verification
 # tool. Restoring/building/packing per project keeps a failure attributable to one package.
@@ -194,8 +211,15 @@ steps:
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────
 # Mirror BEFORE publishing, so the commit the packages' SourceLink points at is already public.
+#
+# The condition on this step and on the push below is the ONLY thing that keeps a release on main.
+# `trigger:` and `pr: none` govern which runs start AUTOMATICALLY; they say nothing about a run
+# queued by hand (or by the API) against any other branch, which would otherwise reach nuget.org —
+# and a NuGet version, once pushed, can be unlisted but never replaced. Everything above still
+# runs on such a branch, so it remains a useful "does it build, test and pack" check.
 - task: PowerShell@2
   displayName: 'Mirror Azure DevOps repo to GitHub'
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
   env:
     GITHUB_PAT: $(Github.PAT)
     AZDO_PAT: $(AzureDevOps.PAT)
@@ -258,27 +282,37 @@ steps:
 # ──────────────────────────────────────────────────────────────────────────────────────────────
 - task: PowerShell@2
   displayName: 'Publish packages to nuget.org'
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
   env:
     NUGET_KEY: $(NuGetApiKey)
   inputs:
     targetType: 'inline'
     script: |
       $ErrorActionPreference = 'Continue'   # dotnet nuget push reports on stderr
-      $failures = @()
 
       # .snupkg is pushed by nuget alongside its .nupkg automatically, so only glob .nupkg —
       # pushing symbols explicitly double-pushes and reports a spurious conflict.
-      foreach ($pkg in Get-ChildItem "$(packageOutput)" -Filter *.nupkg) {
+      $all = @(Get-ChildItem "$(packageOutput)" -Filter *.nupkg)
+
+      # CORE FIRST, and STOP on the first failure. Three of the four satellites depend on the core at
+      # this same version, so a satellite on nuget.org without its core is one nobody can restore.
+      # The core is the one file whose name goes straight from the id to the version digits
+      # (G9MAUIControls.1.2.3.nupkg); every satellite has a capability segment in between.
+      $core = @($all | Where-Object { $_.Name -match '^G9MAUIControls\.\d' })
+      if ($core.Count -ne 1) { throw "Expected exactly one core package G9MAUIControls.<version>.nupkg, found $($core.Count) — publishing nothing." }
+      $ordered = $core + @($all | Where-Object { $_.Name -notmatch '^G9MAUIControls\.\d' } | Sort-Object Name)
+
+      foreach ($pkg in $ordered) {
           Write-Host "── $($pkg.Name)"
           dotnet nuget push $pkg.FullName `
               --api-key $env:NUGET_KEY `
               --source https://api.nuget.org/v3/index.json `
               --skip-duplicate
-          if ($LASTEXITCODE -ne 0) { $failures += $pkg.Name }
-      }
-
-      if ($failures.Count) {
-          $failures | ForEach-Object { Write-Host "##vso[task.logissue type=error]Push failed: $_" }
-          throw "$($failures.Count) package(s) failed to publish."
+          if ($LASTEXITCODE -ne 0) {
+              # Stopping is safe to re-run: --skip-duplicate turns what did publish into a no-op,
+              # so the next run resumes at the package that failed.
+              Write-Host "##vso[task.logissue type=error]Push failed: $($pkg.Name)"
+              throw "Push failed for $($pkg.Name) — stopped; no package after it was pushed."
+          }
       }
       Write-Host "All packages published (or already present — --skip-duplicate)."

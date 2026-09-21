@@ -861,7 +861,10 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         _helperLabel.IsVisible = !string.IsNullOrWhiteSpace(_helperLabel.Text);
 
         _counterLabel.IsVisible = ShowCharacterCounter && MaxLength > 0;
-        _counterLabel.Text = MaxLength > 0 ? $"{(GetTextLength()):0} / {MaxLength}" : string.Empty;
+        // Formatted with the library culture, like every other culture-dependent string here.
+        _counterLabel.Text = MaxLength > 0
+            ? string.Create(G9MAUIControls.Localization.G9Culture.CurrentCulture, $"{GetTextLength():0} / {MaxLength}")
+            : string.Empty;
         _counterLabel.TextColor = palette.TextTertiary;
         if (!string.Equals(_counterLabel.FontFamily, culturalFont, StringComparison.Ordinal))
         {
@@ -1645,17 +1648,24 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
             drawable.Progress = (float)v;
             ripple.Invalidate();
         }, 0, 1);
-        rippleAnim.Commit(host, "AppFieldIconRipple", 16, G9Metrics.RippleDurationMs, Easing.CubicOut, (_, _) =>
+        rippleAnim.Commit(host, "AppFieldIconRipple", 16, G9Metrics.RippleDurationMs, Easing.CubicOut, (_, cancelled) =>
         {
-            ripple.Opacity = 0;
+            // Committing under the same name aborts the previous ripple, whose callback then runs
+            // AFTER the `Opacity = 1` above. Hiding the view unconditionally made the ripple of
+            // every second tap within the ripple's duration invisible (G9Controls.md §12 rule 6).
+            if (!cancelled) ripple.Opacity = 0;
         });
 
         // Scale dip animation in parallel. Lighter than the previous 0.78 dip — feels
         // like a tactile press without the icon visibly "punching in" too far.
         host.AbortAnimation("AppFieldIconScale");
         var scaleAnim = new Animation(v => host.Scale = v, host.Scale, G9Metrics.IconPressScaleTo, Easing.CubicIn);
-        scaleAnim.Commit(host, "AppFieldIconScale", 16, G9Metrics.PressDurationMs, finished: (_, _) =>
+        scaleAnim.Commit(host, "AppFieldIconScale", 16, G9Metrics.PressDurationMs, finished: (_, cancelled) =>
         {
+            // Aborted by a newer press: that press runs its own dip + release, so starting a
+            // release here would only fight it.
+            if (cancelled) return;
+
             var release = new Animation(v => host.Scale = v, host.Scale, 1.0, Easing.SpringOut);
             release.Commit(host, "AppFieldIconScale", 16, G9Metrics.ReleaseDurationMs);
         });

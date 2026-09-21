@@ -28,7 +28,8 @@ text would be visually heavy.
 | `BadgeText` | `string?` | null | Text shown in the badge (e.g. "3") |
 | `ShowBadgeDot` | `bool` | false | Show a small dot badge (no text) |
 | `BadgeColor` | `Color?` | null (→ Error) | Badge background color |
-| `MirrorBadgeTextInRtl` | `bool` | true | When true the count badge text flows RTL in RTL mode ("99+" → "+99") |
+| `MirrorBadgeTextInRtl` | `bool` | true | When true the count badge text flows RTL in RTL mode ("99+" → "+99"). The default is declared on the `[AutoBindable(DefaultValue = "true")]` attribute — the generator ignores field initializers, so before that fix the real default was `false`. |
+| `AccessibilityText` | `string?` | `null` | Accessible name announced by screen readers. An icon-only button has no text of its own, so set this (already localized: "Filter", "Refresh"). The control adds the state itself: "Loading…" while `IsLoading`, otherwise the `BadgeText`. An explicit `SemanticProperties.Description` on the control always wins. |
 | `Command` | `ICommand?` | null | Executed on tap |
 | `CommandParameter` | `object?` | null | Passed to Command |
 

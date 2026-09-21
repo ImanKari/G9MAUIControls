@@ -20,6 +20,15 @@ public partial class G9Palette : ObservableObject
     private bool _batchUpdateInProgress;
 
     /// <summary>
+    ///     Open <see cref="BeginBatchUpdate" /> calls not yet closed. Batches nest —
+    ///     <see cref="Apply" /> batches itself and may be called by a consumer that already opened one,
+    ///     and <see cref="G9Theme" /> holds one open across the whole theme switch — and only the
+    ///     outermost <see cref="EndBatchUpdate" /> may flush. With a plain flag the inner pair closed the
+    ///     outer batch early and discarded the names it had collected.
+    /// </summary>
+    private int _batchDepth;
+
+    /// <summary>
     ///     Names of properties whose setter ran while a batch was open. Captured during
     ///     batching so <see cref="EndBatchUpdate" /> can fire targeted
     ///     <c>PropertyChanged</c> events — much cheaper than a single
@@ -184,6 +193,12 @@ public partial class G9Palette : ObservableObject
     /// </summary>
     public void BeginBatchUpdate()
     {
+        if (_batchDepth++ > 0)
+        {
+            // Nested: the outer batch is already collecting, and owns the flush.
+            return;
+        }
+
         _batchUpdateInProgress = true;
         _batchedPropertyNames.Clear();
     }
@@ -196,11 +211,30 @@ public partial class G9Palette : ObservableObject
     ///     a single empty event causes MAUI's binding pipeline to re-resolve every
     ///     binding listening on this object exactly once, while N targeted events
     ///     would multiply that fan-out by N.
+    ///     <para>
+    ///         Nothing is raised when no colour actually changed during the batch (re-applying the theme
+    ///         that is already active): the generated setters only report real changes, and an
+    ///         "everything changed" event for nothing still costs every subscriber a full re-scan.
+    ///     </para>
     /// </summary>
     public void EndBatchUpdate()
     {
+        if (_batchDepth > 0 && --_batchDepth > 0)
+        {
+            // An inner pair closing; the outermost EndBatchUpdate flushes.
+            return;
+        }
+
+        var anyChanged = _batchedPropertyNames.Count > 0;
+
         _batchUpdateInProgress = false;
         _batchedPropertyNames.Clear();
+
+        if (!anyChanged)
+        {
+            return;
+        }
+
         // Empty / null property name = "everything changed" per the INotifyPropertyChanged
         // contract. Each binding observing this object will re-read its target property
         // exactly once.
@@ -221,7 +255,26 @@ public partial class G9Palette : ObservableObject
         base.OnPropertyChanged(e);
     }
 
+    /// <summary>
+    ///     Replaces every colour from <paramref name="v" />, as ONE batch: subscribers get a single
+    ///     "everything changed" notification instead of one per colour (95 of them, each of which made
+    ///     every <see cref="G9ColorExtension" /> subscription re-scan). Safe to call inside a batch the
+    ///     caller opened itself — batches nest.
+    /// </summary>
     public void Apply(G9PaletteValues v)
+    {
+        BeginBatchUpdate();
+        try
+        {
+            ApplyCore(v);
+        }
+        finally
+        {
+            EndBatchUpdate();
+        }
+    }
+
+    private void ApplyCore(G9PaletteValues v)
     {
         // PRIMARY
         Primary = v.Primary;

@@ -26,6 +26,22 @@ public partial class G9Button : G9ControlBase
     private readonly GraphicsView _rippleView;
     private readonly G9RippleDrawable _rippleDrawable = new();
 
+    // Stable paint state (G9Controls.md §12). The stroke brush lives as long as the button and
+    // only its Color is mutated; the background brush and the two icon views are rebuilt only
+    // when what they show actually changes, not on every apply pass.
+    private readonly SolidColorBrush _strokeBrush = new(Colors.Transparent);
+    private Color? _backgroundBrushColor;
+    private bool _backgroundBrushIsGradient;
+    private G9IconSlotSignature _leadingIconSignature;
+    private G9IconSlotSignature _trailingIconSignature;
+
+    // What ApplySize last wrote on the consumer-facing layout properties. A preset may only ever
+    // overwrite its OWN earlier write — never a value the consumer set.
+    private double _presetHeightRequest = double.NaN;
+    private double _presetMinimumHeightRequest = double.NaN;
+    private bool _heroFillApplied;
+    private LayoutOptions _horizontalOptionsBeforeHero;
+
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _text;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _loadingText;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9ButtonVariant _variant;
@@ -49,7 +65,14 @@ public partial class G9Button : G9ControlBase
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _textTruncation;
 
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _iconSize;
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _fontSize;
+
+    /// <summary>
+    ///     Optional label font size OVERRIDE. Left unset, the label takes the <see cref="Size" />
+    ///     preset's font (12 / 14 / 15 / 16). The property default mirrors the Medium preset, so
+    ///     reading it on an untouched button still returns 14.
+    /// </summary>
+    [AutoBindable(DefaultValue = "G9Metrics.ButtonFontMedium", OnChanged = nameof(OnVisualChanged))]
+    private double _fontSize;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private FontAttributes _fontAttributes;
 
     /// <summary>
@@ -131,7 +154,9 @@ public partial class G9Button : G9ControlBase
         _frame = new Border
         {
             StrokeThickness = 0,
+            // The radius is a constant, so the shape is built exactly once, here.
             StrokeShape = G9Colors.Round(G9Metrics.RadiusMd),
+            Stroke = _strokeBrush,
             Content = _innerGrid
         };
 
@@ -153,7 +178,10 @@ public partial class G9Button : G9ControlBase
         Variant = G9ButtonVariant.Primary;
         Size = G9ControlSize.Medium;
         IconSize = G9Metrics.InputIconSize;
-        FontSize = G9Metrics.ButtonFontMedium;
+        // FontSize is deliberately NOT assigned here. Assigning it made the property "set" on
+        // every button, which is exactly what defeated the Size presets: ApplySize could not
+        // tell a consumer's FontSize from this constructor's, so the 12 / 15 / 16 preset fonts
+        // never applied. See ResolveFontSize.
         FontAttributes = FontAttributes.Bold;
         TextTruncation = true;
     }
@@ -161,6 +189,24 @@ public partial class G9Button : G9ControlBase
     public event EventHandler? Clicked;
 
     private void OnVisualChanged() => RequestVisualUpdate();
+
+    /// <summary>
+    ///     Subclass hook: <c>true</c> while the button must refuse taps and paint disabled for a
+    ///     reason of its own (busy, command cannot execute). Exists so <see cref="G9SafeButton" />
+    ///     never has to write <see cref="VisualElement.IsEnabled" />, which belongs to the consumer
+    ///     — writing it replaced their <c>IsEnabled="{Binding …}"</c>.
+    /// </summary>
+    private protected virtual bool IsInteractionBlocked => false;
+
+    /// <summary>
+    ///     Subclass hook: whether a tap runs <see cref="Command" /> directly.
+    ///     <see cref="G9SafeButton" /> turns it off because it runs the same command through the
+    ///     safe layer from <see cref="Clicked" />; leaving both on would execute it twice.
+    /// </summary>
+    private protected virtual bool ExecutesCommandOnTap => true;
+
+    /// <summary>The consumer's <see cref="VisualElement.IsEnabled" /> AND the button's own veto.</summary>
+    private bool IsEffectivelyEnabled => IsEnabled && !IsInteractionBlocked;
 
     /// <summary>
     ///     Resolve the effective button colors, honoring the <see cref="BaseBackgroundColor" />
@@ -211,9 +257,8 @@ public partial class G9Button : G9ControlBase
     {
         if (Handler is null) return;
         var colors = ResolveColors();
-        var enabled = IsEnabled && !IsLoading;
-        _frame.Stroke = new SolidColorBrush(colors.Stroke);
-        _frame.Background = G9Colors.BuildSolidOrGradient(colors.Background, colors.UsesGradient && enabled);
+        var enabled = IsEffectivelyEnabled && !IsLoading;
+        ApplyFrameBrushes(colors, enabled);
         var textColor = colors.Text;
         if (_textLabel.TextColor != textColor) _textLabel.TextColor = textColor;
         if (_loadingIndicator.Color != textColor) _loadingIndicator.Color = textColor;
@@ -230,22 +275,22 @@ public partial class G9Button : G9ControlBase
     protected override void OnApplyVisuals()
     {
         var colors = ResolveColors();
-        var enabled = IsEnabled && !IsLoading;
+        var effectivelyEnabled = IsEffectivelyEnabled;
+        var enabled = effectivelyEnabled && !IsLoading;
         var hasCustomBg = BaseBackgroundColor is not null;
         var isOutlineLike = !hasCustomBg && Variant is G9ButtonVariant.Outline or G9ButtonVariant.Text;
 
-        _frame.StrokeShape = G9Colors.Round(G9Metrics.RadiusMd);
         // Custom-background buttons get a hairline border from the derived stroke (matches
         // the legacy G9SafeButton look); variant buttons keep the outline/tonal stroke rule.
-        _frame.StrokeThickness = hasCustomBg
+        var strokeThickness = hasCustomBg
             ? (colors.Stroke.Alpha > 0f ? 1 : 0)
             : (isOutlineLike || Variant is G9ButtonVariant.Tonal ? 1.5 : 0);
-        _frame.Stroke = new SolidColorBrush(colors.Stroke);
-        _frame.Background = G9Colors.BuildSolidOrGradient(colors.Background, colors.UsesGradient && enabled);
+        if (_frame.StrokeThickness != strokeThickness) _frame.StrokeThickness = strokeThickness;
+        ApplyFrameBrushes(colors, enabled);
 
         // G9Button paints NO drop shadow, ever — the app is shadow-free by policy. Elevation is
         // expressed with the frame's Background / Stroke only. See G9Controls.md → "No shadows".
-        Opacity = !IsEnabled ? 0.38 : IsLoading ? 0.70 : 1;
+        Opacity = !effectivelyEnabled ? 0.38 : IsLoading ? 0.70 : 1;
 
         ApplySize();
 
@@ -262,7 +307,7 @@ public partial class G9Button : G9ControlBase
             : Text;
         _textLabel.Text = displayText ?? string.Empty;
         _textLabel.TextColor = textColor;
-        _textLabel.FontSize = FontSize <= 0 ? G9Metrics.ButtonFontMedium : FontSize;
+        _textLabel.FontSize = ResolveFontSize();
         _textLabel.FontAttributes = FontAttributes;
         // Every other G9 text control (G9Editor, G9TextEntry, G9PinEntry,
         // G9OutlinedFieldBase) explicitly resolves the culture-appropriate face via
@@ -281,17 +326,18 @@ public partial class G9Button : G9ControlBase
         _loadingIndicator.WidthRequest = IconSize;
         _loadingIndicator.HeightRequest = IconSize;
 
-        var leadingVisible = !IsLoading && G9IconFactory.HasIcon(LeadingEmoji, LeadingIcon, LeadingImagePath, LeadingImageSource);
-        _leadingHost.Content = leadingVisible
-            ? G9IconFactory.Create(LeadingEmoji, LeadingIcon, LeadingImagePath, LeadingImageSource, textColor, IconSize)
-            : null;
-        _leadingHost.IsVisible = leadingVisible;
+        // Icons are built once per distinct icon and merely HIDDEN while loading — never torn
+        // down and rebuilt around the spinner, which re-decoded bitmaps and flashed glyphs on
+        // every press (G9Controls.md §12a).
+        var hasLeading = G9IconSlot.Apply(
+            _leadingHost, ref _leadingIconSignature,
+            LeadingEmoji, LeadingIcon, LeadingImagePath, LeadingImageSource, textColor, IconSize);
+        _leadingHost.IsVisible = hasLeading && !IsLoading;
 
-        var trailingVisible = !IsLoading && G9IconFactory.HasIcon(TrailingEmoji, TrailingIcon, TrailingImagePath, TrailingImageSource);
-        _trailingHost.Content = trailingVisible
-            ? G9IconFactory.Create(TrailingEmoji, TrailingIcon, TrailingImagePath, TrailingImageSource, textColor, IconSize)
-            : null;
-        _trailingHost.IsVisible = trailingVisible;
+        var hasTrailing = G9IconSlot.Apply(
+            _trailingHost, ref _trailingIconSignature,
+            TrailingEmoji, TrailingIcon, TrailingImagePath, TrailingImageSource, textColor, IconSize);
+        _trailingHost.IsVisible = hasTrailing && !IsLoading;
 
         // Natural (uncapped) width of the current text, cached HERE — a visual-property change,
         // never inside a layout pass. UpdateTextMaxWidth consumes the cache so the layout hook
@@ -406,12 +452,12 @@ public partial class G9Button : G9ControlBase
 
     private void ApplySize()
     {
-        var (height, padding, font) = Size switch
+        var (height, padding) = Size switch
         {
-            G9ControlSize.Small => (G9Metrics.ButtonHeightSmall, new Thickness(12, 8), G9Metrics.ButtonFontSmall),
-            G9ControlSize.Large => (G9Metrics.ButtonHeightLarge, new Thickness(20, 14), G9Metrics.ButtonFontLarge),
-            G9ControlSize.Hero => (G9Metrics.ButtonHeightHero, new Thickness(16), G9Metrics.ButtonFontHero),
-            _ => (G9Metrics.ButtonHeightMedium, new Thickness(16, 12), G9Metrics.ButtonFontMedium)
+            G9ControlSize.Small => (G9Metrics.ButtonHeightSmall, new Thickness(12, 8)),
+            G9ControlSize.Large => (G9Metrics.ButtonHeightLarge, new Thickness(20, 14)),
+            G9ControlSize.Hero => (G9Metrics.ButtonHeightHero, new Thickness(16)),
+            _ => (G9Metrics.ButtonHeightMedium, new Thickness(16, 12))
         };
 
         // Breathing room around the text/icon row lives on the row's margin instead of
@@ -424,7 +470,7 @@ public partial class G9Button : G9ControlBase
         // breathing room onto the row keeps the ripple measure rect equal to the full
         // Border interior, so the animation fills the entire button surface.
         _frame.Padding = 0;
-        _row.Margin = padding;
+        if (_row.Margin != padding) _row.Margin = padding;
 
         // Respect an explicit consumer HeightRequest/MinimumHeightRequest (MAUI's unset default
         // is -1) instead of always clobbering it with the Size preset. This pass reruns on every
@@ -433,30 +479,92 @@ public partial class G9Button : G9ControlBase
         // a Medium-size button) back down to the 44dp Medium preset — 24dp of which is already
         // spent on the row's top/bottom margin, leaving too little room for a Bold 16sp Persian
         // label and clipping its descenders against the frame bounds.
-        if (HeightRequest <= 0)
+        //
+        // "Respect" means: write only while the property is unset OR still holds what THIS method
+        // wrote last time. The earlier `<= 0` test alone meant the first preset stuck forever —
+        // a later Size change never resized the button, because our own write looked explicit.
+        if (HeightRequest <= 0 || HeightRequest == _presetHeightRequest)
         {
-            HeightRequest = height;
+            if (HeightRequest != height) HeightRequest = height;
+            _presetHeightRequest = height;
         }
-        if (MinimumHeightRequest <= 0)
+        if (MinimumHeightRequest <= 0 || MinimumHeightRequest == _presetMinimumHeightRequest)
         {
-            MinimumHeightRequest = height;
+            if (MinimumHeightRequest != height) MinimumHeightRequest = height;
+            _presetMinimumHeightRequest = height;
         }
 
         if (Size == G9ControlSize.Hero)
         {
+            if (!_heroFillApplied)
+            {
+                _heroFillApplied = true;
+                _horizontalOptionsBeforeHero = HorizontalOptions;
+            }
             HorizontalOptions = LayoutOptions.Fill;
             _frame.HorizontalOptions = LayoutOptions.Fill;
         }
-
-        if (FontSize <= 0)
+        else if (_heroFillApplied)
         {
-            FontSize = font;
+            // Leaving Hero: undo our Fill — but only if it is still ours. A consumer who set
+            // their own alignment meanwhile keeps it. (The frame's Fill is a View's default, so
+            // there is nothing to restore there.)
+            _heroFillApplied = false;
+            if (HorizontalOptions.Alignment == LayoutAlignment.Fill)
+            {
+                HorizontalOptions = _horizontalOptionsBeforeHero;
+            }
         }
+    }
+
+    /// <summary>
+    ///     The label's font size: an explicit <see cref="FontSize" /> wins, otherwise the
+    ///     <see cref="Size" /> preset. The preset is applied to the LABEL only and is never written
+    ///     back onto <see cref="FontSize" /> — that write-back is what used to make the property
+    ///     look consumer-set and froze the font at the first preset.
+    /// </summary>
+    private double ResolveFontSize()
+    {
+        if (IsSet(FontSizeProperty) && FontSize > 0)
+        {
+            return FontSize;
+        }
+
+        return Size switch
+        {
+            G9ControlSize.Small => G9Metrics.ButtonFontSmall,
+            G9ControlSize.Large => G9Metrics.ButtonFontLarge,
+            G9ControlSize.Hero => G9Metrics.ButtonFontHero,
+            _ => G9Metrics.ButtonFontMedium
+        };
+    }
+
+    /// <summary>
+    ///     Pushes stroke and background onto the frame without churning brushes: the stroke brush
+    ///     is one instance whose colour is mutated, and the background brush is rebuilt only when
+    ///     its colour or its solid / gradient kind actually changes (disabled and loading states
+    ///     flatten the gradient, so the kind is part of the key).
+    /// </summary>
+    private void ApplyFrameBrushes(G9Visuals.ButtonVisualResult colors, bool enabled)
+    {
+        if (!Equals(_strokeBrush.Color, colors.Stroke)) _strokeBrush.Color = colors.Stroke;
+
+        var gradient = colors.UsesGradient && enabled;
+        if (_frame.Background is not null
+            && _backgroundBrushIsGradient == gradient
+            && Equals(_backgroundBrushColor, colors.Background))
+        {
+            return;
+        }
+
+        _backgroundBrushColor = colors.Background;
+        _backgroundBrushIsGradient = gradient;
+        _frame.Background = G9Colors.BuildSolidOrGradient(colors.Background, gradient);
     }
 
     private void OnTapped(object? sender, TappedEventArgs e)
     {
-        if (!IsEnabled || IsLoading) return;
+        if (!IsEffectivelyEnabled || IsLoading) return;
 
         var point = e.GetPosition(this);
         if (point.HasValue && Width > 0 && Height > 0)
@@ -482,14 +590,17 @@ public partial class G9Button : G9ControlBase
         {
             Clicked?.Invoke(this, EventArgs.Empty);
 
-            if (Command is { } cmd && cmd.CanExecute(CommandParameter))
+            if (ExecutesCommandOnTap && Command is { } cmd && cmd.CanExecute(CommandParameter))
             {
                 cmd.Execute(CommandParameter);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Swallow — UI buttons must never crash the app from a click handler.
+            // A UI button must never crash the app from a click handler — but it must not hide
+            // the failure either: a swallowed exception is a button that "does nothing" with no
+            // trace of why.
+            G9Press.ReportFailure(this, ex);
         }
 
         _ = PlayPressAnimationAsync();
@@ -497,6 +608,10 @@ public partial class G9Button : G9ControlBase
 
     private async Task PlayPressAnimationAsync()
     {
+        // Committing under the same name aborts the previous ripple, whose `finished` then runs
+        // with cancelled == true — AFTER the Opacity = 1 below. It must not touch Opacity in
+        // that case: the unconditional `Opacity = 0` hid the ripple of every second tap made
+        // within the ripple's duration.
         _rippleView.Opacity = 1;
         _rippleDrawable.Progress = 0;
         _rippleView.Invalidate();
@@ -506,7 +621,11 @@ public partial class G9Button : G9ControlBase
             _rippleDrawable.Progress = (float)v;
             _rippleView.Invalidate();
         }, 0, 1);
-        ripple.Commit(this, "AppButtonRipple", 16, G9Metrics.RippleDurationMs, Easing.CubicOut, (_, _) => _rippleView.Opacity = 0);
+        ripple.Commit(this, "AppButtonRipple", 16, G9Metrics.RippleDurationMs, Easing.CubicOut,
+            (_, cancelled) =>
+            {
+                if (!cancelled) _rippleView.Opacity = 0;
+            });
 
         try
         {
@@ -521,7 +640,7 @@ public partial class G9Button : G9ControlBase
 
     private async void OnPointerEntered(object? sender, PointerEventArgs e)
     {
-        if (!IsEnabled || IsLoading) return;
+        if (!IsEffectivelyEnabled || IsLoading) return;
 
         try
         {

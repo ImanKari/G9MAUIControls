@@ -1,4 +1,5 @@
 using G9MAUIControls.Localization;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
@@ -142,6 +143,14 @@ internal static class G9InputTypePolicy
     private static readonly Regex EmailRegex =
         new(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    // Consumer-supplied AllowedCharsPattern regexes, built once per distinct pattern. The class
+    // comment always promised this, but the Custom filter in fact constructed a new Regex on
+    // every keystroke. A null entry records a pattern that failed to parse, so a bad pattern is
+    // not re-parsed (and does not re-throw) per keystroke either. Patterns are XAML constants,
+    // so the set is tiny; the cap only guards against a consumer generating them dynamically.
+    private const int CustomPatternCacheLimit = 64;
+    private static readonly ConcurrentDictionary<string, Regex?> CustomPatternCache = new(StringComparer.Ordinal);
+
     /// <summary>
     ///     Whether values typed into a field of this type should default to
     ///     left-to-right layout — i.e. the entered text and the caret start on the
@@ -202,6 +211,18 @@ internal static class G9InputTypePolicy
     public static string SanitizeText(G9InputType inputType, string raw, string? allowedCharsPattern)
     {
         if (string.IsNullOrEmpty(raw)) return raw;
+
+        // Types that accept ASCII digits ONLY must first see Persian (U+06F0–06F9) and
+        // Arabic-Indic (U+0660–0669) digits as ASCII. Without this a Persian keyboard — or a paste
+        // of "۱۲۳" — was filtered down to an empty string with no feedback at all, even though
+        // the decimal filter right below already welcomed the Arabic decimal separator '٫'.
+        // NormalizeToAscii returns the same instance when there is nothing to map, so the
+        // "unchanged → same reference" contract above still holds. The Persian* types are left
+        // alone on purpose: they accept both digit sets as typed.
+        if (AcceptsAsciiDigitsOnly(inputType))
+        {
+            raw = G9Digits.NormalizeToAscii(raw);
+        }
 
         return inputType switch
         {
@@ -282,6 +303,16 @@ internal static class G9InputTypePolicy
     }
 
     // ── Character predicates ────────────────────────────────────────────────────
+
+    private static bool AcceptsAsciiDigitsOnly(G9InputType inputType) =>
+        inputType
+            is G9InputType.Number
+            or G9InputType.Decimal
+            or G9InputType.SignedNumber
+            or G9InputType.SignedDecimal
+            or G9InputType.Phone
+            or G9InputType.LettersAndNumbers
+            or G9InputType.LettersNumbersSpace;
 
     private static bool IsAsciiDigit(char c) => c is >= '0' and <= '9';
 
@@ -372,8 +403,10 @@ internal static class G9InputTypePolicy
     {
         // Resolve the active culture's decimal separator. Falls back to '.' when it's a
         // multi-character thing (rare). Persian users typically have '.' or '٫' depending
-        // on settings — we accept both.
-        var sep = CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator;
+        // on settings — we accept both. The culture is the LIBRARY's (G9Culture), like every
+        // other culture-dependent decision in the suite — the thread culture is only its
+        // fallback, and a host that configures the two differently means the former.
+        var sep = G9Culture.CurrentCulture.NumberFormat.NumberDecimalSeparator;
         var sepChar = sep.Length == 1 ? sep[0] : '.';
 
         var sb = new System.Text.StringBuilder(s.Length);
@@ -399,14 +432,17 @@ internal static class G9InputTypePolicy
         if (string.IsNullOrWhiteSpace(pattern)) return s;
         try
         {
-            var rx = new Regex(pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+            var rx = ResolveCustomPattern(pattern);
+            if (rx is null) return s;
+
             // Per-character filter against the same pattern. For complex multi-character
             // patterns the consumer should split into a single-character class anyway —
-            // anything else can't be applied incrementally as the user types.
+            // anything else can't be applied incrementally as the user types. The span overload
+            // matches one character without allocating a string for it.
             var sb = new System.Text.StringBuilder(s.Length);
-            foreach (var c in s)
+            for (var i = 0; i < s.Length; i++)
             {
-                if (rx.IsMatch(c.ToString())) sb.Append(c);
+                if (rx.IsMatch(s.AsSpan(i, 1))) sb.Append(s[i]);
             }
             return sb.ToString();
         }
@@ -417,5 +453,24 @@ internal static class G9InputTypePolicy
             // ValidationPattern is also invalid.
             return s;
         }
+    }
+
+    private static Regex? ResolveCustomPattern(string pattern)
+    {
+        if (CustomPatternCache.TryGetValue(pattern, out var cached)) return cached;
+
+        Regex? built;
+        try
+        {
+            built = new Regex(pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        }
+        catch (ArgumentException)
+        {
+            built = null;
+        }
+
+        if (CustomPatternCache.Count >= CustomPatternCacheLimit) CustomPatternCache.Clear();
+        CustomPatternCache[pattern] = built;
+        return built;
     }
 }

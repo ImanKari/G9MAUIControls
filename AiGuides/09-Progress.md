@@ -11,11 +11,170 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-09-08**
+Last updated: **2026-09-21**
 
 > **This list is not complete.** It jumps 1.0.3 → 1.0.13; 1.0.4 through 1.0.12 shipped without an entry
 > here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
 > drifted — read it, not this heading list, when you need to know what a version contained.
+
+## 1.1.0 — the bottom sheet is staged and measured before it opens, plus the remediation pass (2026-09-21)
+
+> **Read the honest gap FIRST.** Everything in this entry was written and **compile-verified on all four
+> TFMs, and nothing in it has been run on a device.** That is not a formality here: the headline change
+> is about what a user SEES in the first 300 ms of a sheet opening, and a green build says nothing about
+> that (rule 2 of `01-AIGuide`). The verification list at the end is the actual remaining work.
+> Decision record: `10-Decisions.md` → ADR-0022 and ADR-0023. What the remediation pass found and did
+> **not** fix: `11-EngineeringLog.md` → RSK-0003.
+
+### What changed — bottom sheet (the reason for this release)
+
+The consuming app's three complaints — a skeleton had to be shown before content, the first-open height
+was wrong so it kept a persisted memory of heights, and a resize looked bad — traced to our own open
+pipeline, not to Android:
+
+- **The first measure ran before the sheet was attached**, where a view has no handler and measures as
+  zero. It now runs after. A sheet is *staged*: parked below the screen edge, visible, laid out at its
+  real height, measured for real, held for `PreOpenSettleFrames` drawn frames, and only then slid in
+  (`G9SheetView.Stage`, `G9BottomSheetHelper.StageAndShowAsync`).
+- **An already-built view is no longer deferred.** `DeferContent` defaults to `true` and used to hide
+  even a finished view behind a placeholder for a fixed 369 + 220 + 160 ms. It now only applies to
+  factory content, whose build starts from the open-motion-completed SIGNAL rather than a timer.
+- **Resize and drag are translation, with one layout pass per size** (`SetFitHeight`, the drag path in
+  `HandleTouchMoved`), and a sticky footer is held at the screen edge by counter-translation
+  (`BottomPinnedView`). Both used to write `HeightRequest` every frame.
+- **An aborted motion no longer completes**; a retargeted motion inherits the completion it replaces.
+- **Velocity-aware release**, a finger takes over a moving sheet, Android touch layer stops walking the
+  ancestor chain and re-reading the display density per event, and tracks the active pointer.
+- **Android: the backdrop effect no longer sweeps ~96 native views twice per animation frame.**
+- `ShowG9BottomSheetAsync` (faults when the pipeline throws); the `void` overloads report a pipeline
+  failure instead of letting it escape on the dispatcher; `ShowListG9BottomSheetAsync` honours the
+  caller's `SizeMode` and can no longer hang when throttled.
+- Rollback: `G9BottomSheetSettings.StageBeforeShow = false`.
+
+### What changed — the rest of the library
+
+Delegated by slice and each compile-verified in isolation before integration. What was fixed is below;
+what was **left** — every partial and every skip, with the reason — is `11-EngineeringLog.md` → RSK-0003,
+because a defect that is consciously not fixed has to outlive the audit that found it.
+
+- **Popup / Toast / G9SafeCommand** — `ShowConfirmAsync` no longer hangs when dismissed by hardware back
+  (IN-01, the most urgent defect found); the queue no longer deadlocks on a nested popup (IN-02) and one
+  exception no longer wedges the pump (IN-03); footer buttons are re-entrancy guarded; a throwing toast
+  action no longer crashes; the throttle uses a monotonic clock; the busy / concurrency guard is released
+  BEFORE the error popup is awaited; new `G9SafeCommand.OperationFailed` hook.
+- **Hosting / Theming / TabBar / EdgePanel / ProgressOverlay** — the host registry is a stack of live
+  pages (IN-04); pages, content views and the edge panel release their static palette / culture
+  subscriptions (IN-05, 15, 21); follow-system-theme survives a GC (IN-07); theme switch ordering; the
+  `{G9Color}` subscription list no longer grows without bound or reflects per event; tab bar resyncs
+  after an unload; progress overlay follows a root-page swap.
+- **Controls** — `[AutoBindable]` defaults that were silently `default(T)` (CT-01); hidden controls catch
+  up on a theme / culture change (CT-02); safe buttons no longer capture `Command` once or write
+  `IsEnabled` (CT-03, 04); Persian / Arabic-Indic digits (CT-05); selection-sheet dismissal no longer
+  loses data (CT-06); Persian calendar range crash (CT-07); time-span picker columns and day math
+  (CT-08); one lifetime model on `G9ControlBase` (XC-01); one press pipeline `G9Press` (XC-03).
+- **Persistence.Sqlite** — cross-user cache republish after a reset (IN-08); captured `null` predicates
+  (IN-09); UPDATE / DELETE builders refuse to build without a `WHERE` unless `.AllRows()`; one
+  transaction per batch; PRAGMAs re-applied per connection; identifiers quoted; large `IN` lists through
+  `json_each`. **`!=` now also matches NULL rows, as the C# it was written from does** — see the README's
+  "Changes that can alter what existing code does".
+
+### CONSUMER-VISIBLE changes to look for
+
+- A `G9TimeSpanPicker` with no `Mode` now shows years, months **and days** (the intended default was
+  never applied). AgriPad's seedling-age and graft-age fields are two such pickers.
+- A nested `G9CascadePanel` now shows its back header and parallax by default.
+- Two AgriPad list pickers that pass `FitToContentOptions()` will now be fit-to-content instead of
+  full-screen — which is what they asked for.
+- Any popup raised from inside a popup button callback is now shown immediately.
+
+### Deliberately NOT done (each is in the plan, none is forgotten)
+
+Shell pooling; an `INestedScrollingParent3` touch layer; IME-synchronised sheet translation; a
+predictive-back callback; the structural `G9Redacted` skeleton; splitting the 6,000-line helper into a
+per-sheet session object; the optional iOS 16+ native presenter; deleting the AgriPad-side compensations
+(height seeds, height providers, memo keys, `CompactListSheetHelper`, `OperationsMenuContentViewBase`).
+The reasoning is in ADR-0022 → *Rejected*: each is either a large refactor with no user-visible effect or
+platform gesture / inset code that cannot be validated without a device and would interact with
+workarounds the app still carries. They wait for the device pass on this release. Each is also an open
+defect from here on, so each is in `11-EngineeringLog.md` → RSK-0003 with what specifically is missing.
+
+**Shell pooling is the one to reconsider first**, and the device trace below is why: it was deferred as a
+refactor with no user-visible effect, and the trace then showed that everything before the motion starts
+is content cost — handler creation and first layout for the body — which is exactly what a pooled,
+pre-warmed shell and a kept-alive heavy body remove. The plan's own design still stands: pool the
+`G9SheetView`, scrim, header band and footer host per page host, swap only the content and the
+header/footer children, mark the pooled root `HandlerProperties.DisconnectPolicy = Manual` so a page pop
+does not tear down handlers meant for reuse, disconnect explicitly when the host page goes away, and
+pre-warm one shell at page idle. Pool size 2 — primary plus one stacked — with more created on demand and
+dropped.
+
+### After the first device trace — native motion, the frame clock, and the GC (2026-09-21, same release)
+
+The 1.1.0 engine was traced on a device through 59 sheet opens (`BS|…` lines, chapter 06 §8b of the AgriPad
+guides). Three findings, three changes — ADR-0023 has the reasoning:
+
+- **Motion was not native because it was timed by distance.** 199 ms × distance / screen = a 200 dp picker
+  opening in 40 ms. Now `MotionStyle = PlatformNative`: `ViewDragHelper`'s settle on Android / Windows,
+  UIKit's default spring on Apple platforms (`G9SheetMotionModel`, 18 new tests). The overlay fade and the
+  close cleanup follow the running motion's own duration. `FlingVelocityThreshold` 700 → 300 dp/s.
+- **The first frame of a motion was usually late, and the curve paid for it.** Motion now runs on
+  `G9SheetMotionDriver` over `G9FrameClock`: clock starts on the first drawn frame, hitches become pauses,
+  positions are evaluated at vsync time.
+- **A bridged GC every 1.1 s.** `G9FrameAwaiter` allocated a Java callback per awaited frame; it now shares
+  the process's single `G9FrameClock` callback. The larger lever is app-side (Mono nursery 4 → 32 MB).
+
+What the trace says about the time BEFORE the motion (request → motion start, median 188 ms, p90 423 ms) —
+none of it is the pipeline's own waiting (settle ≈ 33 ms, readiness ≈ 0):
+
+| stage | median | p90 | what it is |
+|---|---|---|---|
+| attach | 39 ms | 113 ms | platform handler creation for the body — MAUI's cost per view |
+| first layout | 43 ms | 229 ms | the first real measure / arrange of that tree |
+| settle | 33 ms | 98 ms | two frames; long when the UI thread is busy (a map, a camera starting) |
+
+So a light body (a picker: ~90 ms total) is near what the platform allows, and a heavy form (450–660 ms) is
+paying for its own view count. The engine cannot make a 570-invalidation form attach faster; the app can —
+by keeping heavy bodies alive and re-showing them, or by building them ahead of the tap.
+
+### Round 3 — sheets that opened on a spinner for a LOCAL read (2026-09-21, same release)
+
+Second device trace (78 sheets): bridged GCs one per 28 s (was 1.1 s), 14 % of opens hit (was 61 %);
+median request → motion 121 ms (was 188). The owner then pointed at the Tasks-page sheets that still open
+on a spinner. The trace named the causes, none of them the network:
+
+- loadable bodies ("open then fill") whose first render reads only the local store →
+  new opt-in `LoadableSheetContentView.LoadWhileStaged` / `IStagedSheetLoad`; the pipeline now waits for
+  content readiness BEFORE the first measure, on its own budget;
+- bodies handed over as factories although they cost 60–120 ms to build → app-side, shown pre-built;
+- a picker called off the UI thread fell back to the factory path (opened at 180 dp, grew to 415 dp in
+  view) → `ShowListG9BottomSheetAsync` and `G9SelectionSheet` now marshal and still build eagerly.
+
+### Round 4 — a sheet that replaces the one it came from (2026-09-21, same release)
+
+Owner's report: tapping «مشاهده و انجام کار» on the task-detail sheet left a dark, empty page, then the
+full-screen task view rose with the dim dipping and coming back. Trace: 970 ms from the tap to the next
+sheet moving (close 300 + cleanup 120 + view construction 260 + staging 290). Two causes, both fixed in the
+library: a staged sheet's overlay was painted at its resting dim while the sheet was off-screen (now 0 until
+the sheet moves), and there was no way to replace a sheet across sizing models without an empty gap → new
+`G9BottomSheetOptions.ReplaceCurrentSheet` (hand-off at the moment the staged successor is ready, dim
+inherited as a floor). A stacked child's parent now recedes when the child rises, not when it is attached.
+
+### The honest gap — what must be looked at, on a device
+
+`G9Controls.Gallery` → **Sheet Lab** has one button per rule, each captioned with what must be true.
+
+1. Every sheet rises ONCE, at its final height, with content in it. Compare with the engine switch OFF.
+2. Icons: are any late? If so raise `PreOpenSettleFrames` (the lab cycles 0 / 2 / 6) and note the value
+   that fixes it on the slowest device.
+3. Tap → motion-start on a heavy pre-built body. This is the cost the design moves; judge whether it is
+   acceptable, and which sheets should become factory sheets.
+4. Resize: footer welded to the edge, no stutter. Drag between detents: footer stays at the edge.
+5. Fling up / down; touching a sheet while it is still rising.
+6. Hardware layer on the low-end device (toggle in the lab) — any artefacts, especially over a map.
+7. Stacking three sheets quickly; close during the off-screen hold; keyboard opening under a fit sheet.
+8. RTL, dark theme, font scale 1.3, rotation.
+9. Then AgriPad in source mode (`-p:UseG9Source=true`, delete `obj/` + `bin/` when switching): the
+   tree / pot sheets, the layers sheet, the non-modal map sheets, the two list pickers.
 
 ## 1.0.13 — a G9Glyphs slot is honoured in the library's OWN XAML too, and `Refresh` is drawn right (2026-09-08)
 

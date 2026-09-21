@@ -34,8 +34,9 @@
               * entity type parameters carry [DynamicallyAccessedMembers];
               * what cannot be annotated is marked [RequiresUnreferencedCode] and PROPAGATED to public
                 API, which is what stops consumers getting an unactionable IL2104;
-              * a TrimmerRootDescriptor ships in the package so a consumer can root their entity assembly
-                without working out the incantation.
+              * the README gives the consumer the two settings they need (TrimmerRootAssembly for THEIR
+                entity assembly, plus WarningsNotAsErrors). NO TrimmerRootDescriptor ships — see the note
+                on the pack item below.
         -->
         <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
 
@@ -70,7 +71,18 @@
         <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     </ItemGroup>
 
-    <!-- Shipped so a consumer can root their entity assembly for trimming without inventing the XML. -->
+    <!--
+        NOT SHIPPED TODAY: build\G9MAUIControls.Persistence.Sqlite.xml does not exist, so this item is a
+        no-op. The README and this file used to say a TrimmerRootDescriptor "ships"; it never did.
+
+        It was not simply added, for two reasons. (1) There is nothing of the LIBRARY'S to root: its
+        reflection is over the consumer's entity types, expression trees and closures, and what must
+        survive trimming is the consumer's entity assembly — whose name a package cannot know. A descriptor
+        preserving this assembly would ship, look like a fix, and change nothing. (2) Even a correct .xml
+        dropped in build\ is inert: NuGet auto-imports only <PackageId>.props/.targets, so it would need a
+        buildTransitive\G9MAUIControls.Persistence.Sqlite.targets adding a TrimmerRootDescriptor item, and
+        that can only be validated by a trimmed publish of a consumer (01-AIGuide, rule 2), not by a build.
+    -->
     <ItemGroup>
         <None Include="build\G9MAUIControls.Persistence.Sqlite.xml" Pack="true" PackagePath="build\"
               Condition="Exists('build\G9MAUIControls.Persistence.Sqlite.xml')" />

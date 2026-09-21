@@ -150,4 +150,16 @@
     <PackageVersion Include="G9MAUIControls.Persistence.Sqlite" Version="$(G9FamilyVersion)" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- ####### tests/** (never packed) ####### -->
+
+    <!-- Test-only, so none of these can reach a published .nuspec: the test projects are
+         IsPackable=false and no package references them. The ADR rule above is about dependencies of
+         a PUBLISHED package and does not apply. xunit 2.x + VSTest because that is what a bare
+         `dotnet test` drives with no extra global.json / runner configuration. -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
 </Project>

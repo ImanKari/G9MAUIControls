@@ -19,7 +19,7 @@ mid-flight) during the toggle.
 |---|---|---|---|
 | `IsOn` | `bool` | `false` | Two-way bindable. The current state. |
 | `IsRequired` | `bool` | `false` | When true, the switch can be turned on but not off (tap shows a shake). |
-| `SelectionGroup` | `string?` | `null` | Switches sharing this string are mutually exclusive (turning one on turns the others off). |
+| `SelectionGroup` | `string?` | `null` | Switches sharing this string are mutually exclusive (turning one on turns the others off). The name is scoped to the nearest `Page` ancestor (or the `Window` for content hosted outside a page), resolved at toggle time — the same name on two live pages is two separate groups. A switch is a group member only while it is loaded. |
 | `IsInFormRow` | `bool` | `false` | Switches to a "form row" layout: title + description + trailing toggle. |
 | `Title` | `string?` | `null` | Form-row title text. |
 | `Description` | `string?` | `null` | Form-row description text below the title. |

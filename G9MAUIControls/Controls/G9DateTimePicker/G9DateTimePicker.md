@@ -217,8 +217,14 @@ it correctly invalidates for both Gregorian leap-Feb (28 ↔ 29) and Persian lea
 
 ## Calendar Selection
 
-- LTR cultures → Gregorian (Day / Month / Year).
-- RTL cultures (Persian) → Shamsi (روز / ماه / سال) using `System.Globalization.PersianCalendar`.
+- The calendar follows the **language**, not the reading direction (`G9Calendar.IsPersianLanguage`):
+  a `fa` culture → Shamsi (روز / ماه / سال) using `System.Globalization.PersianCalendar`; every other
+  culture — including RTL ones such as Arabic and Hebrew — → Gregorian (Day / Month / Year). The
+  sheet's layout direction still follows `G9Culture.IsRtl`.
+- `PersianCalendar` cannot represent a date before 0622-03-22 and throws for one. A bound
+  `default(DateTime)` / `DateTime.MinValue` therefore renders in Gregorian in the trigger box
+  instead of crashing, and the sheet opens on today; `MinDate` / `MaxDate` are pulled into the
+  supported range (`G9Calendar.ClampToPersianRange`).
 - The persisted `SelectedDateTime` is **always Gregorian**. The Persian conversion is a
   display-and-input concern only, so binding the same value into a database, a service
   call, or a serializer always yields a stable Gregorian timestamp.
@@ -341,5 +347,12 @@ DateField.FormattedDisplayText = $"Week {GetWeek(date)} of {date.Year}";
   uses the same display format as the trigger box. They never diverge.
 - `MinDate` / `MaxDate` bound the underlying `DateTime`. In Persian mode the same
   Gregorian min/max are converted to Persian year/month/day for the year column range.
+- **The year drum is a window, not Min..Max.** The drum is not virtualized, so it holds at most
+  ±50 years around the selection (inside Min/Max). Scrolling to within two rows of the window's end
+  appends 25 more years in place; reaching its start re-centres the window once the drum is at
+  rest. A `MinDate = 1900` sentinel no longer costs ~175 realized rows on open.
+- When Min/Max clamp a value the drums roll onto the clamped value (they used to keep showing the
+  out-of-range date while the preview and the result said otherwise), and **Today** rebuilds the
+  year window whenever today's year is outside the one currently built.
 - The trailing icon defaults to `MaterialIcons.CalendarMonth` and can be overridden via
   `TrailingMaterialIcon`.

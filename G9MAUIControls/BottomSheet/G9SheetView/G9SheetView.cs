@@ -36,6 +36,33 @@ public partial class G9SheetView : Grid
     /// </summary>
     private const double DetentTolerance = 4;
 
+    /// <summary>
+    ///     Every motion rests this far (dp) BELOW its detent, so rounding can never expose a hairline
+    ///     of the page between the body's bottom edge and the screen edge. The bottom-pin maths
+    ///     subtracts it, otherwise a resting footer would sit lifted by exactly this amount.
+    /// </summary>
+    private const double SettleOvershoot = 2;
+
+    /// <summary>
+    ///     Release speed (dp/s) above which the gesture is a FLING and the detent is chosen by
+    ///     direction rather than by distance travelled. The platforms sit well below where this
+    ///     started (700): Material's <c>significantVelocityThreshold</c> is 500 <b>px</b>/s — about
+    ///     170 dp/s on a current phone — and Compose's sheet uses 125 dp/s, so a gentle flick that
+    ///     moves a native sheet used to spring back here. 300 stays clear of a slow deliberate drag
+    ///     (well under 100 dp/s at release) and the fling must still agree with the direction the
+    ///     finger actually travelled.
+    /// </summary>
+    private const double FlingVelocityThreshold = 300;
+
+    /// <summary>Shortest settle (ms) a fling may produce, so a hard flick still reads as motion.</summary>
+    private const int MinimumFlingDurationMs = 110;
+
+    /// <summary>
+    ///     A host-height change smaller than this (dp) is one step of a continuous resize and is
+    ///     followed instantly; a larger one (keyboard, rotation) is animated.
+    /// </summary>
+    private const double ContinuousResizeStep = 24;
+
     private const string SheetAnimationName = "G9SheetViewMotion";
     private const string OverlayAnimationName = "G9SheetViewOverlay";
 
@@ -46,12 +73,58 @@ public partial class G9SheetView : Grid
     private readonly Grid _overlayGrid;
     private readonly G9SheetViewBorder _bottomSheet;
     private readonly Grid _bottomSheetContent;
-    private readonly Border _contentBorder;
     private readonly Border _grabber;
     private readonly Grid _grabberGrid;
     private readonly RoundRectangle _grabberStrokeShape;
     private readonly RoundRectangle _bottomSheetStrokeShape;
     private readonly G9SheetViewStateChangedEventArgs _stateChangedArgs = new();
+    private readonly G9SheetViewPositionChangedEventArgs _positionChangedArgs = new(0, 0);
+
+    /// <summary>
+    ///     True between <see cref="Stage" /> and the first <see cref="Show" />: the body is visible
+    ///     and laid out at its real size, but parked below the screen edge. See <see cref="Stage" />.
+    /// </summary>
+    private bool _isStaged;
+
+    /// <summary>True while <see cref="SheetAnimationName" /> is moving the body.</summary>
+    private bool _isMotionRunning;
+
+    /// <summary>
+    ///     True once a drag has grown the body to its largest detent so the rest of the gesture is
+    ///     pure translation. Cleared when the settle that follows re-applies the resting height.
+    /// </summary>
+    private bool _isBodyExpandedForDrag;
+
+    /// <summary>Freezes the bottom pin while the sheet leaves the screen (close / dismiss).</summary>
+    private bool _isBottomPinFrozen;
+
+    /// <summary>
+    ///     Set while <see cref="SetFitHeight" /> records its metrics, so the ratio / collapsed-height
+    ///     / state property handlers do not each reposition the body behind its back.
+    /// </summary>
+    private bool _isApplyingFitMetrics;
+
+    /// <summary>Completion of the running motion, so a retarget can inherit it.</summary>
+    private Action? _motionOnFinish;
+
+    /// <summary>Where the running motion is heading (detent position, overshoot excluded).</summary>
+    private double _motionTarget;
+
+    /// <summary>Runs the body's motion against the display frame clock. See <see cref="G9SheetMotionDriver" />.</summary>
+    private readonly G9SheetMotionDriver _motion = new();
+
+    /// <summary>
+    ///     Identifies the running motion. A completion carries the token it was started with and is
+    ///     ignored when another motion has started since — which happens when applying a motion's
+    ///     FINAL value makes a listener retarget the sheet before the completion itself has run.
+    /// </summary>
+    private int _motionToken;
+
+    private double _lastAppliedHostHeight;
+
+    private View? _bottomPinnedView;
+    private double _bottomPinOffset;
+    private double _releaseVelocityY;
 
     private bool _isHalfExpanded = true;
     private bool _isSheetOpen;
@@ -122,15 +195,22 @@ public partial class G9SheetView : Grid
             }
         });
 
+    // Both brush defaults come from a defaultValueCreator rather than a shared instance: a Brush is
+    // a BindableObject with a parent, so one static SolidColorBrush handed to every sheet is the
+    // same object parented into many visual trees at once.
     public static readonly BindableProperty GrabberBackgroundProperty = BindableProperty.Create(
-        nameof(GrabberBackground), typeof(Brush), typeof(G9SheetView),
-        new SolidColorBrush(Color.FromArgb("#CAC4D0")),
+        nameof(GrabberBackground), typeof(Brush), typeof(G9SheetView), null,
+        defaultValueCreator: static _ => CreateDefaultGrabberBrush(),
         propertyChanged: (b, _, n) => ((G9SheetView)b)._grabber.Background = (Brush)n);
 
     public new static readonly BindableProperty BackgroundProperty = BindableProperty.Create(
-        nameof(Background), typeof(Brush), typeof(G9SheetView),
-        new SolidColorBrush(Color.FromArgb("#F7F2FB")),
+        nameof(Background), typeof(Brush), typeof(G9SheetView), null,
+        defaultValueCreator: static _ => CreateDefaultBackgroundBrush(),
         propertyChanged: (b, _, n) => ((G9SheetView)b).UpdateBackground((Brush)n));
+
+    private static SolidColorBrush CreateDefaultGrabberBrush() => new(Color.FromArgb("#CAC4D0"));
+
+    private static SolidColorBrush CreateDefaultBackgroundBrush() => new(Color.FromArgb("#F7F2FB"));
 
     public static readonly BindableProperty CornerRadiusProperty = BindableProperty.Create(
         nameof(CornerRadius), typeof(CornerRadius), typeof(G9SheetView),
@@ -397,6 +477,29 @@ public partial class G9SheetView : Grid
     /// </summary>
     public Func<double, double, double, int>? AnimationDurationProvider { get; set; }
 
+    /// <summary>
+    ///     Resolves BOTH the duration and the curve of a motion from where it starts, where it is
+    ///     going and how fast the finger released it. Takes precedence over
+    ///     <see cref="AnimationDurationProvider" />; when <c>null</c> the motion is a plain
+    ///     <c>CubicOut</c> tween of the provider's / <see cref="AnimationDuration" />'s length.
+    /// </summary>
+    internal Func<G9SheetMotionRequest, G9SheetMotionSpec>? MotionSpecProvider { get; set; }
+
+    /// <summary>
+    ///     Nominal length (ms) of the motion that is running, or of the last one that ran. What
+    ///     accompanies a motion — the dim fade, the close cleanup — reads this instead of assuming
+    ///     a configured constant, so it stays in step with a duration that is resolved per motion.
+    /// </summary>
+    internal int CurrentMotionDurationMs { get; private set; }
+
+    /// <summary>
+    ///     Android: composite the body from a hardware layer while it moves (default <c>true</c>).
+    ///     A kill switch, not a tuning knob — turn it off only if a device shows artefacts with a
+    ///     layered sheet (a very large body, or an exotic GPU driver). No effect on other platforms.
+    ///     Set through <c>G9BottomSheetSettings.UseHardwareLayerDuringMotion</c>.
+    /// </summary>
+    public static bool UseHardwareLayerDuringMotion { get; set; } = true;
+
     #endregion
 
     #region Events
@@ -507,8 +610,6 @@ public partial class G9SheetView : Grid
         Grid.SetRow(_grabberGrid, 0);
         _bottomSheetContent.Children.Add(_grabberGrid);
 
-        _contentBorder = new Border { StrokeThickness = 0 };
-
         _bottomSheetStrokeShape = new RoundRectangle { CornerRadius = CornerRadius };
         _bottomSheet = new G9SheetViewBorder(this)
         {
@@ -541,6 +642,212 @@ public partial class G9SheetView : Grid
     /// </summary>
     public event EventHandler? OpenMotionCompleted;
 
+    /// <summary>
+    ///     Parks the body BELOW the screen edge, visible and laid out at its real size, without
+    ///     starting the open motion.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is the first half of "measure before show". A view that is merely constructed
+    ///         has no platform handlers, measures as zero, has never laid its text out and has
+    ///         never drawn a glyph — so opening it straight away means the user watches all of
+    ///         that happen: the wrong first height, the resize that corrects it, and icon-font
+    ///         glyphs painting as tofu for their first frames. Staging lets every one of those
+    ///         finish where nobody can see it. The caller then sizes the sheet from a REAL
+    ///         measurement and calls <see cref="Show" />, which is a pure translation of a body
+    ///         that is already finished.
+    ///     </para>
+    ///     <para>
+    ///         ⛔ It is a translation, never <c>IsVisible = false</c>: an invisible view is skipped
+    ///         by layout, so nothing would be realized and the measurement would still be zero.
+    ///     </para>
+    ///     <para>
+    ///         Input is unaffected — the body is outside the host's bounds, where it cannot be
+    ///         hit. Idempotent, and a no-op once the sheet is open.
+    ///     </para>
+    /// </remarks>
+    internal void Stage()
+    {
+        if (_isSheetOpen || _isStaged)
+        {
+            return;
+        }
+
+        _isStaged = true;
+        _bottomSheet.TranslationY = ResolveOffscreenTranslation();
+        _bottomSheet.IsVisible = true;
+        ApplyBodyHeightForState(Height);
+    }
+
+    /// <summary>
+    ///     True once a staged body has been through a real layout pass at the height it will open
+    ///     at — the signal <c>G9BottomSheetHelper</c> waits for before measuring and showing.
+    /// </summary>
+    internal bool IsStagedLayoutReady
+    {
+        get
+        {
+            if (Height <= 0 || double.IsPositiveInfinity(Height))
+            {
+                return false;
+            }
+
+            var requested = _bottomSheet.HeightRequest;
+            return requested > 0 &&
+                   _bottomSheet.Height > 0 &&
+                   Math.Abs(_bottomSheet.Height - requested) < 1;
+        }
+    }
+
+    /// <summary>True while the open / close / settle / resize motion is running.</summary>
+    internal bool IsMotionRunning => _isMotionRunning;
+
+    /// <summary>
+    ///     True between <see cref="Stage" /> and the open motion. A staged sheet is not
+    ///     <see cref="IsOpen" /> yet, but it is very much in flight: callers deciding whether a
+    ///     sheet "exists" (stacking, close) must count it.
+    /// </summary>
+    internal bool IsStaged => _isStaged;
+
+    /// <summary>
+    ///     A view at the BOTTOM of the body (a sticky footer) that must stay welded to the screen
+    ///     edge while the body is taller than what is visible.
+    /// </summary>
+    /// <remarks>
+    ///     The body is laid out ONCE per size and then only translated (see
+    ///     <see cref="HandleTouchMoved" /> and <see cref="SetFitHeight" />), so during a drag or a
+    ///     resize its bottom edge — and a footer sitting on it — is below the screen. Rather than
+    ///     re-laying the body out every frame to bring the footer back, the footer is
+    ///     counter-translated by exactly the hidden amount. A translation costs no layout, and at
+    ///     rest the offset is zero so hit-testing is untouched.
+    /// </remarks>
+    internal View? BottomPinnedView
+    {
+        get => _bottomPinnedView;
+        set
+        {
+            if (ReferenceEquals(_bottomPinnedView, value))
+            {
+                return;
+            }
+
+            if (_bottomPinnedView is not null)
+            {
+                _bottomPinnedView.TranslationY = 0;
+            }
+
+            _bottomPinnedView = value;
+            _bottomPinOffset = 0;
+            UpdateBottomPin();
+        }
+    }
+
+    /// <summary>
+    ///     Sizes a fit-to-content sheet to <paramref name="contentHeight" /> (dp, chrome included).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A fit sheet expresses its single height as all three detents at once — that is how
+    ///         <c>G9BottomSheetHelper</c> has always described one, and <see cref="SetFitHeight" />
+    ///         keeps that vocabulary so every state-driven consumer is unchanged.
+    ///     </para>
+    ///     <para>
+    ///         ⛔ What changed is HOW an open sheet gets there. The resize used to be a tween that
+    ///         rewrote the ratios every tick, and each write set the body's <c>HeightRequest</c> —
+    ///         a full measure and arrange of the whole body per frame, which is the "resize looks
+    ///         very bad" defect. Now the body is laid out exactly ONCE and the motion is a
+    ///         translation: to GROW, the body takes its new height first (the extra hangs below
+    ///         the screen edge, so the frame looks identical) and then slides up; to SHRINK, it
+    ///         slides down first and takes its new height when it arrives.
+    ///     </para>
+    /// </remarks>
+    /// <param name="contentHeight">Target height in dp, including the sheet's own chrome.</param>
+    /// <param name="animate">
+    ///     Animate when the sheet is already open. Ignored (the metrics are simply recorded) while
+    ///     the sheet is hidden or staged, where there is nothing on screen to move.
+    /// </param>
+    /// <param name="fallbackHostHeight">
+    ///     The host height to describe the detents against while this view has not been allocated a
+    ///     size yet — which is exactly the situation of the FIRST sizing pass of a staged sheet.
+    /// </param>
+    internal void SetFitHeight(double contentHeight, bool animate, double fallbackHostHeight = 0)
+    {
+        if (contentHeight <= 0 || double.IsNaN(contentHeight))
+        {
+            return;
+        }
+
+        var hostHeight = Height > 0 && !double.IsPositiveInfinity(Height) ? Height : 0;
+        var previousHeight = CollapsedHeight;
+
+        // ⛔ The ratios are written even before this view knows its own height (from the caller's
+        // fallback). They are not decoration: ResolveMaximumDetentHeight reads them, and the touch
+        // layer asks IsAtMaximumDetent to decide whether an inner scroller may have a drag. Left at
+        // their defaults (full = 1.0) a fit sheet reads as "can still expand to full screen", so
+        // the sheet claims every vertical drag — and a fit sheet ignores drags, so a list inside
+        // it could not be scrolled at all.
+        var ratioHostHeight = hostHeight > 0 ? hostHeight : fallbackHostHeight;
+
+        // Record the metrics without letting the three property-changed handlers each snap the
+        // body: they would set the position three times over, mid-motion, and fight the animation.
+        _isApplyingFitMetrics = true;
+        try
+        {
+            if (ratioHostHeight > 0)
+            {
+                var ratio = Math.Clamp(contentHeight / ratioHostHeight, MinFullExpandedRatio, MaxFullExpandedRatio);
+                FullExpandedRatio = ratio;
+                HalfExpandedRatio = Math.Clamp(ratio, MinHalfExpandedRatio, MaxHalfExpandedRatio);
+            }
+
+            CollapsedHeight = contentHeight;
+            AllowedState = G9SheetViewAllowedState.All;
+            State = G9SheetViewState.Collapsed;
+        }
+        finally
+        {
+            _isApplyingFitMetrics = false;
+        }
+
+        if (hostHeight <= 0)
+        {
+            return;
+        }
+
+        if (!_isSheetOpen || _isPointerPressed)
+        {
+            // Hidden, staged, or under a finger: nothing to animate. Apply the geometry directly
+            // (a staged body stays parked off-screen — see ApplyBodyHeightForState).
+            ApplyBodyHeightForState(hostHeight);
+            UpdateBottomPin();
+            return;
+        }
+
+        var target = hostHeight - contentHeight;
+        var isGrowing = contentHeight > previousHeight;
+
+        if (!animate || Math.Abs(contentHeight - previousHeight) < 1)
+        {
+            AbortMotion();
+            _bottomSheet.HeightRequest = contentHeight;
+            _bottomSheet.TranslationY = target + SettleOvershoot;
+            UpdateBottomPin();
+            RaisePositionChanged();
+            return;
+        }
+
+        if (isGrowing)
+        {
+            // One layout pass, up front. The new area is below the screen edge until the
+            // translation brings it up, so this frame is visually identical to the last one.
+            _bottomSheet.HeightRequest = Math.Max(_bottomSheet.HeightRequest, contentHeight);
+        }
+
+        // Shrinking: the body keeps its CURRENT height while it slides down, so nothing re-lays
+        // out during the motion; UpdateBodyHeightForOpenState applies the smaller height at the end.
+        AnimateG9BottomSheet(target);
+    }
+
     /// <summary>Show the sheet, animating from its current resting position.</summary>
     public void Show()
     {
@@ -556,15 +863,29 @@ public partial class G9SheetView : Grid
 
         _pendingShow = false;
         SetupForShow();
+        _isStaged = false;
+        _isBottomPinFrozen = false;
         var target = GetTargetPosition();
-        AnimateG9BottomSheet(target, onFinish: () => OpenMotionCompleted?.Invoke(this, EventArgs.Empty));
+        var velocity = _releaseVelocityY;
+        _releaseVelocityY = 0;
+        AnimateG9BottomSheet(
+            target,
+            onFinish: () => OpenMotionCompleted?.Invoke(this, EventArgs.Empty),
+            velocityY: velocity);
         IsOpen = true;
     }
 
     /// <summary>Animate the sheet off-screen.</summary>
     public void Close()
     {
-        AnimateG9BottomSheet(Height, onFinish: () =>
+        // The footer leaves WITH the body. Left live, the pin would hold it at the screen edge
+        // while the sheet slid out from behind it.
+        _isBottomPinFrozen = true;
+        _isStaged = false;
+
+        // Aborted explicitly so the close does NOT inherit an interrupted open's completion.
+        AbortMotion();
+        AnimateG9BottomSheet(ResolveOffscreenTranslation(), onFinish: () =>
         {
             _bottomSheet.IsVisible = false;
             RemoveOverlayFromView();
@@ -582,7 +903,14 @@ public partial class G9SheetView : Grid
     ///     Receive a single touch event from the per-platform border handler. Public so the
     ///     handlers in matching <c>.{platform}.cs</c> files can call into the state machine.
     /// </summary>
-    internal void OnHandleTouch(G9SheetViewTouchAction action, Point point)
+    /// <param name="action">The pointer action.</param>
+    /// <param name="point">Position in dp, relative to the rendered body.</param>
+    /// <param name="velocityY">
+    ///     Vertical release speed in dp/s (positive = downward). Only read on
+    ///     <see cref="G9SheetViewTouchAction.Released" />; platforms that cannot supply one pass 0,
+    ///     which falls back to the distance rules.
+    /// </param>
+    internal void OnHandleTouch(G9SheetViewTouchAction action, Point point, double velocityY = 0)
     {
         if (!EnableSwiping || !_isSheetOpen)
         {
@@ -594,6 +922,10 @@ public partial class G9SheetView : Grid
         switch (action)
         {
             case G9SheetViewTouchAction.Pressed:
+                // A finger landing on a moving sheet takes it over. Without this the settle
+                // animation and the drag both write the position and the body shudders between
+                // them until the animation ends.
+                AbortMotion();
                 _initialTouchY = touchY;
                 _isPointerPressed = true;
                 _dragTravelY = 0;
@@ -605,9 +937,12 @@ public partial class G9SheetView : Grid
                 return;
 
             case G9SheetViewTouchAction.Released:
+                HandleTouchReleased(velocityY);
+                return;
+
             case G9SheetViewTouchAction.Cancelled:
             case G9SheetViewTouchAction.Exited:
-                HandleTouchReleased();
+                HandleTouchReleased(0);
                 return;
         }
     }
@@ -676,9 +1011,11 @@ public partial class G9SheetView : Grid
             return;
         }
 
-        _contentBorder.Content = content;
-        _bottomSheetContent.Children.Add(_contentBorder);
-        Grid.SetRow(_contentBorder, 1);
+        // The body goes straight into the content row. It used to be wrapped in a stroke-less
+        // Border, which bought nothing visually (the rounded surface is _bottomSheet's own shape)
+        // and cost a native container plus a clip path on every layout of every sheet.
+        Grid.SetRow(content, 1);
+        _bottomSheetContent.Children.Add(content);
     }
 
     private void UpdateGrabberRowHeight()
@@ -705,20 +1042,15 @@ public partial class G9SheetView : Grid
             // Show() was called before we had a measured size — retry now.
             // for the host to allocate a height.
             Show();
-            return;
         }
 
-        if (_bottomSheet.IsVisible && _isSheetOpen)
-        {
-            // Re-snap the body to the right resting position for the new host size (rotation,
-            // window resize on Windows / Mac Catalyst, virtual keyboard show/hide, etc.).
-            ApplyBodyHeightForState(Height);
-        }
+        // Following a new host size (rotation, window resize, keyboard) is OnSizeAllocated's job.
+        // It used to be done here AS WELL, so every size change positioned the body twice.
     }
 
     private void UpdateBackground(Brush brush)
     {
-        var resolved = brush ?? (Brush)BackgroundProperty.DefaultValue;
+        var resolved = brush ?? CreateDefaultBackgroundBrush();
         _bottomSheet.Background = resolved;
         _bottomSheetContent.Background = resolved;
     }
@@ -879,6 +1211,10 @@ public partial class G9SheetView : Grid
             return;
         }
 
+        // SetFitHeight writes the state as part of recording its metrics and then drives the motion
+        // itself; a Show() from here would start a second one against it.
+        var mayMove = !_isApplyingFitMetrics;
+
         if (newValue == G9SheetViewState.Hidden)
         {
             _isHalfExpanded = AllowedState != G9SheetViewAllowedState.FullExpanded;
@@ -891,7 +1227,7 @@ public partial class G9SheetView : Grid
         else if (newValue == G9SheetViewState.Collapsed)
         {
             _isHalfExpanded = true;
-            if (_isSheetOpen)
+            if (_isSheetOpen && mayMove)
             {
                 Show();
             }
@@ -899,7 +1235,7 @@ public partial class G9SheetView : Grid
         else
         {
             _isHalfExpanded = newValue == G9SheetViewState.HalfExpanded;
-            if (_isSheetOpen)
+            if (_isSheetOpen && mayMove)
             {
                 Show();
             }
@@ -1006,31 +1342,120 @@ public partial class G9SheetView : Grid
         return target;
     }
 
+    /// <summary>
+    ///     Brings the body to the geometry its current <see cref="State" /> implies for a host of
+    ///     the given height. Called whenever that geometry may have changed: a new host size
+    ///     (keyboard, rotation, window resize) or new detent metrics.
+    /// </summary>
+    /// <remarks>
+    ///     ⛔ This used to WRITE the position unconditionally, from three call sites, including
+    ///     while the open animation was writing it too — so a settle pass, a keyboard inset or a
+    ///     measured detent landing mid-open made the sheet alternate between two positions per
+    ///     frame and could leave it resting at the OLD target with the NEW height. It now has one
+    ///     rule per situation: a staged body stays parked, a body under a finger is left to the
+    ///     finger, a moving body is RETARGETED, and only a body that is genuinely at rest is moved.
+    /// </remarks>
     private void ApplyBodyHeightForState(double height)
     {
-        if (height <= 0 || double.IsPositiveInfinity(height))
+        if (height <= 0 || double.IsPositiveInfinity(height) || _isApplyingFitMetrics)
         {
             return;
         }
 
-        switch (State)
+        if (_isStaged)
         {
-            case G9SheetViewState.Hidden:
-                _bottomSheet.HeightRequest = 0;
-                break;
-            case G9SheetViewState.Collapsed:
-                _bottomSheet.TranslationY = height - CollapsedHeight;
-                _bottomSheet.HeightRequest = CollapsedHeight;
-                break;
-            case G9SheetViewState.HalfExpanded:
-                _bottomSheet.TranslationY = height * (1 - HalfExpandedRatio);
-                _bottomSheet.HeightRequest = height * HalfExpandedRatio;
-                break;
-            case G9SheetViewState.FullExpanded:
-                _bottomSheet.TranslationY = Math.Abs(height * (1 - FullExpandedRatio));
-                _bottomSheet.HeightRequest = height * FullExpandedRatio;
-                break;
+            // Parked below the screen: take the height it will open at, so the content is laid
+            // out for real, and stay parked.
+            var stagedHeight = ResolveRestingHeight(height);
+            if (stagedHeight > 0)
+            {
+                _bottomSheet.HeightRequest = stagedHeight;
+            }
+
+            _bottomSheet.TranslationY = height;
+            _lastAppliedHostHeight = height;
+            return;
         }
+
+        if (State == G9SheetViewState.Hidden)
+        {
+            // Not while the close motion runs — collapsing the body to zero mid-slide empties it
+            // in full view.
+            if (!_isMotionRunning)
+            {
+                _bottomSheet.HeightRequest = 0;
+            }
+
+            return;
+        }
+
+        if (_isPointerPressed)
+        {
+            // The release settles onto whatever the geometry is by then.
+            return;
+        }
+
+        var restingHeight = ResolveRestingHeight(height);
+        var restingTranslation = ResolveRestingTranslation(height);
+        var hostDelta = Math.Abs(height - _lastAppliedHostHeight);
+        _lastAppliedHostHeight = height;
+
+        if (_isSheetOpen && _bottomSheet.IsVisible)
+        {
+            if (_isMotionRunning)
+            {
+                if (Math.Abs(restingTranslation - _motionTarget) < 0.5)
+                {
+                    return;
+                }
+            }
+            else if (Math.Abs(_bottomSheet.TranslationY - restingTranslation) <= SettleOvershoot + 0.75 &&
+                     Math.Abs(_bottomSheet.HeightRequest - restingHeight) < 0.5)
+            {
+                return;
+            }
+
+            // A window being dragged to a new size arrives as a stream of small steps; easing each
+            // one makes the sheet trail the window edge. A keyboard or a rotation arrives as one
+            // large step, and that is the case worth animating.
+            var isContinuousResize = hostDelta > 0 && hostDelta < ContinuousResizeStep && !_isMotionRunning;
+            if (!isContinuousResize)
+            {
+                if (restingHeight > _bottomSheet.HeightRequest)
+                {
+                    _bottomSheet.HeightRequest = restingHeight;
+                }
+
+                AnimateG9BottomSheet(restingTranslation);
+                return;
+            }
+        }
+
+        _bottomSheet.TranslationY = restingTranslation;
+        _bottomSheet.HeightRequest = restingHeight;
+        UpdateBottomPin();
+    }
+
+    private double ResolveRestingHeight(double hostHeight)
+    {
+        return State switch
+        {
+            G9SheetViewState.Collapsed => CollapsedHeight,
+            G9SheetViewState.HalfExpanded => hostHeight * HalfExpandedRatio,
+            G9SheetViewState.FullExpanded => hostHeight * FullExpandedRatio,
+            _ => 0
+        };
+    }
+
+    private double ResolveRestingTranslation(double hostHeight)
+    {
+        return State switch
+        {
+            G9SheetViewState.Collapsed => hostHeight - CollapsedHeight,
+            G9SheetViewState.HalfExpanded => hostHeight * (1 - HalfExpandedRatio),
+            G9SheetViewState.FullExpanded => Math.Abs(hostHeight * (1 - FullExpandedRatio)),
+            _ => hostHeight
+        };
     }
 
     private void UpdateBodyHeightForOpenState()
@@ -1058,45 +1483,186 @@ public partial class G9SheetView : Grid
 
     #region Animation
 
-    private void AnimateG9BottomSheet(double targetPosition, Action? onFinish = null)
+    private void AnimateG9BottomSheet(double targetPosition, Action? onFinish = null, double velocityY = 0)
     {
-        if (_bottomSheet.AnimationIsRunning(SheetAnimationName))
-        {
-            _bottomSheet.AbortAnimation(SheetAnimationName);
-        }
+        // A motion that is RETARGETED (a resize or a state change landing mid-open) inherits the
+        // completion of the motion it replaces. Dropping it would lose OpenMotionCompleted — and
+        // running it early, which is what ignoring the cancel flag used to do, started the
+        // deferred load in the middle of the open animation it exists to stay clear of.
+        var carriedFinish = _motionOnFinish;
+        AbortMotion();
+        onFinish = CombineFinish(carriedFinish, onFinish);
 
         var current = _bottomSheet.TranslationY;
-        var duration = AnimationDurationProvider is not null
-            ? Math.Max(0, AnimationDurationProvider(current, targetPosition, Height))
-            : (int)Math.Max(0, AnimationDuration);
+        var end = targetPosition + SettleOvershoot;
+        int duration;
+        var easing = Easing.CubicOut;
 
-        // AnimationDurationProvider resolved for this specific motion.
+        if (MotionSpecProvider is not null)
+        {
+            // The motion model owns the whole shape — including what a release velocity does to it.
+            var spec = MotionSpecProvider(new G9SheetMotionRequest(current, end, Width, Height, velocityY));
+            duration = Math.Max(0, spec.DurationMs);
+            easing = new Easing(spec.Curve);
+        }
+        else
+        {
+            duration = AnimationDurationProvider is not null
+                ? Math.Max(0, AnimationDurationProvider(current, targetPosition, Height))
+                : (int)Math.Max(0, AnimationDuration);
 
-        const double topPadding = 2;
+            // A fling carries its own speed: the settle may not take longer than the finger was
+            // already moving, or a hard flick visibly decelerates the instant it is released.
+            if (Math.Abs(velocityY) > FlingVelocityThreshold)
+            {
+                var flingMs = (int)Math.Round(Math.Abs(end - current) / Math.Abs(velocityY) * 1000 * 2);
+                duration = Math.Min(duration, Math.Max(MinimumFlingDurationMs, flingMs));
+            }
+        }
+
+        CurrentMotionDurationMs = duration;
+
         _isSheetOpen = true;
+        _motionTarget = targetPosition;
 
-        var animation = new Animation(
-            value =>
+        if (duration <= 0 || Math.Abs(end - current) < 0.5)
+        {
+            _bottomSheet.TranslationY = end;
+            CompleteMotion(onFinish);
+            return;
+        }
+
+        _isMotionRunning = true;
+        _motionOnFinish = onFinish;
+        _bottomSheet.BeginMotionLayer();
+
+        var token = ++_motionToken;
+
+        _motion.Start(
+            _bottomSheet,
+            SheetAnimationName,
+            current,
+            end,
+            duration,
+            easing,
+            apply: value =>
             {
                 _bottomSheet.TranslationY = value;
+                UpdateBottomPin();
                 RaisePositionChanged();
             },
-            current,
-            targetPosition + topPadding);
-
-        _bottomSheet.Animate(
-            SheetAnimationName,
-            animation,
-            length: (uint)duration,
-            easing: Easing.CubicOut,
-            finished: (_, _) =>
+            finished: () =>
             {
-                UpdateBodyHeightForOpenState();
-                RaisePositionChanged();
-                onFinish?.Invoke();
+                // ⛔ Only a motion that ran to its end completes. A cancelled one never reaches
+                // here (the driver drops its callbacks; whoever cancelled owns what happens next —
+                // see AbortMotion), and a SUPERSEDED one is told apart by its token: treating
+                // either as a finish is what let a Show landing during a Close hide the body it
+                // had just made visible, and what raised OpenMotionCompleted mid-motion.
+                if (token != _motionToken)
+                {
+                    return;
+                }
+
+                _motionOnFinish = null;
+                CompleteMotion(onFinish);
             });
 
         AnimateOverlay(duration);
+    }
+
+    private void CompleteMotion(Action? onFinish)
+    {
+        _isMotionRunning = false;
+        _bottomSheet.EndMotionLayer();
+
+        // The ONE layout pass of the motion: the body takes its resting height now that it has
+        // arrived (a no-op when it already had it — every grow applies its height up front).
+        _isBodyExpandedForDrag = false;
+        UpdateBodyHeightForOpenState();
+        UpdateBottomPin();
+        RaisePositionChanged();
+        onFinish?.Invoke();
+    }
+
+    /// <summary>
+    ///     Stops the running motion WITHOUT completing it. The body stays where it is; the caller
+    ///     is about to move it somewhere else (a retarget, a close, a finger).
+    /// </summary>
+    private void AbortMotion()
+    {
+        _motion.Cancel();
+        _motionToken++;
+        _motionOnFinish = null;
+
+        if (!_isMotionRunning)
+        {
+            return;
+        }
+
+        _isMotionRunning = false;
+        _bottomSheet.EndMotionLayer();
+    }
+
+    private static Action? CombineFinish(Action? first, Action? second)
+    {
+        if (first is null || ReferenceEquals(first, second))
+        {
+            return second;
+        }
+
+        return second is null
+            ? first
+            : () =>
+            {
+                first();
+                second();
+            };
+    }
+
+    /// <summary>
+    ///     Where the body is parked when it is off-screen: one full host height down. Falls back to
+    ///     a distance no real screen reaches while the host has not been allocated a height yet, so
+    ///     a body staged that early can never flash on screen for a frame.
+    /// </summary>
+    private double ResolveOffscreenTranslation()
+    {
+        return Height > 0 && !double.IsPositiveInfinity(Height) ? Height : 10000;
+    }
+
+    /// <summary>
+    ///     Keeps <see cref="BottomPinnedView" /> at the screen edge by lifting it by however much of
+    ///     the body is currently below that edge — capped at the distance to the smallest detent, so
+    ///     that once the sheet is being dragged AWAY (below every detent) the footer leaves with it.
+    /// </summary>
+    private void UpdateBottomPin()
+    {
+        if (_bottomPinnedView is null)
+        {
+            return;
+        }
+
+        var offset = _bottomPinOffset;
+
+        if (!_isBottomPinFrozen)
+        {
+            offset = 0;
+
+            if (Height > 0 && !double.IsPositiveInfinity(Height) && !_isStaged)
+            {
+                var bodyHeight = _bottomSheet.HeightRequest;
+                var hidden = bodyHeight + _bottomSheet.TranslationY - Height - SettleOvershoot;
+                var floor = Math.Min(ResolveMinimumDetentHeight(), bodyHeight);
+                offset = Math.Clamp(hidden, 0, Math.Max(0, bodyHeight - floor));
+            }
+        }
+
+        if (Math.Abs(offset - _bottomPinOffset) < 0.25)
+        {
+            return;
+        }
+
+        _bottomPinOffset = offset;
+        _bottomPinnedView.TranslationY = -offset;
     }
 
     private void AnimateOverlay(int durationMs)
@@ -1133,9 +1699,11 @@ public partial class G9SheetView : Grid
             animation,
             length: (uint)durationMs,
             easing: Easing.CubicOut,
-            finished: (_, _) =>
+            finished: (_, cancelled) =>
             {
-                if (!shouldShow)
+                // Same rule as the sheet motion: an aborted fade was superseded, and removing the
+                // overlay here would take it away from the fade that superseded it.
+                if (!cancelled && !shouldShow)
                 {
                     RemoveOverlayFromView();
                 }
@@ -1150,8 +1718,12 @@ public partial class G9SheetView : Grid
         }
 
         var fullHeight = Height > 0 ? Height : _bottomSheet.HeightRequest;
-        var visibleHeight = Math.Max(0, fullHeight - _bottomSheet.TranslationY);
-        PositionChanged.Invoke(this, new G9SheetViewPositionChangedEventArgs(visibleHeight, fullHeight));
+
+        // One args instance for the life of the control — this fires per animation frame and per
+        // touch-move, on the UI thread. See G9SheetViewPositionChangedEventArgs.
+        _positionChangedArgs.FullHeight = fullHeight;
+        _positionChangedArgs.VisibleHeight = Math.Max(0, fullHeight - _bottomSheet.TranslationY);
+        PositionChanged.Invoke(this, _positionChangedArgs);
     }
 
     #endregion
@@ -1199,16 +1771,29 @@ public partial class G9SheetView : Grid
         }
 
         _sheetTravelY += applied;
-        _bottomSheet.TranslationY = target;
 
-        // Below the smallest detent the body SLIDES OFF instead of shrinking: the sheet is being
-        // dismissed, not resized, and re-laying the content out on every frame while it leaves the
-        // screen costs a layout pass per frame and reads as the content collapsing in on itself.
-        // Above it the height tracks the position as before, so the body's bottom edge stays welded
-        // to the screen bottom.
-        var minRestingHeight = ResolveMinimumDetentHeight();
+        // ⛔ The body is laid out ONCE per gesture, not once per touch-move. It used to track the
+        // visible height here — `HeightRequest = visibleHeight` on every move — which is a full
+        // measure and arrange of the whole sheet body per frame, the single most expensive thing a
+        // drag can do. Instead the first move grows the body to the LARGEST detent it can reach
+        // (one layout pass) and everything after that is a translation: the part of the body below
+        // the screen edge is simply not visible, which is exactly how a native sheet positions its
+        // child. The settle that follows the release applies the resting height (CompleteMotion),
+        // and BottomPinnedView keeps a sticky footer at the screen edge in between.
+        if (!_isBodyExpandedForDrag)
+        {
+            _isBodyExpandedForDrag = true;
+            var maxDetentHeight = ResolveMaximumDetentHeight();
+            if (maxDetentHeight > _bottomSheet.HeightRequest + 0.5)
+            {
+                _bottomSheet.HeightRequest = maxDetentHeight;
+            }
+        }
+
+        _bottomSheet.TranslationY = target;
+        UpdateBottomPin();
+
         var visibleHeight = Math.Max(0, Height - target);
-        _bottomSheet.HeightRequest = Math.Max(visibleHeight, Math.Min(minRestingHeight, Height));
 
         RaisePositionChanged();
 
@@ -1345,20 +1930,32 @@ public partial class G9SheetView : Grid
         return progress * maxOpacity;
     }
 
-    private void HandleTouchReleased()
+    private void HandleTouchReleased(double velocityY)
     {
         _initialTouchY = 0;
         _isPointerPressed = false;
-        UpdateAfterRelease();
+
+        // Show() picks this up for the settle it starts, so a flick keeps its speed.
+        _releaseVelocityY = velocityY;
+        UpdateAfterRelease(velocityY);
+        _releaseVelocityY = 0;
     }
 
-    private void UpdateAfterRelease()
+    private void UpdateAfterRelease(double velocityY)
     {
         const double SwipeThreshold = 100;
         const double DoubleSwipeThreshold = SwipeThreshold * 2;
         var swipeDistance = _sheetTravelY;
 
         // whether it snaps to another state or becomes a close request.
+
+        // A FLING is judged on direction, not distance. Every native sheet does this, and without
+        // it a quick flick — the gesture people actually use — springs back while a slow long drag
+        // succeeds. It only ever decides between detents the sheet really has, and a fling on a
+        // gesture that travelled the other way (a finger reversing at the last instant) is ignored
+        // by requiring the two to agree.
+        var isFlingDown = velocityY > FlingVelocityThreshold && _dragTravelY > 0;
+        var isFlingUp = velocityY < -FlingVelocityThreshold && _dragTravelY < 0;
 
         // Fixed-state sheets (FitToContent or only one allowed detent) can't snap to a smaller
         // state — a downward drag past DragCloseThreshold is a close request instead. The
@@ -1367,12 +1964,17 @@ public partial class G9SheetView : Grid
         // all, which is precisely the case the gesture exists for.
         if (HasSingleAllowedState() &&
             IsCancelable &&
-            _dragTravelY > DragCloseThreshold)
+            (_dragTravelY > DragCloseThreshold || isFlingDown))
         {
             Show();
             BackRequested?.Invoke(
                 this,
                 new G9SheetViewBackRequestedEventArgs(G9SheetViewBackRequestReason.DragToClose));
+            return;
+        }
+
+        if ((isFlingUp || isFlingDown) && TryStepDetent(isFlingUp))
+        {
             return;
         }
 
@@ -1388,6 +1990,43 @@ public partial class G9SheetView : Grid
                 HandleReleaseFromCollapsed(swipeDistance, SwipeThreshold);
                 break;
         }
+    }
+
+    /// <summary>
+    ///     Steps ONE allowed detent in the fling's direction. Returns <c>false</c> when there is no
+    ///     detent that way, in which case the caller falls through to the distance rules — which is
+    ///     also where a downward fling from the smallest detent becomes a dismiss request.
+    /// </summary>
+    private bool TryStepDetent(bool up)
+    {
+        // Ordered smallest → largest. Coincident detents (a fit-to-content sheet describes all
+        // three at one position) are harmless here: such a sheet is single-state and never reaches
+        // this method.
+        G9SheetViewState[] order =
+        [
+            G9SheetViewState.Collapsed,
+            G9SheetViewState.HalfExpanded,
+            G9SheetViewState.FullExpanded
+        ];
+
+        var index = Array.IndexOf(order, State);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        for (var i = index + (up ? 1 : -1); i >= 0 && i < order.Length; i += up ? 1 : -1)
+        {
+            if (!IsDetentAllowed(order[i]))
+            {
+                continue;
+            }
+
+            State = order[i];
+            return true;
+        }
+
+        return false;
     }
 
     private bool HasSingleAllowedState()

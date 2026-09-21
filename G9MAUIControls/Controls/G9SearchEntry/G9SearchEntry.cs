@@ -88,7 +88,16 @@ public partial class G9SearchEntry : G9TextEntry
         // from code) so the debounce + SearchCommand fire consistently regardless of
         // how the value arrived.
         PropertyChanged += OnSearchPropertyChanged;
+
+        // The keyboard's return key reads "Search" and commits the query at once. SearchCommand's
+        // documentation (and the control guide) always promised this, but nothing was wired: the
+        // key showed the default label and did nothing beyond the debounce already running.
+        // The inner Entry is owned by this control, so the subscription shares its lifetime.
+        InnerEntry.ReturnType = ReturnType.Search;
+        InnerEntry.Completed += OnInnerEntryCompleted;
     }
+
+    private void OnInnerEntryCompleted(object? sender, EventArgs e) => Submit();
 
     /// <summary>
     ///     Fired after <see cref="DebounceMs" /> have elapsed since the last keystroke
@@ -144,11 +153,28 @@ public partial class G9SearchEntry : G9TextEntry
 
     private void Fire(string? value)
     {
-        DebouncedTextChanged?.Invoke(this, value);
-        if (SearchCommand is { } cmd && cmd.CanExecute(value))
+        // Runs from a timer tick / a platform key event — nothing above us would catch a
+        // throwing consumer handler, and an unhandled exception there takes the app down.
+        try
         {
-            cmd.Execute(value);
+            DebouncedTextChanged?.Invoke(this, value);
+            if (SearchCommand is { } cmd && cmd.CanExecute(value))
+            {
+                cmd.Execute(value);
+            }
         }
+        catch (Exception ex)
+        {
+            G9Press.ReportFailure(this, ex);
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnDetachedFromLiveTree()
+    {
+        // A pending debounce must not fire a search into a page that has just been left.
+        StopDebounce();
+        base.OnDetachedFromLiveTree();
     }
 
     /// <summary>

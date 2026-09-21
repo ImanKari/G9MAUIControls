@@ -69,6 +69,11 @@ public partial class G9Expander : G9ControlBase
     /// expand / collapse animation (rotation + height).</summary>
     private bool _animating;
 
+    // Stable paint state (G9Controls.md §12): the leading icon is rebuilt only when the icon
+    // itself (or its size) changes, and the frame stroke is one brush whose Color is mutated.
+    private readonly SolidColorBrush _frameStrokeBrush = new(Colors.Transparent);
+    private G9IconSlotSignature _iconSignature;
+
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _title;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private Color? _titleColor;
 
@@ -188,6 +193,7 @@ public partial class G9Expander : G9ControlBase
         {
             StrokeThickness = 0,
             StrokeShape = G9Colors.Round(G9Metrics.RadiusLg),
+            Stroke = _frameStrokeBrush,
             BackgroundColor = Colors.Transparent,
             IsVisible = false,
             InputTransparent = true
@@ -207,8 +213,6 @@ public partial class G9Expander : G9ControlBase
         ShowFrame = false;
         HeaderHeight = G9Metrics.ExpanderHeaderHeight;
         ContentPadding = new Thickness(0);
-
-        SemanticProperties.SetDescription(_header, Title);
     }
 
     /// <summary>Raised after <see cref="IsExpanded" /> changes, carrying the new state.</summary>
@@ -228,7 +232,6 @@ public partial class G9Expander : G9ControlBase
     private void OnIsExpandedChanged()
     {
         ApplyExpansionState(animate: true);
-        SemanticProperties.SetHint(_header, IsExpanded ? "Expanded" : "Collapsed");
         ExpandedChanged?.Invoke(this, IsExpanded);
     }
 
@@ -258,19 +261,23 @@ public partial class G9Expander : G9ControlBase
 
         _titleLabel.Text = Title ?? string.Empty;
         _titleHost.FlowDirection = G9Visuals.IsRtl ? FlowDirection.RightToLeft : FlowDirection.LeftToRight;
-        SemanticProperties.SetDescription(_header, Title);
+
+        // The header is the tap target, so it carries the accessible name — the expander's own,
+        // already-localized title. The open / closed state used to be announced with hard-coded
+        // English ("Expanded" / "Collapsed"), which a Persian screen reader mangles; the string
+        // catalogue has no key for either yet, so the state is left out rather than spoken in the
+        // wrong language. Wire it here once G9StringKey gains the two entries.
+        ApplySemantics(_header, Title);
 
         ApplyTextAndChevronColors();
 
-        // Leading icon (rebuilt only when icon props change — driven by OnVisualChanged).
-        var hasIcon = G9IconFactory.HasIcon(IconEmoji, Icon, IconPath, IconSource);
-        _iconHost.IsVisible = hasIcon;
-        _iconHost.Content = hasIcon
-            ? G9IconFactory.Create(
-                IconEmoji, Icon, IconPath, IconSource,
-                IconColor ?? G9Palette.Current.TextPrimary,
-                G9Metrics.ExpanderIconSize)
-            : null;
+        // Leading icon — rebuilt only when the icon inputs change, re-tinted otherwise. The
+        // earlier comment here claimed as much, but the view was in fact recreated every pass.
+        _iconHost.IsVisible = G9IconSlot.Apply(
+            _iconHost, ref _iconSignature,
+            IconEmoji, Icon, IconPath, IconSource,
+            IconColor ?? G9Palette.Current.TextPrimary,
+            G9Metrics.ExpanderIconSize);
 
         Opacity = IsEnabled ? 1 : 0.45;
 
@@ -299,7 +306,7 @@ public partial class G9Expander : G9ControlBase
         {
             _backgroundBorder.IsVisible = true;
             _backgroundBorder.BackgroundColor = palette.Surface;
-            _backgroundBorder.Stroke = new SolidColorBrush(palette.OutlineVariant);
+            if (!Equals(_frameStrokeBrush.Color, palette.OutlineVariant)) _frameStrokeBrush.Color = palette.OutlineVariant;
             _backgroundBorder.StrokeThickness = 1;
             _stack.Padding = new Thickness(G9Metrics.ExpanderHeaderPaddingX, G9Metrics.NavCardPaddingY);
         }
@@ -464,19 +471,19 @@ public partial class G9Expander : G9ControlBase
         }
     }
 
-    private async void OnHeaderTapped(object? sender, TappedEventArgs e)
+    private void OnHeaderTapped(object? sender, TappedEventArgs e)
     {
         if (!IsEnabled) return;
 
-        try
-        {
-            await _header.ScaleToAsync(0.99, 60, Easing.CubicIn).ConfigureAwait(true);
-            await _header.ScaleToAsync(1, 90, Easing.CubicOut).ConfigureAwait(true);
-        }
-        catch
-        {
-        }
+        // Toggle first, animate afterwards (G9Press). Awaiting the 150 ms header pulse before
+        // flipping IsExpanded delayed every open / close by that long, and a second tap landing
+        // inside the wait toggled twice — the section opened and immediately closed again.
+        G9Press.Invoke(this, () => IsExpanded = !IsExpanded, null, null, PlayHeaderFeedbackAsync);
+    }
 
-        IsExpanded = !IsExpanded;
+    private async Task PlayHeaderFeedbackAsync()
+    {
+        await _header.ScaleToAsync(0.99, 60, Easing.CubicIn).ConfigureAwait(true);
+        await _header.ScaleToAsync(1, 90, Easing.CubicOut).ConfigureAwait(true);
     }
 }

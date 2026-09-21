@@ -135,6 +135,15 @@ public partial class G9TabBar : ContentView
     private int _activeSelectedIndex;
     private int _revealingSelectedIndex = -1;
     private bool _applyingDefaultSelectedIndex;
+
+    // True while a TAP handler is writing SelectedIndex. The tap handlers choreograph the FAB state
+    // themselves (and read IsCenterFloating AFTER the write to tell a first tap from a second), so the
+    // programmatic reconciliation in ApplySelectedIndex must stay out of their way.
+    private bool _selectingFromGesture;
+
+    // Set when handler teardown detached the Items / SubMenuItems listeners; OnLoaded re-attaches and
+    // rebuilds, since changes made in between were not observed.
+    private bool _collectionListenersDetached;
     private bool _startupSelectionRevealQueued;
     private bool _indicatorPositioned;
     private double _indicatorTargetX;
@@ -316,18 +325,34 @@ public partial class G9TabBar : ContentView
     {
         // When the FAB slot changes the chrome notch and FAB button must move.
         // A full rebuild is the safest path because item-type (fab vs regular) changes.
+        // (The rebuild also drops the floating state when the FAB is gone — see ResetFabStateIfNoFab.)
         RebuildBottomButtons();
         UpdateAllVisuals(false);
     }
 
+    // An ObservableCollection raises CollectionChanged on whichever thread mutated it, and a view model
+    // filling Items from a background load is ordinary. Both handlers rebuild views, so they are
+    // marshalled here rather than left to fail as a cross-thread visual-tree mutation.
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        RebuildBottomButtons();
+        if (MainThread.IsMainThread)
+        {
+            RebuildBottomButtons();
+            return;
+        }
+
+        MainThread.BeginInvokeOnMainThread(RebuildBottomButtons);
     }
 
     private void OnSubMenuItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        RebuildSubMenuButtons();
+        if (MainThread.IsMainThread)
+        {
+            RebuildSubMenuButtons();
+            return;
+        }
+
+        MainThread.BeginInvokeOnMainThread(RebuildSubMenuButtons);
     }
 
     #endregion
@@ -342,7 +367,36 @@ public partial class G9TabBar : ContentView
             _themeHandlerAttached = true;
         }
 
+        if (_collectionListenersDetached)
+        {
+            _collectionListenersDetached = false;
+
+            if (_attachedItems is not null)
+            {
+                _attachedItems.CollectionChanged -= OnItemsCollectionChanged;
+                _attachedItems.CollectionChanged += OnItemsCollectionChanged;
+            }
+
+            if (_attachedSubMenuItems is not null)
+            {
+                _attachedSubMenuItems.CollectionChanged -= OnSubMenuItemsCollectionChanged;
+                _attachedSubMenuItems.CollectionChanged += OnSubMenuItemsCollectionChanged;
+            }
+
+            // Changes made while nothing was listening were missed.
+            RebuildBottomButtons();
+            RebuildSubMenuButtons();
+        }
+
         ApplyTheme();
+
+        // Normally a no-op: OnUnloaded already left everything at rest. It matters when state changed
+        // while the bar was unloaded and the animation that should have carried it never ran.
+        if (IsOffRestingState())
+        {
+            SnapToRestingState();
+        }
+
         LayoutElements();
         QueueStartupSelectionReveal();
     }
@@ -362,6 +416,103 @@ public partial class G9TabBar : ContentView
         this.AbortAnimation(BottomSelectionRevealAnimationName);
         _startupRevealVersion++;
         _indicator.AbortAnimation(IndicatorAnimationName);
+
+        // Aborting is only half of it. An aborted animation's `finished` callback returns early, so
+        // every progress field stays wherever the last frame left it — and nothing ever moved it
+        // again. Navigating away during the 300 ms sub-menu close brought the user back to a half-open
+        // menu, a live (tap-eating) backdrop and a reserved height that never shrank.
+        SnapToRestingState();
+    }
+
+    /// <summary>
+    ///     Final teardown: stop listening to the consumer's collections. They usually belong to a view
+    ///     model that outlives the page, and a live subscription keeps this bar — and the page it sits
+    ///     on — reachable from it. <c>OnLoaded</c> re-attaches if the bar is ever mounted again.
+    /// </summary>
+    protected override void OnHandlerChanging(HandlerChangingEventArgs args)
+    {
+        base.OnHandlerChanging(args);
+
+        if (args.NewHandler is not null)
+        {
+            return;
+        }
+
+        if (_attachedItems is not null)
+        {
+            _attachedItems.CollectionChanged -= OnItemsCollectionChanged;
+        }
+
+        if (_attachedSubMenuItems is not null)
+        {
+            _attachedSubMenuItems.CollectionChanged -= OnSubMenuItemsCollectionChanged;
+        }
+
+        _collectionListenersDetached = true;
+    }
+
+    /// <summary>
+    ///     True when an animated field is away from the value the bindable state says it should rest
+    ///     at, and no animation is running that would take it there.
+    /// </summary>
+    private bool IsOffRestingState()
+    {
+        const double tolerance = 0.001d;
+
+        var centerTarget = IsCenterFloating ? 1d : 0d;
+        if ((Math.Abs(_centerProgress - centerTarget) > tolerance && !this.AnimationIsRunning(CenterStateAnimationName)) ||
+            (Math.Abs(_chromeNotchProgress - centerTarget) > tolerance && !this.AnimationIsRunning(NotchBounceAnimationName)))
+        {
+            return true;
+        }
+
+        if (Math.Abs(_openProgress - (IsFabOpen ? 1d : 0d)) > tolerance && !this.AnimationIsRunning(OpenAnimationName))
+        {
+            return true;
+        }
+
+        return Math.Abs(_overflowProgress - (IsOverflowOpen ? 1d : 0d)) > tolerance &&
+               !this.AnimationIsRunning(OverflowAnimationName);
+    }
+
+    /// <summary>
+    ///     Puts every animated field at the value its bindable state implies, then re-applies the
+    ///     reserved height and all visuals from those values. Starts no animation, so it is safe from
+    ///     <c>Unloaded</c>.
+    /// </summary>
+    private void SnapToRestingState()
+    {
+        this.AbortAnimation(CenterStateAnimationName);
+        this.AbortAnimation(NotchBounceAnimationName);
+        this.AbortAnimation(OpenAnimationName);
+        this.AbortAnimation(OverflowAnimationName);
+        this.AbortAnimation(BottomSelectionRevealAnimationName);
+        _indicator.AbortAnimation(IndicatorAnimationName);
+
+        _centerProgress = IsCenterFloating ? 1d : 0d;
+        _chromeNotchProgress = _centerProgress;
+        _openProgress = IsFabOpen ? 1d : 0d;
+        _overflowProgress = IsOverflowOpen ? 1d : 0d;
+        _bottomSelectionRevealProgress = 1d;
+        _revealingSelectedIndex = -1;
+
+        // The per-slot nudge animations run on the slot views, not on `this`. Settle them directly and
+        // record the result, so the refresh inside UpdateAllVisuals finds nothing left to animate.
+        var highlighted = ResolveHighlightedSlot();
+        for (var i = 0; i < _bottomButtons.Count; i++)
+        {
+            var slot = _bottomButtons[i].Root;
+            slot.AbortAnimation($"G9TabBar.SlotTranslation_{i}");
+            slot.TranslationY = i == highlighted ? SelectedIndicatorDownNudgeY : 0d;
+        }
+
+        _highlightedSlotIndex = highlighted;
+
+        // Also invalidates any pending delayed shrink (it bumps the change version).
+        SetReservedHeight(ResolveTargetReservedHeight());
+
+        _indicatorPositioned = false;
+        UpdateAllVisuals(false);
     }
 
     private void OnSizeChanged(object? sender, EventArgs e)
@@ -437,6 +588,8 @@ public partial class G9TabBar : ContentView
         {
             _hitLayer.Children.Add(_fabButton);
         }
+
+        ResetFabStateIfNoFab();
 
         // Newly-instantiated overflow / overflow-trigger surfaces are unstyled; re-apply theme
         // so a re-assigned Items collection (e.g. on culture change) doesn't lose the glass.
@@ -874,7 +1027,7 @@ public partial class G9TabBar : ContentView
         if (HasFab && index == fabIndex)
         {
             ResetBottomSelectionReveal();
-            SelectedIndex = index;
+            SelectFromGesture(index);
 
             if (!IsCenterFloating)
             {
@@ -901,7 +1054,7 @@ public partial class G9TabBar : ContentView
             ResetBottomSelectionReveal();
         }
 
-        SelectedIndex = index;
+        SelectFromGesture(index);
         IsFabOpen = false;
 
         if (ResetCenterOnMenuSelection)
@@ -942,7 +1095,7 @@ public partial class G9TabBar : ContentView
         var fabIndex = ResolvedFabIndex;
         if (HasFab && Items?.Count > fabIndex)
         {
-            SelectedIndex = fabIndex;
+            SelectFromGesture(fabIndex);
         }
 
         if (!IsCenterFloating)
@@ -1016,7 +1169,7 @@ public partial class G9TabBar : ContentView
             ResetBottomSelectionReveal();
         }
 
-        SelectedIndex = sourceIndex;
+        SelectFromGesture(sourceIndex);
         IsOverflowOpen = false;
         IsFabOpen = false;
         if (ResetCenterOnMenuSelection)
@@ -1068,10 +1221,99 @@ public partial class G9TabBar : ContentView
         _activeSelectedIndex = index;
         UpdateAllVisuals(animate);
 
+        // A selection written in CODE (or through a binding) has to bring the FAB state with it. Only the
+        // tap handlers and ApplyDefaultSelectedIndex did that, so a programmatic switch away from the FAB
+        // tab left the FAB floating beside the newly highlighted tab — two items lit — and a switch TO it
+        // highlighted nothing at all. After UpdateAllVisuals, in the same order the tap path uses.
+        if (!_selectingFromGesture && !_applyingDefaultSelectedIndex)
+        {
+            ReconcileFabStateWithSelection(index);
+        }
+
         if (raiseEvent && changed)
         {
             ItemSelected?.Invoke(this, new G9TabBarSelectionChangedEventArgs(index, items[index], false));
         }
+    }
+
+    private void SelectFromGesture(int index)
+    {
+        _selectingFromGesture = true;
+        try
+        {
+            SelectedIndex = index;
+        }
+        finally
+        {
+            _selectingFromGesture = false;
+        }
+    }
+
+    /// <summary>
+    ///     Derives the FAB's floating / open state from the selection — the same rule
+    ///     <see cref="ApplyDefaultSelectedIndex" /> applies: the FAB tab selected means the FAB floats
+    ///     (closed); any other tab means it returns to the bar, when
+    ///     <see cref="ResetCenterOnMenuSelection" /> asks for that.
+    /// </summary>
+    private void ReconcileFabStateWithSelection(int index)
+    {
+        if (HasFab && index == ResolvedFabIndex)
+        {
+            if (!IsCenterFloating)
+            {
+                IsFabOpen = false;
+                IsCenterFloating = true;
+            }
+
+            return;
+        }
+
+        if (!ResetCenterOnMenuSelection)
+        {
+            return;
+        }
+
+        if (IsFabOpen)
+        {
+            IsFabOpen = false;
+        }
+
+        if (IsCenterFloating)
+        {
+            IsCenterFloating = false;
+        }
+    }
+
+    /// <summary>
+    ///     With no FAB there is nothing to float. Left alone, <c>FabIndex = -1</c> (or an Items change
+    ///     that folds the FAB slot into the overflow) while the FAB was floating kept the chrome's notch
+    ///     open over an invisible button, and the taller floating / open height reserved.
+    /// </summary>
+    private void ResetFabStateIfNoFab()
+    {
+        if (HasFab)
+        {
+            return;
+        }
+
+        var hadFabState = IsCenterFloating || IsFabOpen ||
+                          _centerProgress > 0d || _chromeNotchProgress > 0d || _openProgress > 0d;
+        if (!hadFabState)
+        {
+            return;
+        }
+
+        this.AbortAnimation(CenterStateAnimationName);
+        this.AbortAnimation(NotchBounceAnimationName);
+        this.AbortAnimation(OpenAnimationName);
+        _centerProgress = 0d;
+        _chromeNotchProgress = 0d;
+        _openProgress = 0d;
+
+        // Progress is already at rest, so these take the no-animation branch of their handlers and
+        // only schedule the reserved-height shrink.
+        IsFabOpen = false;
+        IsCenterFloating = false;
     }
 
     private void ApplyDefaultSelectedIndex()
@@ -1089,13 +1331,16 @@ public partial class G9TabBar : ContentView
         try
         {
             SelectedIndex = index;
+
+            // Inside the flag's scope so ApplySelectedIndex leaves the FAB state to the lines below,
+            // which are this method's own version of the same reconciliation.
+            ApplySelectedIndex(index, false, false);
         }
         finally
         {
             _applyingDefaultSelectedIndex = false;
         }
 
-        ApplySelectedIndex(index, false, false);
         IsFabOpen = false;
 
         if (HasFab && index == ResolvedFabIndex)
@@ -1607,28 +1852,7 @@ public partial class G9TabBar : ContentView
             return;
         }
 
-        var fabIndex = HasFab ? ResolvedFabIndex : -1;
-        var triggerSlot = HasOverflow ? OverflowTriggerSlotIndex : -1;
-        var activeSelectionInOverflow = HasOverflow && _activeSelectedIndex >= triggerSlot;
-
-        // Mirrors the highlighted formula in UpdateBottomButtonVisuals: opening the overflow
-        // column does NOT change the highlighted slot — only an actual overflow selection
-        // (activeSelectionInOverflow) promotes the More trigger.
-        int highlighted;
-        if (triggerSlot >= 0 && activeSelectionInOverflow)
-        {
-            highlighted = triggerSlot;
-        }
-        else if (_activeSelectedIndex >= 0
-                 && _activeSelectedIndex < _bottomButtons.Count
-                 && _activeSelectedIndex != fabIndex)
-        {
-            highlighted = _activeSelectedIndex;
-        }
-        else
-        {
-            highlighted = -1;
-        }
+        var highlighted = ResolveHighlightedSlot();
 
         if (highlighted == _highlightedSlotIndex)
         {
@@ -1647,6 +1871,36 @@ public partial class G9TabBar : ContentView
         {
             AnimateSlotTranslateY(highlighted, SelectedIndicatorDownNudgeY);
         }
+    }
+
+    /// <summary>The bottom slot that currently carries the selected-state nudge, or <c>-1</c>.</summary>
+    private int ResolveHighlightedSlot()
+    {
+        if (_bottomButtons.Count == 0)
+        {
+            return -1;
+        }
+
+        var fabIndex = HasFab ? ResolvedFabIndex : -1;
+        var triggerSlot = HasOverflow ? OverflowTriggerSlotIndex : -1;
+        var activeSelectionInOverflow = HasOverflow && _activeSelectedIndex >= triggerSlot;
+
+        // Mirrors the highlighted formula in UpdateBottomButtonVisuals: opening the overflow
+        // column does NOT change the highlighted slot — only an actual overflow selection
+        // (activeSelectionInOverflow) promotes the More trigger.
+        if (triggerSlot >= 0 && activeSelectionInOverflow)
+        {
+            return triggerSlot;
+        }
+
+        if (_activeSelectedIndex >= 0
+            && _activeSelectedIndex < _bottomButtons.Count
+            && _activeSelectedIndex != fabIndex)
+        {
+            return _activeSelectedIndex;
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -2167,7 +2421,7 @@ public partial class G9TabBar : ContentView
         _shadowView.LayoutHeightDip = _chromeDrawable.LayoutHeight;
         _shadowView.NotchCenterX = _chromeDrawable.NotchCenterX;
         _shadowView.CenterProgress = _chromeDrawable.CenterProgress;
-        _shadowView.InvalidateSurface();
+        _shadowView.InvalidateIfChanged();
     }
 
     private void LayoutElements(bool invalidateChrome = true)
@@ -2306,13 +2560,16 @@ public partial class G9TabBar : ContentView
         // Every path that moves/fades the FAB funnels through this method, so the circle can never
         // drift from the button. The shadow view and the hit layer share _root's coordinate space,
         // so fabY needs no translation. Scale rides FabRadius (MAUI Scale is center-anchored, so
-        // the center point itself is scale-invariant). The invalidate is coalesced by SKCanvasView
-        // when LayoutElements already invalidated in the same frame.
+        // the center point itself is scale-invariant).
+        //
+        // Repainted only when something it draws actually changed. This method also runs on every frame
+        // of the sub-menu OPEN animation, which moves none of the FAB geometry — and an unconditional
+        // InvalidateSurface() there re-ran two blurred Skia fills per frame for an identical picture.
         _shadowView.FabCenterX = (float)(HasFab ? fabCenterX : 0d);
         _shadowView.FabCenterY = (float)(fabY + (FabSize / 2d));
         _shadowView.FabRadius = (float)(FabSize / 2d * fabScale);
         _shadowView.FabVisibility = HasFab ? (float)Math.Clamp(fabVisibilityProgress, 0d, 1d) : 0f;
-        _shadowView.InvalidateSurface();
+        _shadowView.InvalidateIfChanged();
     }
 
     /// <summary>

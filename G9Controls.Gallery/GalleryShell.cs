@@ -24,6 +24,7 @@ public sealed class GalleryShell : Shell
         Items.Add(new ShellContent { Title = "Inputs", ContentTemplate = new DataTemplate(() => new InputsPage()) });
         Items.Add(new ShellContent { Title = "Actions", ContentTemplate = new DataTemplate(() => new ActionsPage()) });
         Items.Add(new ShellContent { Title = "Overlays", ContentTemplate = new DataTemplate(() => new OverlaysPage()) });
+        Items.Add(new ShellContent { Title = "Sheet Lab", ContentTemplate = new DataTemplate(() => new SheetLabPage()) });
         Items.Add(new ShellContent { Title = "Navigation", ContentTemplate = new DataTemplate(() => new NavigationSurfacesPage()) });
         Items.Add(new ShellContent { Title = "Satellites", ContentTemplate = new DataTemplate(() => new SatellitesPage()) });
 

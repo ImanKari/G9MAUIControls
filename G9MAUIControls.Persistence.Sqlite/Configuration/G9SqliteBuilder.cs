@@ -50,21 +50,40 @@ public sealed class G9SqliteOptions
     ///     Retry budget for <c>SQLITE_BUSY</c>. Built in rather than left to each call site, which is where
     ///     the source app put it — every data service reimplementing the same back-off loop.
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> No write path reads this or
+    ///     <see cref="BusyRetryInitialDelayMs" />; there is no retry loop in this version. What rides out a
+    ///     short lock today is SQLite's own <c>busy_timeout</c> (5 s), set by
+    ///     <see cref="G9SqliteConnectionProvider.ApplyPerformancePragmasAsync" /> and re-applied to every
+    ///     connection the provider opens afterwards.
+    /// </remarks>
     public int BusyRetryAttempts { get; internal set; } = 4;
 
     /// <summary>First back-off delay; doubles per attempt.</summary>
     public int BusyRetryInitialDelayMs { get; internal set; } = 180;
 
     /// <summary>Migrations, ascending by <see cref="IG9SqliteMigration.Version" />.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> Nothing runs this list. The working mechanism is
+    ///     <c>SqliteMigrationRunner.Register&lt;TMigration&gt;(version)</c> followed by
+    ///     <c>SqliteMigrationRunner.RunAsync(provider, logger)</c>.
+    /// </remarks>
     public IReadOnlyList<IG9SqliteMigration> Migrations { get; internal set; } = [];
 
     /// <summary>Initialisers, in registration order, run after migrations.</summary>
+    /// <remarks><b>RESERVED — currently has NO effect.</b> Nothing runs this list.</remarks>
     public IReadOnlyList<IG9SqliteInitializer> Initializers { get; internal set; } = [];
 
     /// <summary>Interceptors, in registration order.</summary>
+    /// <remarks><b>RESERVED — currently has NO effect.</b> No write path calls an interceptor.</remarks>
     public IReadOnlyList<IG9SqliteInterceptor> Interceptors { get; internal set; } = [];
 
     /// <summary>Frozen per-entity descriptors, keyed by entity type.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> The repository, the query builder and the caches do
+    ///     not consult descriptors yet; see the remarks on each <see cref="G9EntityBuilder{T}" /> member for
+    ///     what to use instead today.
+    /// </remarks>
     public IReadOnlyDictionary<Type, G9EntityDescriptor> Entities { get; internal set; } =
         new Dictionary<Type, G9EntityDescriptor>();
 
@@ -132,6 +151,14 @@ public sealed class G9SqliteBuilder
     /// <summary>Tunes the <c>SQLITE_BUSY</c> retry budget.</summary>
     /// <param name="attempts">Total attempts including the first. Below 1 is clamped to 1.</param>
     /// <param name="initialDelayMs">First back-off delay; doubles per attempt.</param>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> The values are stored and never read: this version has
+    ///     no <c>SQLITE_BUSY</c> retry loop, so callers that need one must still write it. What does ride out
+    ///     a short lock is SQLite's <c>busy_timeout</c> (5 s), set by
+    ///     <see cref="G9SqliteConnectionProvider.ApplyPerformancePragmasAsync" /> and re-applied to every
+    ///     connection the provider opens afterwards. It is deliberately NOT derived from these two numbers:
+    ///     an attempt count and a back-off delay do not translate into one timeout without inventing a rule.
+    /// </remarks>
     public G9SqliteBuilder UseBusyRetry(int attempts, int initialDelayMs = 180)
     {
         _options.BusyRetryAttempts = Math.Max(1, attempts);
@@ -147,6 +174,11 @@ public sealed class G9SqliteBuilder
     ///         set of migrations depend on what happens to be in the assembly.
     ///     </para>
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> The migration is stored and NEVER RUN. Register
+    ///     migrations with <c>SqliteMigrationRunner.Register&lt;TMigration&gt;(version)</c> and apply them
+    ///     with <c>SqliteMigrationRunner.RunAsync(provider, logger)</c> — that is the only runner there is.
+    /// </remarks>
     public G9SqliteBuilder AddMigration(IG9SqliteMigration migration)
     {
         ArgumentNullException.ThrowIfNull(migration);
@@ -155,10 +187,14 @@ public sealed class G9SqliteBuilder
     }
 
     /// <summary>Registers a migration by type, constructed with its parameterless constructor.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> See <see cref="AddMigration(IG9SqliteMigration)" />.
+    /// </remarks>
     public G9SqliteBuilder AddMigration<TMigration>() where TMigration : IG9SqliteMigration, new() =>
         AddMigration(new TMigration());
 
     /// <summary>Registers an initialiser, run once per resolved database path after migrations.</summary>
+    /// <remarks><b>RESERVED — currently has NO effect.</b> The initialiser is stored and never run.</remarks>
     public G9SqliteBuilder AddInitializer(IG9SqliteInitializer initializer)
     {
         ArgumentNullException.ThrowIfNull(initializer);
@@ -170,6 +206,11 @@ public sealed class G9SqliteBuilder
     ///     Registers an interceptor. Order matters when one stamps a field another reads — register the
     ///     general ones first.
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> The interceptor is stored and NEVER CALLED: no write
+    ///     path runs <c>OnWritingAsync</c> / <c>OnWrittenAsync</c>, so nothing is stamped and nothing can be
+    ///     vetoed. Do not rely on one for sync bookkeeping, tenancy or read-only rules in this version.
+    /// </remarks>
     public G9SqliteBuilder AddInterceptor(IG9SqliteInterceptor interceptor)
     {
         ArgumentNullException.ThrowIfNull(interceptor);
@@ -178,6 +219,9 @@ public sealed class G9SqliteBuilder
     }
 
     /// <summary>Registers an interceptor by type, constructed with its parameterless constructor.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> See <see cref="AddInterceptor(IG9SqliteInterceptor)" />.
+    /// </remarks>
     public G9SqliteBuilder AddInterceptor<TInterceptor>() where TInterceptor : IG9SqliteInterceptor, new() =>
         AddInterceptor(new TInterceptor());
 
@@ -270,6 +314,13 @@ public sealed class G9EntityBuilder<T> where T : new()
     ///     <c>COLLATE NOCASE</c>. The builder equivalent of <see cref="G9GuidIdAttribute" />, for when the
     ///     entity's assembly must not carry the attribute.
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> Neither this nor <see cref="G9GuidIdAttribute" /> is
+    ///     read. Normalisation on write and in predicates applies to a string property literally named
+    ///     <c>Id</c> and to properties marked <see cref="SqliteGuidIdColumnAttribute" /> — mark the property
+    ///     with THAT attribute. No column is declared <c>COLLATE NOCASE</c> by this library; that is the
+    ///     schema's job.
+    /// </remarks>
     public G9EntityBuilder<T> HasGuidId(Expression<Func<T, string?>> property)
     {
         _guidIds.Add(NameOf(property));
@@ -285,6 +336,11 @@ public sealed class G9EntityBuilder<T> where T : new()
     ///         queries — which is the single most common way a soft-delete implementation goes wrong.
     ///     </para>
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect. Every delete in this version is a HARD delete.</b> The
+    ///     flag is stored and never read. To soft-delete, write the flag yourself:
+    ///     <c>repo.Update.ExecuteAsync(q =&gt; q.Set(x =&gt; x.IsDeleted, true).Where(…))</c>.
+    /// </remarks>
     public G9EntityBuilder<T> SoftDelete(Expression<Func<T, bool>> flag)
     {
         _descriptor.SoftDeleteProperty = NameOf(flag);
@@ -295,6 +351,11 @@ public sealed class G9EntityBuilder<T> where T : new()
     ///     A predicate ANDed into every read of this entity. Usually <c>x =&gt; !x.IsDeleted</c>, or a
     ///     tenancy guard.
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect. No query is filtered by it</b> — not reads, not updates, not
+    ///     deletes. Do NOT rely on it as a tenancy or soft-delete guard: put the predicate in each query's
+    ///     <c>Where</c>.
+    /// </remarks>
     public G9EntityBuilder<T> AlwaysFilter(Expression<Func<T, bool>> filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
@@ -303,6 +364,10 @@ public sealed class G9EntityBuilder<T> where T : new()
     }
 
     /// <summary>Creates an index over one or more properties at initialisation.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> No index is created. Create it in a migration
+    ///     (<c>CREATE INDEX IF NOT EXISTS …</c>) or with sqlite-net's <c>[Indexed]</c> attribute.
+    /// </remarks>
     public G9EntityBuilder<T> Index(params Expression<Func<T, object?>>[] properties)
     {
         _indexes.Add(new G9IndexDescriptor([.. properties.Select(NameOfObject)], IsUnique: false));
@@ -311,6 +376,10 @@ public sealed class G9EntityBuilder<T> where T : new()
     }
 
     /// <summary>Creates a unique index over one or more properties.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect. No uniqueness is enforced.</b> Create the unique index in
+    ///     a migration or with sqlite-net's <c>[Indexed(Unique = true)]</c>.
+    /// </remarks>
     public G9EntityBuilder<T> Unique(params Expression<Func<T, object?>>[] properties)
     {
         _indexes.Add(new G9IndexDescriptor([.. properties.Select(NameOfObject)], IsUnique: true));
@@ -319,6 +388,12 @@ public sealed class G9EntityBuilder<T> where T : new()
     }
 
     /// <summary>Sets the default conflict policy for inserts on this entity. Overridable per call.</summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect</b>, and there is no per-call override either. The conflict
+    ///     behaviour is chosen by the METHOD: <c>Insert.OneAsync</c> / <c>ManyAsync</c> / <c>BatchAsync</c>
+    ///     fail on a key collision, <c>Insert.OrReplaceAsync</c> replaces the row, and
+    ///     <c>Insert.MergeAsync</c> upserts (<c>ON CONFLICT … DO UPDATE</c>).
+    /// </remarks>
     public G9EntityBuilder<T> OnConflict(G9ConflictPolicy policy)
     {
         _descriptor.ConflictPolicy = policy;
@@ -329,6 +404,12 @@ public sealed class G9EntityBuilder<T> where T : new()
     ///     Caches this entity's rows in memory. Only for small, hot, rarely-written tables — the cache holds
     ///     every row and a write invalidates all of it.
     /// </summary>
+    /// <remarks>
+    ///     <b>RESERVED — currently has NO effect.</b> No cache is created from it and the debounce value is
+    ///     not read (the window is a fixed 300 ms). Define a cache explicitly with
+    ///     <c>SqliteRepository&lt;T&gt;.DefineCache(provider)</c> or
+    ///     <c>SqliteDtoCache&lt;TEntity, TDto&gt;.DefineCache(…)</c>.
+    /// </remarks>
     public G9EntityBuilder<T> Cache(G9CachePolicy policy)
     {
         ArgumentNullException.ThrowIfNull(policy);

@@ -113,7 +113,7 @@ public static class G9BottomSheetHelper
     {
         ArgumentNullException.ThrowIfNull(content);
         var request = SheetContentRequest.FromContent(content);
-        ShowAutoG9BottomSheet(request, options);
+        _ = ShowAutoG9BottomSheet(request, options);
     }
 
     /// <summary>
@@ -127,7 +127,7 @@ public static class G9BottomSheetHelper
     {
         ArgumentNullException.ThrowIfNull(contentFactory);
         var request = SheetContentRequest.FromFactory(contentFactory);
-        ShowAutoG9BottomSheet(request, options);
+        _ = ShowAutoG9BottomSheet(request, options);
     }
 
     /// <summary>
@@ -183,7 +183,6 @@ public static class G9BottomSheetHelper
                 return;
             }
 
-
             // Fallback: classic replace — close whatever is on top (runs the outgoing step's
             // Closing/Closed commands exactly like the legacy CloseTopG9BottomSheet + ShowG9BottomSheet
             // pattern) and let the show pipeline queue the new sheet behind the sped-up close.
@@ -236,7 +235,6 @@ public static class G9BottomSheetHelper
         CancelDeferredLoad(sheet);
         sheet.AbortAnimation(FitContentResizeAnimationName);
 
-
         // The new body is prebuilt (the caller constructed it before calling), so there is no
         // heavy build to hide behind a spinner and no open animation to keep it off — deferring
         // here would only insert a between-steps spinner flash.
@@ -255,6 +253,9 @@ public static class G9BottomSheetHelper
 
         ApplyOptions(sheet, morphOptions);
         var handle = new G9BottomSheetHandleImpl(sheet);
+
+        // The outgoing step's footer leaves with its root; the new root registers its own, if any.
+        sheet.BottomPinnedView = null;
         var newRoot = CreateSheetContentRoot(sheet, request, handle, morphOptions);
         newRoot.Opacity = 0;
 
@@ -378,7 +379,7 @@ public static class G9BottomSheetHelper
         var resolvedOptions = (options ?? G9BottomSheetOptions.FitToContentOptions()) with { DeferContent = false };
         var processingView = new ProcessingSheetContentView(buildAsync, onError, loadingHeight);
         var request = SheetContentRequest.FromContent(processingView);
-        ShowAutoG9BottomSheet(request, resolvedOptions);
+        _ = ShowAutoG9BottomSheet(request, resolvedOptions);
     }
 
     /// <summary>
@@ -427,6 +428,14 @@ public static class G9BottomSheetHelper
         return MainThread.InvokeOnMainThreadAsync(() =>
         {
             var host = G9ModalHostRegistry.GetCurrentHostOrThrow();
+
+            if (ResolveReplaceTarget(host, resolvedOptions) is { } replaced)
+            {
+                return OpenPrimarySheet(host.OverlayHost,
+                    new PendingPrimarySheetRequest(contentRequest, resolvedOptions, host.Page.FlowDirection),
+                    replaced);
+            }
+
             var hasOpenSheet = GetOpenSheetCount() > 0;
 
             if (hasOpenSheet)
@@ -459,7 +468,11 @@ public static class G9BottomSheetHelper
     // the primary) and the removed ShowStackedG9BottomSheet (always created a stacked sheet, even
     // when nothing was open — which produced orphan stacked sheets with no backdrop owner). The
     // factory full-screen path (ShowFullScreenAsync) uses the same detection.
-    private static void ShowAutoG9BottomSheet(SheetContentRequest contentRequest, G9BottomSheetOptions? options)
+    /// <returns>
+    ///     <c>false</c> when the open throttle swallowed the request, so a caller that is AWAITING
+    ///     the sheet can complete its task instead of waiting for a sheet that will never exist.
+    /// </returns>
+    private static bool ShowAutoG9BottomSheet(SheetContentRequest contentRequest, G9BottomSheetOptions? options)
     {
         // Throttle synchronously at the entry point (not inside the dispatch below) so a rapid
         // double-tap collapses to a single open. If the check ran after the open-sheet decision,
@@ -470,10 +483,11 @@ public static class G9BottomSheetHelper
 
         if (!G9SafeCommand.TryThrottle(nameof(ShowG9BottomSheet)))
         {
-            return;
+            return false;
         }
 
         ShowAutoG9BottomSheetCore(contentRequest, resolvedOptions);
+        return true;
     }
 
     // The un-throttled show pipeline. Split out so ReplaceG9BottomSheet (which throttles once at
@@ -485,43 +499,193 @@ public static class G9BottomSheetHelper
 
         MainThread.BeginInvokeOnMainThread(() =>
         {
-
-            // Automatic stacking: when any sheet (primary or stacked) is currently open, the new
-            // sheet is opened stacked on top of it. To replace the current sheet instead, the
-            // caller closes it first.
-            if (GetOpenSheetCount() > 0)
+            try
             {
-                OpenStackedSheet(host, contentRequest, resolvedOptions);
+                OpenAutoOnMainThread(host, contentRequest, resolvedOptions);
+            }
+            catch (Exception exception)
+            {
+                // ⛔ This lambda runs on the dispatcher, so the caller of ShowG9BottomSheet has long
+                // since returned and cannot catch anything. An exception escaping from here (a
+                // throwing content factory, header view or created-callback) used to surface as an
+                // unhandled dispatcher exception — a crash — or, where something upstream swallowed
+                // it, as a tap that silently did nothing. It is now either handed to the awaiting
+                // caller (ShowG9BottomSheetAsync) or reported through the library's error pipeline.
+                FailOpen(contentRequest, exception);
+            }
+        });
+    }
+
+    private static void OpenAutoOnMainThread(
+        ModalHost host,
+        SheetContentRequest contentRequest,
+        G9BottomSheetOptions resolvedOptions)
+    {
+
+        if (ResolveReplaceTarget(host, resolvedOptions) is { } replaced)
+        {
+            OpenPrimarySheet(
+                host.OverlayHost,
+                new PendingPrimarySheetRequest(contentRequest, resolvedOptions, host.Page.FlowDirection),
+                replaced);
+            return;
+        }
+
+        // Automatic stacking: when any sheet (primary or stacked) is currently open, the new
+        // sheet is opened stacked on top of it. To replace the current sheet instead, the
+        // caller closes it first.
+        if (GetOpenSheetCount() > 0)
+        {
+            OpenStackedSheet(host, contentRequest, resolvedOptions);
+            return;
+        }
+
+        var state = GetPrimarySheetState(host.OverlayHost);
+        var request = new PendingPrimarySheetRequest(contentRequest, resolvedOptions, host.Page.FlowDirection);
+
+        lock (StackLock)
+        {
+            if (state.IsTransitioning)
+            {
+                // Only one request can wait behind a closing sheet. The one being displaced is
+                // told so — left alone, its awaiter would wait for a sheet that will never open.
+                state.PendingRequest?.ContentRequest.Completion?.TrySetResult(null);
+                state.PendingRequest = request;
                 return;
             }
 
-            var state = GetPrimarySheetState(host.OverlayHost);
-            var request = new PendingPrimarySheetRequest(contentRequest, resolvedOptions, host.Page.FlowDirection);
-
-            lock (StackLock)
+            // GetOpenSheetCount() == 0 but a previous primary sheet can still be alive while
+            // its close animation runs (Close() flips IsOpen false synchronously). Queue the
+            // new request and let that sheet's cleanup open it so the two never overlap.
+            var currentSheet = GetPrimarySheet(host.OverlayHost);
+            if (currentSheet is not null && IsSheetAlive(currentSheet))
             {
-                if (state.IsTransitioning)
-                {
-                    state.PendingRequest = request;
-                    return;
-                }
-
-                // GetOpenSheetCount() == 0 but a previous primary sheet can still be alive while
-                // its close animation runs (Close() flips IsOpen false synchronously). Queue the
-                // new request and let that sheet's cleanup open it so the two never overlap.
-                var currentSheet = GetPrimarySheet(host.OverlayHost);
-                if (currentSheet is not null && IsSheetAlive(currentSheet))
-                {
-                    state.PendingRequest = request;
-                    state.IsTransitioning = true;
-                    MarkQuickCloseForQueuedReplace(currentSheet);
-                    CloseSheet(currentSheet);
-                    return;
-                }
+                state.PendingRequest = request;
+                state.IsTransitioning = true;
+                MarkQuickCloseForQueuedReplace(currentSheet);
+                CloseSheet(currentSheet);
+                return;
             }
+        }
 
-            OpenPrimarySheet(host.OverlayHost, request);
-        });
+        OpenPrimarySheet(host.OverlayHost, request);
+    }
+
+    /// <summary>
+    ///     The sheet a <see cref="G9BottomSheetOptions.ReplaceCurrentSheet" /> request takes the place
+    ///     of, or <c>null</c> when the request should open / stack as usual.
+    /// </summary>
+    private static CustomizedSfG9BottomSheet? ResolveReplaceTarget(ModalHost host, G9BottomSheetOptions options)
+    {
+        // Needs the staged pipeline: the hand-off happens at the point a staged sheet is ready.
+        if (!options.ReplaceCurrentSheet || !Settings.StageBeforeShow)
+        {
+            return null;
+        }
+
+        var primary = GetPrimarySheet(host.OverlayHost);
+        if (primary is not { IsOpen: true } || !IsSheetAlive(primary) || IsSheetClosing(primary))
+        {
+            return null;
+        }
+
+        lock (StackLock)
+        {
+            // Something is stacked on the primary: replacing the primary underneath it would orphan
+            // the stack. The request stacks like any other.
+            var stack = StackedSheets.GetValue(host.OverlayHost, static _ => new Stack<CustomizedSfG9BottomSheet>());
+            return stack.Count == 0 ? primary : null;
+        }
+    }
+
+    /// <summary>
+    ///     True when another sheet has been attached to take the place of <paramref name="handle" />'s
+    ///     sheet (see <see cref="G9BottomSheetOptions.ReplaceCurrentSheet" />). Lets a sheet that
+    ///     launched a replacement tell "my successor is on its way" from "nothing was opened".
+    /// </summary>
+    public static bool IsBeingReplaced(IG9BottomSheetHandle? handle)
+    {
+        return handle is G9BottomSheetHandleImpl impl &&
+               impl.TryGetSheet(out var sheet) &&
+               ReplacedSheets.TryGetValue(sheet, out _);
+    }
+
+    /// <summary>
+    ///     Routes a failure of the open pipeline to whoever can act on it: the awaiting caller when
+    ///     there is one, otherwise the library's standard error reporting (logged, and shown).
+    /// </summary>
+    private static void FailOpen(SheetContentRequest contentRequest, Exception exception)
+    {
+        if (contentRequest.Completion is { } completion)
+        {
+            completion.TrySetException(exception);
+            return;
+        }
+
+        G9SafeCommand.RunSafe(
+            () => Task.FromException(exception),
+            new G9SafeCommandOptions
+            {
+                Source = nameof(G9BottomSheetHelper),
+                EnableThrottle = false,
+                PreventConcurrentExecution = false,
+                ThrottleKey = $"{nameof(G9BottomSheetHelper)}.{nameof(FailOpen)}"
+            });
+    }
+
+    /// <summary>
+    ///     Shows an already-built view and returns once the sheet exists, FAULTING if the open
+    ///     pipeline throws.
+    /// </summary>
+    /// <remarks>
+    ///     <see cref="ShowG9BottomSheet(View, G9BottomSheetOptions?)" /> returns <c>void</c> and
+    ///     does its work on the dispatcher, so its caller can neither await the sheet nor observe a
+    ///     failure. Use this overload when either matters. The task completes with the sheet's
+    ///     handle as soon as the sheet is attached and its open has been started (it does not wait
+    ///     for the open motion to finish). When the open throttle swallows the request — a rapid
+    ///     double tap — the task completes with <c>null</c> instead of never completing.
+    /// </remarks>
+    public static Task<IG9BottomSheetHandle?> ShowG9BottomSheetAsync(
+        View content,
+        G9BottomSheetOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        return ShowAutoG9BottomSheetAsync(SheetContentRequest.FromContent(content), options);
+    }
+
+    /// <summary>
+    ///     Factory overload of <see cref="ShowG9BottomSheetAsync(View, G9BottomSheetOptions?)" />.
+    /// </summary>
+    public static Task<IG9BottomSheetHandle?> ShowG9BottomSheetAsync(
+        Func<View> contentFactory,
+        G9BottomSheetOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(contentFactory);
+        return ShowAutoG9BottomSheetAsync(SheetContentRequest.FromFactory(contentFactory), options);
+    }
+
+    private static Task<IG9BottomSheetHandle?> ShowAutoG9BottomSheetAsync(
+        SheetContentRequest contentRequest,
+        G9BottomSheetOptions? options)
+    {
+        var completion = new TaskCompletionSource<IG9BottomSheetHandle?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var request = contentRequest with { Completion = completion };
+
+        try
+        {
+            if (!ShowAutoG9BottomSheet(request, options))
+            {
+                completion.TrySetResult(null);
+            }
+        }
+        catch (Exception exception)
+        {
+            // GetCurrentHostOrThrow: no page to host the sheet.
+            completion.TrySetException(exception);
+        }
+
+        return completion.Task;
     }
 
     /// <summary>
@@ -618,6 +782,8 @@ public static class G9BottomSheetHelper
     {
         ArgumentNullException.ThrowIfNull(settings);
         Settings = settings.Normalize();
+        CustomizedSfG9BottomSheet.UseHardwareLayerDuringMotion = Settings.UseHardwareLayerDuringMotion;
+        G9SheetMotionDriver.UseFrameClock = Settings.UseFrameClockMotion;
     }
 
     /// <summary>
@@ -682,6 +848,39 @@ public static class G9BottomSheetHelper
         return (int)Math.Round(Math.Max(0, baseDuration * scale));
     }
 
+    // Resolves the SHAPE of one sheet motion — duration and curve together (called once per motion
+    // by AnimateG9BottomSheet through MotionSpecProvider).
+    //
+    //   • PlatformNative: the platform's own model (G9SheetMotionModel), timed from the distance
+    //     and the release velocity. A per-sheet Open/CloseAnimationDurationMs overrides the TIME
+    //     for that direction and keeps the native curve.
+    //   • Timed: the configured duration (size-scaled when enabled) on a CubicOut curve, with the
+    //     fling shortening the sheet view used to apply itself.
+    private static G9SheetMotionSpec ResolveSheetMotion(G9BottomSheetOptions options, G9SheetMotionRequest request)
+    {
+        if (Settings.MotionStyle == G9SheetMotionStyle.Timed)
+        {
+            var timedMs = ResolveSheetMotionDurationMs(options, request.From, request.To, request.HostHeight);
+            var speed = Math.Abs(request.VelocityY);
+            if (speed > TimedFlingVelocityThreshold)
+            {
+                var flingMs = (int)Math.Round(request.Distance / speed * 1000 * 2);
+                timedMs = Math.Min(timedMs, Math.Max(TimedMinimumFlingDurationMs, flingMs));
+            }
+
+            return new G9SheetMotionSpec(timedMs, Easing.CubicOut.Ease);
+        }
+
+        var native = G9SheetMotionModel.ResolvePlatformNative(request);
+        var overrideMs = request.IsRising ? options.OpenAnimationDurationMs : options.CloseAnimationDurationMs;
+        return overrideMs is { } explicitMs
+            ? native with { DurationMs = (int)Math.Round(Math.Max(0, explicitMs)) }
+            : native;
+    }
+
+    private const double TimedFlingVelocityThreshold = 700;
+    private const int TimedMinimumFlingDurationMs = 110;
+
     // Picks the effective LoadDelayMs for a DeferredContentView wrapping a full-screen sheet
     // body. The DeferredContentView shows a centered spinner for LoadDelayMs and *then* runs
     // the heavy ContentFactory() / Content = newContent swap on the UI thread. If that swap
@@ -725,7 +924,12 @@ public static class G9BottomSheetHelper
         }
 
         var primarySheet = GetPrimarySheet(host.OverlayHost);
-        var count = primarySheet?.IsOpen == true
+
+        // A STAGED primary counts as open. It is attached and about to slide in; treating it as
+        // absent would send a show that arrives during its off-screen hold down the "replace the
+        // closing sheet" path — closing a sheet the user has not even seen yet — instead of
+        // stacking on it.
+        var count = primarySheet is { IsOpen: true } or { IsStaged: true }
             ? 1
             : host.G9BottomSheet.IsOpen
                 ? 1
@@ -771,7 +975,6 @@ public static class G9BottomSheetHelper
             return;
         }
 
-
         ApplyStateAwareTopPadding(sheet, animated: true);
         UpdateModalOverlayBackground(sheet, animated: true);
         CloseFixedFullScreenSheetFromNativeDismissState(sheet, e.NewState);
@@ -791,7 +994,6 @@ public static class G9BottomSheetHelper
         {
             return;
         }
-
 
         ApplyStateAwareTopPadding(sheet, animated: true);
         UpdateModalOverlayBackground(sheet, animated: true);
@@ -903,15 +1105,51 @@ public static class G9BottomSheetHelper
     {
         sheet.StateChanged -= OnPrimarySheetStateChanged;
 
+        // A sheet abandoned while it was staged to REPLACE another gives the slot back, and the
+        // sheet it was going to replace gets its input back: nothing took its place after all.
+        CustomizedSfG9BottomSheet? restored = null;
+        if (SheetBehaviorStates.TryGetValue(sheet, out var closingBehavior) &&
+            closingBehavior?.Replaces is { } neverReplaced)
+        {
+            closingBehavior.Replaces = null;
+            closingBehavior.BeforeShow = null;
+            ReplacedSheets.Remove(neverReplaced);
+
+            if (IsSheetAlive(neverReplaced) && neverReplaced.IsOpen && !IsSheetClosing(neverReplaced))
+            {
+                neverReplaced.InputTransparent = false;
+                restored = neverReplaced;
+            }
+        }
+
         Grid? overlayHost = null;
+        var isSuperseded = false;
         if (sheet.Parent is Grid parentGrid)
         {
             overlayHost = parentGrid;
-            SetPrimarySheet(parentGrid, null);
+
+            // ⛔ Only the CURRENT primary may clear the slot. A replaced sheet is cleaned up AFTER its
+            // successor took the slot; clearing it here would orphan the sheet on screen — no back
+            // handling, no CloseG9BottomSheet, and the next show would open under it.
+            if (ReferenceEquals(GetPrimarySheet(parentGrid), sheet))
+            {
+                SetPrimarySheet(parentGrid, restored);
+            }
+            else
+            {
+                isSuperseded = true;
+            }
         }
 
         RunClosedCommandIfNeeded(sheet);
         CleanupSheetVisuals(sheet, overlayHost);
+
+        if (isSuperseded)
+        {
+            // The successor owns the backdrop transform and the pending-request queue now.
+            return;
+        }
+
         ResetBackdropCardTransformForHost(overlayHost);
 
         if (overlayHost is null)
@@ -930,7 +1168,17 @@ public static class G9BottomSheetHelper
 
         if (pendingRequest is not null)
         {
-            OpenPrimarySheet(overlayHost, pendingRequest);
+            try
+            {
+                OpenPrimarySheet(overlayHost, pendingRequest);
+            }
+            catch (Exception exception)
+            {
+                // This runs inside a BeginInvokeOnMainThread(async ...) continuation, i.e. an
+                // async-void frame: anything that escapes is an unhandled exception, a process
+                // crash. Route it exactly like a failure of a direct open instead.
+                FailOpen(pendingRequest.ContentRequest, exception);
+            }
         }
     }
 
@@ -954,6 +1202,17 @@ public static class G9BottomSheetHelper
                 await Task.Delay(delayMs).ConfigureAwait(true);
             }
 
+            // The delay is the motion's NOMINAL length. The motion itself can run longer — a frame
+            // hitch is absorbed as a pause, not skipped over — and tearing the sheet down under a
+            // close that is still on screen is a visible pop. Bounded, so a lost completion can
+            // delay a cleanup but never strand one.
+            if (sheet.IsMotionRunning)
+            {
+                await G9FrameAwaiter.WaitUntilAsync(
+                    () => !sheet.IsMotionRunning,
+                    G9FrameAwaiter.Deadline.After(CloseAnimationTimeoutMs)).ConfigureAwait(true);
+            }
+
             if (ShouldCleanupClosedSheet(sheet))
             {
                 cleanup();
@@ -969,6 +1228,13 @@ public static class G9BottomSheetHelper
             if (delayMs > 0)
             {
                 await Task.Delay(delayMs).ConfigureAwait(true);
+            }
+
+            // A replaced sheet's delayed reset lands while its successor is rising and driving the
+            // same transform; resetting it there snaps the page back to full size under the sheet.
+            if (ReplacedSheets.TryGetValue(sheet, out var successor) && IsSheetAlive(successor))
+            {
+                return;
             }
 
             ResetBackdropCardTransformForCurrentHost(source);
@@ -1046,7 +1312,10 @@ public static class G9BottomSheetHelper
                 return;
             }
 
-            if (sheet.IsOpen || sheet.State != SfG9BottomSheetState.Hidden)
+            // A staged sheet (parked off-screen, not opened yet) is closed like any other. Without
+            // the IsStaged term a close that lands during the hold would be ignored whenever the
+            // sheet's State is still Hidden, and the abandoned sheet would stay in the overlay host.
+            if (sheet.IsOpen || sheet.IsStaged || sheet.State != SfG9BottomSheetState.Hidden)
             {
                 RunClosingCommandIfNeeded(sheet);
                 AbortSheetAnimationsForClose(sheet);
@@ -1146,6 +1415,13 @@ public static class G9BottomSheetHelper
         var behavior = SheetBehaviorStates.GetValue(
             sheet,
             static _ => new SheetBehaviorState(G9BottomSheetOptions.DefaultOptions()));
+
+        // The close that is running knows how long it takes (quick-close scale included) — under
+        // the platform-native motion model that is resolved per motion, not configured.
+        if (sheet.IsMotionRunning && sheet.CurrentMotionDurationMs > 0)
+        {
+            return Math.Clamp(sheet.CurrentMotionDurationMs, 0, CloseAnimationTimeoutMs);
+        }
 
         // The cleanup delay covers the worst-case close animation length, so we use the
         // (non-scaled) Close duration — even a full FullExpanded → Hidden close must finish
@@ -1357,7 +1633,6 @@ public static class G9BottomSheetHelper
             ? ResolveStateAwareTopPadding(sheet, behavior.Options)
             : 0;
 
-
         ApplyTopPaddingTargets(behavior, targetPadding, animated);
     }
 
@@ -1478,16 +1753,31 @@ public static class G9BottomSheetHelper
 
         SeedExpandedFitsContentDetent(sheet, options);
         ApplyStateAwareTopPadding(sheet, animated: false);
-        ApplySheetContentSizing(sheet, contentRoot, options);
-        UpdateModalOverlayBackground(sheet, animated: false);
-        ScheduleFitToContentRefresh(sheet, contentRoot, options);
-        // Late settle re-measures. The MeasureInvalidated tracker can't see a content tree whose
-        // growth is absorbed by an inner ScrollView/list (a top-level scroller's own desired size
-        // doesn't change when its content grows), so a freshly-built tall body that measures short
-        // on the first frame would never re-measure. These two delayed passes catch the settled
-        // height. They are instant (no animation) and cheap no-ops for provider/short content.
-        ScheduleFitToContentRefresh(sheet, contentRoot, options, delayMs: 160);
-        ScheduleFitToContentRefresh(sheet, contentRoot, options, delayMs: 380);
+
+        if (Settings.StageBeforeShow)
+        {
+            // ⛔ NO sizing here. At this point the sheet is not in the visual tree, so neither it
+            // nor its body has a platform handler — and a handler-less MAUI view reports a desired
+            // size of ZERO. Measuring here is what produced the "cold measure" every sheet used to
+            // open with, and the settle passes, the MeasureInvalidated-as-first-measure, the height
+            // memo and the seed table were all built to hide that zero. The first measure now runs
+            // in StageAndShowAsync, after the sheet is attached and the handlers exist.
+            UpdateModalOverlayBackground(sheet, animated: false);
+        }
+        else
+        {
+            ApplySheetContentSizing(sheet, contentRoot, options);
+            UpdateModalOverlayBackground(sheet, animated: false);
+            ScheduleFitToContentRefresh(sheet, contentRoot, options);
+            // Late settle re-measures. The MeasureInvalidated tracker can't see a content tree whose
+            // growth is absorbed by an inner ScrollView/list (a top-level scroller's own desired size
+            // doesn't change when its content grows), so a freshly-built tall body that measures short
+            // on the first frame would never re-measure. These two delayed passes catch the settled
+            // height. They are instant (no animation) and cheap no-ops for provider/short content.
+            ScheduleFitToContentRefresh(sheet, contentRoot, options, delayMs: 160);
+            ScheduleFitToContentRefresh(sheet, contentRoot, options, delayMs: 380);
+        }
+
         AttachFitToContentSizeTracking(sheet, contentRoot, options);
         AttachExpandedBodyScrollRewind(sheet, options);
     }
@@ -1536,22 +1826,34 @@ public static class G9BottomSheetHelper
         };
     }
 
-    private static IG9BottomSheetHandle OpenPrimarySheet(Grid overlayHost, PendingPrimarySheetRequest request)
+    private static IG9BottomSheetHandle OpenPrimarySheet(
+        Grid overlayHost,
+        PendingPrimarySheetRequest request,
+        CustomizedSfG9BottomSheet? replaces = null)
     {
         try
         {
             var sheet = CreateG9BottomSheet(request.Options);
             sheet.FlowDirection = request.FlowDirection;
             var handle = new G9BottomSheetHandleImpl(sheet);
+
             ConfigureSheetContent(sheet, request.ContentRequest, handle, request.Options);
             sheet.StateChanged += OnPrimarySheetStateChanged;
 
-            AttachModalOverlay(sheet, overlayHost, request.Options);
+            // REPLACING an open sheet: this one's dim goes UNDER the sheet it replaces, so that the
+            // outgoing sheet is never itself dimmed by its successor's overlay while it slides out.
+            AttachModalOverlay(sheet, overlayHost, request.Options, below: replaces);
             overlayHost.Children.Add(sheet);
             SetPrimarySheet(overlayHost, sheet);
 
+            if (replaces is not null)
+            {
+                BeginReplace(sheet, replaces);
+            }
+
             OpenSheet(sheet, request.Options);
 
+            request.ContentRequest.Completion?.TrySetResult(handle);
             return handle;
         }
         catch
@@ -1578,6 +1880,7 @@ public static class G9BottomSheetHelper
         var sheet = CreateG9BottomSheet(options);
         sheet.FlowDirection = host.Page.FlowDirection;
         var handle = new G9BottomSheetHandleImpl(sheet);
+
         ConfigureSheetContent(sheet, contentRequest, handle, options);
 
         int stackDepth;
@@ -1592,11 +1895,24 @@ public static class G9BottomSheetHelper
         AttachModalOverlay(sheet, host.OverlayHost, options);
         host.OverlayHost.Children.Add(sheet);
 
-        // Parent recede runs in PARALLEL with the child's open animation (no sequencing) — the
-        // parent sinks + fades while the child rises.
-        ApplyStackParentRecede(parentSheet, sheet, options);
+        // Parent recede runs in PARALLEL with the child's open animation — the parent sinks + fades
+        // while the child rises. With stage-before-show the child does not rise at once: it is held
+        // off-screen while it is measured and laid out, so receding the parent HERE faded it away
+        // up to a few hundred ms before anything took its place. It is tied to the moment the child
+        // actually starts to move instead (and never happens for a child abandoned while staged).
+        if (Settings.StageBeforeShow &&
+            SheetBehaviorStates.TryGetValue(sheet, out var stackedBehavior) && stackedBehavior is not null)
+        {
+            stackedBehavior.BeforeShow = () => ApplyStackParentRecede(parentSheet, sheet, options);
+        }
+        else
+        {
+            ApplyStackParentRecede(parentSheet, sheet, options);
+        }
+
         OpenSheet(sheet, options);
 
+        contentRequest.Completion?.TrySetResult(handle);
         return handle;
     }
 
@@ -1644,7 +1960,6 @@ public static class G9BottomSheetHelper
 
         var offset = Math.Max(24, visibleHeight * StackParentRecedeHeightFraction);
 
-
         G9SafeCommand.RunSafe(
             () => Task.WhenAll(
                 parent.TranslateToAsync(0, offset, StackParentRecedeDurationMs, Easing.CubicOut),
@@ -1682,7 +1997,6 @@ public static class G9BottomSheetHelper
             return;
         }
 
-
         if (instant)
         {
             parent.TranslationY = 0;
@@ -1713,6 +2027,36 @@ public static class G9BottomSheetHelper
 
         // t here is the true "tap → sheet starts opening" latency.
 
+        if (!Settings.StageBeforeShow)
+        {
+            ShowSheetNow(sheet);
+            AttachPositionTracking(sheet, options);
+            RunOpenedCommandLater(sheet);
+            return;
+        }
+
+        AttachPositionTracking(sheet, options);
+        RunOpenedCommandLater(sheet);
+
+        // Park the body below the screen edge — visible, laid out, drawing, unseen — and open it
+        // only once it is finished. See G9SheetView.Stage and StageAndShowAsync.
+        sheet.Stage();
+
+        G9SafeCommand.RunSafe(
+            () => StageAndShowAsync(sheet, options),
+            new G9SafeCommandOptions
+            {
+                Source = nameof(G9BottomSheetHelper),
+                ShowErrorG9Popup = false,
+                EnableThrottle = false,
+                PreventConcurrentExecution = false,
+                RunActionOnMainThread = true,
+                ThrottleKey = $"{nameof(G9BottomSheetHelper)}.{nameof(StageAndShowAsync)}"
+            });
+    }
+
+    private static void ShowSheetNow(CustomizedSfG9BottomSheet sheet)
+    {
         try
         {
             sheet.Show();
@@ -1721,10 +2065,255 @@ public static class G9BottomSheetHelper
         {
             sheet.IsOpen = true;
         }
+    }
 
+    /// <summary>
+    ///     The off-screen half of an open: measure for real, let the body lay out and draw, wait for
+    ///     content that says it is not ready yet — then start the motion.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Everything here happens while the body is parked below the screen edge
+    ///         (<see cref="G9SheetView.Stage" />), so none of it is visible. What the user sees
+    ///         afterwards is a single translation of a body that already has its exact height,
+    ///         its layout and its glyphs — which is the whole point: a sheet whose data is in hand
+    ///         needs no skeleton, no height guess and no corrective resize.
+    ///     </para>
+    ///     <para>
+    ///         Every wait is bounded by ONE deadline (<see cref="G9BottomSheetSettings.PreOpenMaxHoldMs" />),
+    ///         so a body that never lays out or never reports ready delays the open by that much and
+    ///         no more. The waits are frames and signals, never fixed delays: a light menu leaves
+    ///         here two frames after it was attached.
+    ///     </para>
+    /// </remarks>
+    private static async Task StageAndShowAsync(CustomizedSfG9BottomSheet sheet, G9BottomSheetOptions options)
+    {
+        var deadline = G9FrameAwaiter.Deadline.After(Settings.PreOpenMaxHoldMs);
 
-        AttachPositionTracking(sheet, options);
-        RunOpenedCommandLater(sheet);
+        bool IsAbandoned() => !IsSheetAlive(sheet) || IsSheetClosing(sheet) || sheet.IsOpen;
+
+        // 0. Content that fills itself asynchronously is waited for FIRST, so that everything below
+        //    measures, lays out and settles the body the user will actually see.
+        //
+        //    It used to be waited for last (after the settle frames), which was harmless while the
+        //    only such bodies were pickers that are ready within a frame — and wrong for a body
+        //    that swaps a spinner for real content: the sheet was measured and settled around the
+        //    spinner, then opened the instant the content arrived, un-laid-out.
+        //
+        //    A body that asked for it (IStagedSheetLoad) has its load STARTED here instead of after
+        //    the open motion; TriggerDeferredLoad is once-only, so the later call is a no-op. The
+        //    wait has its own budget: a body that uses all of it must still get its layout pass.
+        if (SheetBehaviorStates.TryGetValue(sheet, out var stagedBehavior) &&
+            stagedBehavior?.DeferredLoad is IStagedSheetLoad { LoadsWhileStaged: true })
+        {
+            TriggerDeferredLoad(sheet, stagedBehavior);
+        }
+
+        await WaitForStagedContentReadinessAsync(
+            sheet, G9FrameAwaiter.Deadline.After(Settings.PreOpenMaxHoldMs)).ConfigureAwait(true);
+
+        if (IsAbandoned())
+        {
+            return;
+        }
+
+        deadline = G9FrameAwaiter.Deadline.After(Settings.PreOpenMaxHoldMs);
+
+        // 1. The first REAL measure. The sheet was added to the overlay host before OpenSheet ran,
+        //    so the body has handlers now and Measure returns its true desired size.
+        ResizeStagedSheet(sheet, options);
+
+        // 2. One layout pass at that height, so the content is arranged — and text, images and
+        //    glyphs realized — at the size it will be shown at.
+        await G9FrameAwaiter.WaitUntilAsync(() => IsAbandoned() || sheet.IsStagedLayoutReady, deadline)
+            .ConfigureAwait(true);
+
+        if (IsAbandoned())
+        {
+            return;
+        }
+
+        // 3. Measure again now that the tree has really been laid out. For almost every body this
+        //    confirms step 1 and is a no-op; it exists for content whose desired size depends on
+        //    its arranged width (wrapping text inside nested layouts).
+        var secondMeasureChanged = ResizeStagedSheet(sheet, options);
+        if (secondMeasureChanged)
+        {
+            await G9FrameAwaiter.WaitUntilAsync(() => IsAbandoned() || sheet.IsStagedLayoutReady, deadline)
+                .ConfigureAwait(true);
+        }
+
+        // 4. Hold for the configured number of drawn frames. This is what replaces the opaque
+        //    220 ms "glyph settle" cover: late layout passes and asynchronously-loaded icon images
+        //    land here, where they cannot be seen.
+        await G9FrameAwaiter.WaitFramesAsync(Settings.PreOpenSettleFrames, deadline).ConfigureAwait(true);
+
+        if (IsAbandoned())
+        {
+            return;
+        }
+
+        // 5. Whatever that settled to is the height the sheet opens at.
+        ResizeStagedSheet(sheet, options);
+
+        // What must happen in the SAME frame the sheet starts to rise: a stacked parent receding, a
+        // replaced sheet leaving. Once only.
+        if (SheetBehaviorStates.TryGetValue(sheet, out var showBehavior) && showBehavior?.BeforeShow is { } beforeShow)
+        {
+            showBehavior.BeforeShow = null;
+            beforeShow();
+        }
+
+        ShowSheetNow(sheet);
+
+        // The dim was held at ZERO while the sheet was staged (see AttachModalOverlay); this is where
+        // it comes up — animated over the open motion that has just started, to the sheet's resting
+        // value. It has to be said HERE, for every modal sheet: only draggable, non-fit sheets have
+        // position tracking to raise their dim with the motion, and a fit-to-content sheet's state
+        // does not change when it is shown, so nothing else would ever ask. (Leaving that out is how
+        // fit sheets briefly opened with no dim at all.) Where position tracking does exist it
+        // simply takes over, frame by frame, heading for the same value.
+        UpdateModalOverlayBackground(sheet, animated: true);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Replace hand-off (G9BottomSheetOptions.ReplaceCurrentSheet)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>The successor of a sheet that is being replaced, keyed by the sheet being replaced.</summary>
+    private static readonly ConditionalWeakTable<CustomizedSfG9BottomSheet, CustomizedSfG9BottomSheet> ReplacedSheets = new();
+
+    /// <summary>
+    ///     Called when the successor has been attached (and is about to be staged). The outgoing sheet
+    ///     stays exactly as it is on screen — only its input is taken away, so a second tap on the
+    ///     button that started all this cannot start it again.
+    /// </summary>
+    private static void BeginReplace(CustomizedSfG9BottomSheet successor, CustomizedSfG9BottomSheet outgoing)
+    {
+        ReplacedSheets.AddOrUpdate(outgoing, successor);
+        outgoing.InputTransparent = true;
+
+        if (SheetBehaviorStates.TryGetValue(successor, out var behavior) && behavior is not null)
+        {
+            behavior.Replaces = outgoing;
+            behavior.BeforeShow = () => CompleteReplace(successor, outgoing);
+        }
+
+    }
+
+    /// <summary>
+    ///     The hand-off itself, in the frame the successor starts to rise: the outgoing sheet's dim is
+    ///     taken over at whatever alpha it has, and the outgoing sheet is closed. Two translations
+    ///     cross; the dim never moves down.
+    /// </summary>
+    private static void CompleteReplace(CustomizedSfG9BottomSheet successor, CustomizedSfG9BottomSheet outgoing)
+    {
+        if (!IsSheetAlive(outgoing) || !outgoing.IsOpen || IsSheetClosing(outgoing))
+        {
+            return;
+        }
+
+        if (ModalOverlays.TryGetValue(outgoing, out var outgoingOverlay) && outgoingOverlay is not null &&
+            SheetBehaviorStates.TryGetValue(outgoing, out var outgoingBehavior) && outgoingBehavior is not null &&
+            SheetBehaviorStates.TryGetValue(successor, out var successorBehavior) && successorBehavior is not null &&
+            ModalOverlays.TryGetValue(successor, out var successorOverlay) && successorOverlay is not null)
+        {
+            var inherited = outgoingOverlay.Color?.Alpha ?? 0f;
+
+            // From here on the outgoing sheet no longer owns a dim: its close motion and its state
+            // change would otherwise keep writing one, under the successor's.
+            outgoingBehavior.IsOverlayHandedOff = true;
+            outgoing.AbortAnimation(ModalOverlayAnimationName);
+            outgoingOverlay.Color = Colors.Transparent;
+
+            successorBehavior.OverlayAlphaFloor = inherited;
+            successorOverlay.Color = (successorOverlay.Color ?? Settings.ModalOverlayColor).WithAlpha(inherited);
+        }
+
+        CloseSheet(outgoing);
+    }
+
+    /// <summary>
+    ///     Runs the sizing engines against a staged sheet. Returns <c>true</c> when the resolved
+    ///     height actually changed, i.e. another layout pass is needed.
+    /// </summary>
+    private static bool ResizeStagedSheet(CustomizedSfG9BottomSheet sheet, G9BottomSheetOptions options)
+    {
+        if (!RequiresContentMeasurement(options) || sheet.G9BottomSheetContent is not { } contentRoot)
+        {
+            return false;
+        }
+
+        var before = sheet.CollapsedHeight + sheet.HalfExpandedRatio + sheet.FullExpandedRatio;
+        ApplySheetContentSizing(sheet, contentRoot, options);
+        var after = sheet.CollapsedHeight + sheet.HalfExpandedRatio + sheet.FullExpandedRatio;
+        return Math.Abs(after - before) > 0.0005;
+    }
+
+    /// <summary>
+    ///     Honours <see cref="IDeferredContentReadiness" /> for a body that is attached directly
+    ///     (no <see cref="DeferredContentView" /> in front of it): the sheet stays parked until the
+    ///     body signals ready, bounded by the pre-open deadline.
+    /// </summary>
+    /// <remarks>
+    ///     The contract used to be consulted only by the deferred wrapper's covered reveal. A
+    ///     pre-built body no longer has that wrapper, so without this its late data fill would
+    ///     happen in full view — the "blink" the contract exists to prevent.
+    /// </remarks>
+    private static async Task WaitForStagedContentReadinessAsync(
+        CustomizedSfG9BottomSheet sheet,
+        G9FrameAwaiter.Deadline deadline)
+    {
+        var readiness = FindContentReadiness(sheet.G9BottomSheetContent);
+        if (readiness is null || readiness.IsContentReady)
+        {
+            return;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnReady(object? sender, EventArgs e) => completion.TrySetResult();
+
+        readiness.ContentReady += OnReady;
+        try
+        {
+            if (readiness.IsContentReady)
+            {
+                return;
+            }
+
+            await Task.WhenAny(completion.Task, Task.Delay(deadline.RemainingMs)).ConfigureAwait(true);
+        }
+        finally
+        {
+            readiness.ContentReady -= OnReady;
+        }
+    }
+
+    private static IDeferredContentReadiness? FindContentReadiness(View? view, int depth = 0)
+    {
+        if (view is null || depth > 8)
+        {
+            return null;
+        }
+
+        if (view is IDeferredContentReadiness readiness)
+        {
+            return readiness;
+        }
+
+        return view switch
+        {
+            // A deferred wrapper runs the contract itself, during its covered reveal.
+            DeferredContentView => null,
+            ContentView { Content: { } content } => FindContentReadiness(content, depth + 1),
+            Border { Content: { } content } => FindContentReadiness(content, depth + 1),
+            ScrollView { Content: { } content } => FindContentReadiness(content, depth + 1),
+            Layout layout => layout.Children
+                .OfType<View>()
+                .Select(child => FindContentReadiness(child, depth + 1))
+                .FirstOrDefault(found => found is not null),
+            _ => null
+        };
     }
 
     private static View CreateSheetContentRoot(
@@ -1857,6 +2446,10 @@ public static class G9BottomSheetHelper
             {
                 root.Children.Add(footer);
                 Grid.SetRow(footer, contentRow + 2);
+
+                // The sheet keeps this at the screen edge by translation while the body is taller
+                // than what is visible (a drag, a resize) — see G9SheetView.BottomPinnedView.
+                sheet.BottomPinnedView = footer;
             }
         }
 
@@ -1907,6 +2500,7 @@ public static class G9BottomSheetHelper
         {
             root.Children.Add(footer);
             Grid.SetRow(footer, 1);
+            sheet.BottomPinnedView = footer;
         }
 
         return root;
@@ -1929,13 +2523,23 @@ public static class G9BottomSheetHelper
         if (content is IDeferredSheetLoad)
         {
             RegisterDeferredLoad(sheet, content);
+            contentRequest.OnContentCreated?.Invoke(content);
             return useFullScreenSizing
                 ? CreateFullScreenSizingHost(sheet, content, options)
                 : CreateFillHost(sheet, content, options);
         }
 
-        if (!options.DeferContent)
+        // ⛔ An ALREADY-BUILT view is attached directly. Wrapping it in a DeferredContentView — which
+        // `DeferContent = true`, the default, used to do to every sheet — defers nothing worth
+        // deferring: its construction (the expensive part) happened before the show call, so all the
+        // wrapper bought was a loading placeholder over finished content for a fixed
+        // 369 + 220 + 160 ms, followed by the resize that corrected the height it had hidden. With
+        // stage-before-show the remaining cost (handler creation, first layout, first draw) is paid
+        // off-screen instead, and the sheet opens showing the real body from its first frame.
+        // `DeferContent` keeps its meaning for FACTORY content, which genuinely is not built yet.
+        if (!ShouldDeferPrebuiltContent(options))
         {
+            contentRequest.OnContentCreated?.Invoke(content);
             return useFullScreenSizing
                 ? CreateFullScreenSizingHost(sheet, content, options)
                 : CreateFillHost(sheet, content, options);
@@ -1959,6 +2563,18 @@ public static class G9BottomSheetHelper
         return useFullScreenSizing
             ? CreateFullScreenSizingHost(sheet, deferred, options)
             : CreateFillHost(sheet, deferred, options, bodyProbe: content);
+    }
+
+    /// <summary>
+    ///     Whether an already-built body still goes behind a <see cref="DeferredContentView" />.
+    ///     Only in the legacy pipelines: the explicit <see cref="G9BottomSheetSettings.DeferPrebuiltContent" />
+    ///     switch, or stage-before-show turned off (where deferral is the only thing keeping handler
+    ///     creation out of the open animation).
+    /// </summary>
+    private static bool ShouldDeferPrebuiltContent(G9BottomSheetOptions options)
+    {
+        return options.DeferContent &&
+               (Settings.DeferPrebuiltContent || !Settings.StageBeforeShow);
     }
 
     private static View CreateFactoryHost(
@@ -1996,6 +2612,12 @@ public static class G9BottomSheetHelper
                 : CreateFillHost(sheet, content, options);
         }
 
+        // Stage-before-show starts the build from a SIGNAL — the end of the open motion, see
+        // RunOpenedCommandLater — instead of a timer sized to outlast it. The timer was 369 ms; a
+        // size-scaled fit-to-content open is over in ~80, so every partial sheet waited ~290 ms for
+        // nothing, and a slow device could still see the build land inside the animation.
+        // LoadDelayMs survives only as the EXTRA a caller asked for on top of the default.
+        var loadsOnOpenSignal = Settings.StageBeforeShow;
         var deferred = new DeferredContentView
         {
             ContentFactory = () =>
@@ -2005,8 +2627,10 @@ public static class G9BottomSheetHelper
                 PrepareSheetContent(content, handle, options);
                 return content;
             },
-            AutoLoad = true,
-            LoadDelayMs = ResolveDeferredContentLoadDelayMs(options),
+            AutoLoad = !loadsOnOpenSignal,
+            LoadDelayMs = loadsOnOpenSignal
+                ? Math.Max(0, options.LoadDelayMs - DeferredContentView.DefaultLoadDelayMs)
+                : ResolveDeferredContentLoadDelayMs(options),
             FadeContentIn = options.FadeDeferredContentIn,
             LoadingView = CreateLoadingSkeletonView(options),
             OnContentCreated = content =>
@@ -2022,6 +2646,13 @@ public static class G9BottomSheetHelper
         };
         AttachDeferredContentLoadedRefresh(sheet, deferred, options);
         ApplyDeferredLoadingMetrics(sheet, deferred, options);
+
+        if (loadsOnOpenSignal)
+        {
+            SheetBehaviorStates
+                .GetValue(sheet, static _ => new SheetBehaviorState(G9BottomSheetOptions.DefaultOptions()))
+                .DeferredViews.Add(deferred);
+        }
 
         return useFullScreenSizing
             ? CreateFullScreenSizingHost(sheet, deferred, options)
@@ -2354,7 +2985,6 @@ public static class G9BottomSheetHelper
                 // below the 180dp loading floor and are only clamped to the absolute minimum;
                 // the loading floor applies just to the unknown-height loading window.
                 var minHeight = G9LayoutMetrics.FitContentLoadingMinHeight;
-                string tier;
                 if (behavior.UseDeferredPlaceholderHeight && behavior.PlaceholderBodyHeight > 0)
                 {
                     // The caller (or the session height memo) knows the final BODY height — hold
@@ -2364,12 +2994,10 @@ public static class G9BottomSheetHelper
                     // after which we measure the real content once.
                     naturalHeight = behavior.PlaceholderBodyHeight + ResolveHelperChromeHeight(sheet, options);
                     minHeight = FitContentAbsoluteMinHeight;
-                    tier = "placeholder";
                 }
                 else if (options.UseFullScreenLoadingPlaceholder && ContainsLoadingDeferredContent(content))
                 {
                     naturalHeight = fullHeight;
-                    tier = "fullScreenPlaceholder";
                 }
                 else if (behavior.HeightProvider is { } provider)
                 {
@@ -2383,7 +3011,6 @@ public static class G9BottomSheetHelper
                 }
                 else if (IsRootGreedyScroller(content))
                 {
-                    tier = "rootScrollerCap";
                     // The body IS a scroller (ScrollView / CollectionView / VirtualScrollView).
                     // Measuring it is unreliable — a scroller reports its viewport, not its
                     // content, and on a cold first open Android hasn't measured the inner
@@ -2406,7 +3033,6 @@ public static class G9BottomSheetHelper
                         // keeps a replace-in-place body swap from dipping to 180dp.
                         naturalHeight = previousHeight;
                         minHeight = FitContentAbsoluteMinHeight;
-                        tier = "measureHold";
                     }
                     else if (!usedMeasureFallback && !ContainsLoadingDeferredContent(content))
                     {
@@ -2415,12 +3041,10 @@ public static class G9BottomSheetHelper
                         // floor. Record it in the persisted height memo so the next open of this
                         // body starts at the right height.
                         minHeight = FitContentAbsoluteMinHeight;
-                        tier = "measure";
                         RecordFitHeightMemo(sheet, behavior, options, naturalHeight);
                     }
                     else
                     {
-                        tier = usedMeasureFallback ? "measureFallback" : "measureLoading";
 
                         // A loading visual is on screen (spinner / skeleton / crossfade window).
                         // NEVER track its measured size — a 3-row skeleton measuring taller (or
@@ -2469,9 +3093,15 @@ public static class G9BottomSheetHelper
                 behavior.IsFitContentSettled = true;
                 UpdateModalOverlayBackground(sheet, behavior.Options, ratioOverride: contentHeight / fullHeight, animated: false);
 
-                content.InvalidateMeasure();
-                sheet.G9BottomSheetContent?.InvalidateMeasure();
-                sheet.InvalidateMeasure();
+                if (!Settings.StageBeforeShow)
+                {
+                    // Legacy pipeline only. These three forced a second full measure of a body the
+                    // height change had already invalidated; the staged pipeline lays the body out
+                    // exactly once per size and relies on that invalidation alone.
+                    content.InvalidateMeasure();
+                    sheet.G9BottomSheetContent?.InvalidateMeasure();
+                    sheet.InvalidateMeasure();
+                }
             }
             finally
             {
@@ -2508,7 +3138,6 @@ public static class G9BottomSheetHelper
         {
             return;
         }
-
 
         EventHandler handler = (_, _) =>
         {
@@ -2591,6 +3220,20 @@ public static class G9BottomSheetHelper
             return;
         }
 
+        if (Settings.StageBeforeShow)
+        {
+            // The sheet view owns the resize now: ONE layout pass plus a translation, instead of a
+            // tween that re-laid the whole body out on every tick. It also decides for itself
+            // whether there is anything on screen to animate (a staged or hidden sheet just takes
+            // the metrics), and retargets a motion that is already running. See SetFitHeight.
+            sheet.AbortAnimation(FitContentResizeAnimationName);
+            sheet.SetFitHeight(
+                targetHeight,
+                animate && previousHeight > 0 && Math.Abs(previousHeight - targetHeight) > 1,
+                fullHeight);
+            return;
+        }
+
         // Animate ONLY genuine post-open changes (caller passes animate=true for provider-driven
         // tab-switch / data-load resizes). Opening + layout-settling remeasures snap instantly so
         // the sheet never shows a small→large blink.
@@ -2602,7 +3245,6 @@ public static class G9BottomSheetHelper
             AnimateFitToContentHeight(sheet, previousHeight, targetHeight, fullHeight, options);
             return;
         }
-
 
         sheet.AbortAnimation(FitContentResizeAnimationName);
         ApplyFitToContentMetricsNow(sheet, targetHeight, fullHeight);
@@ -2628,7 +3270,6 @@ public static class G9BottomSheetHelper
             (int)Math.Ceiling(baseDurationMs),
             1,
             CloseAnimationTimeoutMs);
-
 
         var animation = new Animation(
             value => ApplyFitToContentMetricsNow(sheet, value, fullHeight),
@@ -2964,6 +3605,17 @@ public static class G9BottomSheetHelper
             return;
         }
 
+        // A placeholder height is only meaningful while something OTHER than the real body is on
+        // screen. A pre-built body that is attached directly is measured for real before the sheet
+        // opens, so holding a remembered height over it would be strictly worse — and, with no
+        // DeferredContentView to raise ContentLoaded, nothing would ever release the hold.
+        if (loadableBody is null &&
+            contentRequest.Content is not null &&
+            !ShouldDeferPrebuiltContent(options))
+        {
+            return;
+        }
+
         behavior.FitHeightMemoKey = BuildFitHeightMemoKey(contentRequest.Content, sheet, options);
 
         var bodyHeight = options.DeferredLoadingPlaceholderHeight ?? 0;
@@ -3217,15 +3869,35 @@ public static class G9BottomSheetHelper
                 return;
             }
 
+            if (sheet.IsMotionRunning && trigger == "timerFallback")
+            {
+                // The fallback timer is started when the open is REQUESTED, but a staged sheet
+                // only starts moving after its off-screen hold — so the timer can now expire in the
+                // middle of the open motion. Starting the opened work there is the very jank it is
+                // meant to avoid; the motion's own completion signal is on its way.
+                return;
+            }
+
             ran = true;
             sheet.OpenMotionCompleted -= OnOpenMotionCompleted;
 
             RunCommand(behavior.Options.OpenedCommand, behavior.Options.OpenedCommandParameter);
             TriggerDeferredLoad(sheet, behavior);
+            TriggerDeferredViews(behavior);
         }
 
         void OnOpenMotionCompleted(object? s, EventArgs e)
         {
+            // The sheet is at rest and visible: its dim must be its resting dim. Normally it already
+            // is (raised with the motion, see StageAndShowAsync) and this writes nothing. It covers
+            // the one open that starts later than the pipeline thinks — G9SheetView.Show() deferring
+            // itself until the host has a size — where the raise would have found the sheet still
+            // staged. A sheet must never come to rest with no dim behind it.
+            if (IsSheetAlive(sheet) && !IsSheetClosing(sheet))
+            {
+                UpdateModalOverlayBackground(sheet, animated: true);
+            }
+
             RunOpenedWorkOnce("animationFinished");
         }
 
@@ -3287,6 +3959,38 @@ public static class G9BottomSheetHelper
             G9SafeCommand.CreateFireAndForgetOperationOptions(
                 nameof(G9BottomSheetHelper),
                 $"{nameof(G9BottomSheetHelper)}.{nameof(TriggerDeferredLoad)}"));
+    }
+
+    /// <summary>
+    ///     Starts the build of every factory body this sheet is holding behind a placeholder. Called
+    ///     once, from the open-motion-completed signal, so the heavy construction can never land
+    ///     inside the animation. A wrapper that already loaded (or was torn down) ignores the call.
+    /// </summary>
+    private static void TriggerDeferredViews(SheetBehaviorState behavior)
+    {
+        if (behavior.DeferredViews.Count == 0 || behavior.IsClosing)
+        {
+            return;
+        }
+
+        var pending = behavior.DeferredViews.ToArray();
+        behavior.DeferredViews.Clear();
+
+        foreach (var deferred in pending)
+        {
+            // Popup ON: a body that fails to build leaves the user looking at an open sheet with
+            // nothing in it, and that must not be silent.
+            G9SafeCommand.RunSafe(
+                () => deferred.LoadContentAsync(),
+                new G9SafeCommandOptions
+                {
+                    Source = nameof(G9BottomSheetHelper),
+                    ThrottleKey = $"{nameof(G9BottomSheetHelper)}.{nameof(TriggerDeferredViews)}",
+                    EnableThrottle = false,
+                    PreventConcurrentExecution = false,
+                    RunActionOnMainThread = true
+                });
+        }
     }
 
     private static void CancelDeferredLoad(CustomizedSfG9BottomSheet sheet)
@@ -4004,7 +4708,6 @@ public static class G9BottomSheetHelper
             bottomSheetAwareView.G9BottomSheetHandle = handle;
         }
 
-
         var sizedHeight = -1d;
         if (content is IG9BottomSheetSizedView sizedView)
         {
@@ -4047,7 +4750,6 @@ public static class G9BottomSheetHelper
     {
         var flowDirection = ResolveCurrentFlowDirection();
         var headerHostBackground = options.BackgroundColor ?? G9Palette.Current.Background;
-
 
         // The header owns the vertical rhythm around itself: the SAME gap above and below its
         // items. The top-padding band above it is exactly the status-bar inset (see
@@ -4809,6 +5511,7 @@ public static class G9BottomSheetHelper
         CancelDeferredLoad(sheet);
         SheetBehaviorStates.Remove(sheet);
         SheetOverlayHosts.Remove(sheet);
+        sheet.BottomPinnedView = null;
         sheet.G9BottomSheetContent = CreateTransparentSheetContent();
         sheet.Content = CreateTransparentSheetContent();
         TryDisconnectHandler(sheet);
@@ -4871,6 +5574,21 @@ public static class G9BottomSheetHelper
             }
 
             return duration;
+        };
+        sheet.MotionSpecProvider = request =>
+        {
+            var spec = ResolveSheetMotion(options, request);
+
+            // Same quick-close rule as the duration provider above, which this supersedes.
+            if (!request.IsRising &&
+                SheetBehaviorStates.TryGetValue(sheet, out var behaviorState) &&
+                behaviorState is not null &&
+                behaviorState.CloseDurationScale < 1)
+            {
+                spec = spec with { DurationMs = (int)Math.Round(spec.DurationMs * behaviorState.CloseDurationScale) };
+            }
+
+            return spec;
         };
         sheet.CollapseOnOverlayTap = false;
 
@@ -4936,7 +5654,11 @@ public static class G9BottomSheetHelper
         ApplyModalOverlayBackground(sheet, options);
     }
 
-    private static void AttachModalOverlay(CustomizedSfG9BottomSheet sheet, Grid overlayHost, G9BottomSheetOptions options)
+    private static void AttachModalOverlay(
+        CustomizedSfG9BottomSheet sheet,
+        Grid overlayHost,
+        G9BottomSheetOptions options,
+        CustomizedSfG9BottomSheet? below = null)
     {
         if (!options.IsModal)
         {
@@ -4971,11 +5693,29 @@ public static class G9BottomSheetHelper
         overlay.GestureRecognizers.Add(tap);
 
         ModalOverlays.AddOrUpdate(sheet, overlay);
-        overlayHost.Children.Add(overlay);
+
+        var belowIndex = below is null ? -1 : overlayHost.Children.IndexOf(below);
+        if (belowIndex >= 0)
+        {
+            overlayHost.Children.Insert(belowIndex, overlay);
+        }
+        else
+        {
+            overlayHost.Children.Add(overlay);
+        }
 
         // Apply the initial color now that the overlay exists; earlier calls during
         // sheet/content configuration were no-ops because the overlay wasn't created yet.
-        overlay.Color = ResolveModalOverlayColor(sheet, options, ratioOverride: null);
+        //
+        // ⛔ NOT when the sheet is about to be STAGED. The state-based colour is the dim of the
+        // sheet's RESTING state — 0.69 for a full-screen sheet — and a staged sheet is not resting
+        // anywhere: it is off-screen for up to a few hundred ms. Painting that dim here showed a
+        // fully darkened page with no sheet on it; then the open motion, whose dim tracks the
+        // sheet's position, started again from zero — dark, lighter, dark. The dim now starts at
+        // zero and rises with the sheet, once.
+        overlay.Color = Settings.StageBeforeShow
+            ? ResolveModalOverlayColor(sheet, options, ratioOverride: null).WithAlpha(0)
+            : ResolveModalOverlayColor(sheet, options, ratioOverride: null);
     }
 
     private static void DetachModalOverlay(CustomizedSfG9BottomSheet sheet, Grid? overlayHost)
@@ -5083,7 +5823,6 @@ public static class G9BottomSheetHelper
         {
             return;
         }
-
 
         EventHandler<SfPositionChangedEventArgs> handler = (s, e) =>
         {
@@ -5451,6 +6190,10 @@ public static class G9BottomSheetHelper
         private readonly WeakReference<Grid> _contentHostRef;
         private double _threshold;
 
+        // Starts true so the first below-threshold frame writes identity once, whatever state a
+        // previous sheet left the host in; after that the per-frame path is a field compare.
+        private bool _isTransformed = true;
+
         public BackdropCardBinding(Grid contentHost, G9BottomSheetOptions options)
         {
             _contentHostRef = new WeakReference<Grid>(contentHost);
@@ -5471,9 +6214,25 @@ public static class G9BottomSheetHelper
 
             if (visibleRatio <= _threshold)
             {
-                ResetTransform(contentHost);
+                // ⛔ Managed properties ONLY. This runs once per animation frame and once per
+                // touch-move for as long as the sheet is below the threshold — i.e. for the whole
+                // open motion of every Medium-detent sheet. It used to call the full
+                // ResetBackdropCardTransform, which on Android also sweeps up to ~96 native views,
+                // twice, reading four transforms, a class name and a height over JNI for each:
+                // hundreds of native calls (and as many short-lived peers) per frame, to "reset" a
+                // transform that was already identity. That sweep is cleanup-time belt-and-braces
+                // and still runs where it belongs — DetachBackdropCardBinding and the close paths.
+                if (_isTransformed)
+                {
+                    _isTransformed = false;
+                    contentHost.Scale = 1;
+                    contentHost.TranslationY = 0;
+                }
+
                 return;
             }
+
+            _isTransformed = true;
 
             var rawProgress = Math.Clamp((visibleRatio - _threshold) / (1 - _threshold), 0, 1);
 
@@ -5559,7 +6318,40 @@ public static class G9BottomSheetHelper
             return;
         }
 
+        SheetBehaviorStates.TryGetValue(sheet, out var overlayBehavior);
+
+        // Replaced: the successor carries the dim from here (see CompleteReplace).
+        if (overlayBehavior?.IsOverlayHandedOff == true)
+        {
+            return;
+        }
+
+        // Staged: nothing is on screen, so nothing is dimmed (see AttachModalOverlay).
+        if (sheet.IsStaged)
+        {
+            sheet.AbortAnimation(ModalOverlayAnimationName);
+            overlay.Color = ResolveModalOverlayColor(sheet, options, ratioOverride).WithAlpha(0);
+            return;
+        }
+
         var targetColor = ResolveModalOverlayColor(sheet, options, ratioOverride);
+
+        // A dim INHERITED from a replaced sheet is a floor, not a value: this sheet's own dim rises
+        // from zero with its position, and until it passes what the page was already dimmed by, the
+        // page stays exactly that dim. Once passed, the floor has done its job and is dropped, so a
+        // later drag towards close fades to zero as usual.
+        if (overlayBehavior is { OverlayAlphaFloor: > 0 } floored)
+        {
+            if (targetColor.Alpha >= floored.OverlayAlphaFloor || IsSheetClosing(sheet) ||
+                sheet.State == SfG9BottomSheetState.Hidden)
+            {
+                floored.OverlayAlphaFloor = 0;
+            }
+            else
+            {
+                targetColor = targetColor.WithAlpha(floored.OverlayAlphaFloor);
+            }
+        }
 
         // Once the sheet is closing/closed, fade the overlay fully out. The state-change
         // handler runs animated:true so this runs in lockstep with the sheet's close animation.
@@ -5604,6 +6396,13 @@ public static class G9BottomSheetHelper
         var overlayDurationMs = isFadingOut
             ? ResolveCloseAnimationDurationMs(options)
             : ResolveOpenAnimationDurationMs(options);
+
+        // The dim belongs to the motion it accompanies: when one is running, fade over ITS length
+        // so the two end together (natively the scrim is driven by the same transition).
+        if (sheet.IsMotionRunning && sheet.CurrentMotionDurationMs > 0)
+        {
+            overlayDurationMs = sheet.CurrentMotionDurationMs;
+        }
 
         sheet.AbortAnimation(ModalOverlayAnimationName);
         sheet.Animate(
@@ -5795,19 +6594,95 @@ public static class G9BottomSheetHelper
             Title = title,
             HeaderTitlePlacement = G9BottomSheetHeaderTitlePlacement.NearBack,
             ClosedCommand = BuildListPickerClosedCommand(baseOptions, () => modal, tcs),
-            SizeMode = G9BottomSheetSizeMode.States,
-            CurrentState = G9BottomSheetState.Large,
-            States = [G9BottomSheetState.Large],
-            HasHandle = false,
-            IsDraggable = true,
-            DeferContent = true,
-            UseFullScreenLoadingPlaceholder = true
+            DeferContent = true
         };
 
+        // ⛔ The caller's SIZING is honoured. This used to overwrite SizeMode / States with a
+        // full-screen Large detent whatever it was handed, so a caller who asked for a
+        // fit-to-content picker got a full-screen panel for a six-row menu — and the consuming app
+        // grew a whole helper class to rebuild the picker around that. A fit sheet can size a list
+        // now because the picker reports its own height (count × row height — see
+        // G9BottomSheetListPickerModal). Only a caller who asked for nothing gets the full-screen
+        // default, exactly as before.
+        if (baseOptions.SizeMode != G9BottomSheetSizeMode.FitToContent)
+        {
+            effectiveOptions = effectiveOptions with
+            {
+                SizeMode = G9BottomSheetSizeMode.States,
+                CurrentState = G9BottomSheetState.Large,
+                States = [G9BottomSheetState.Large],
+                HasHandle = false,
+                IsDraggable = true,
+                UseFullScreenLoadingPlaceholder = true
+            };
+        }
 
         // ShowG9BottomSheet now stacks automatically when another sheet is already open, so the
         // picker no longer branches on the open-sheet count itself.
-        ShowG9BottomSheet(CreateModal, effectiveOptions);
+        // The open itself is observed too: if the pipeline throws (a failing item template, no host
+        // page) the awaiting caller gets that exception instead of a task that never completes.
+        var openCompletion = new TaskCompletionSource<IG9BottomSheetHandle?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = openCompletion.Task.ContinueWith(
+            open =>
+            {
+                if (open.IsFaulted)
+                {
+                    tcs.TrySetException(open.Exception!.GetBaseException());
+                }
+                else if (open.Result is null)
+                {
+                    tcs.TrySetResult([]);
+                }
+            },
+            TaskScheduler.Default);
+
+        void Show(bool prebuilt)
+        {
+            var wasShown = ShowAutoG9BottomSheet(
+                (prebuilt
+                    ? SheetContentRequest.FromContent(CreateModal())
+                    : SheetContentRequest.FromFactory(CreateModal)) with { Completion = openCompletion },
+                effectiveOptions);
+
+            if (!wasShown)
+            {
+                // The open throttle swallowed the request (a rapid double tap). No sheet will ever
+                // exist to raise Completed or run ClosedCommand, so without this the caller awaits
+                // forever — the same class of hang as a confirm popup dismissed by the back button.
+                openCompletion.TrySetResult(null);
+            }
+        }
+
+        if (effectiveOptions.SizeMode != G9BottomSheetSizeMode.FitToContent)
+        {
+            Show(prebuilt: false);
+        }
+        else if (MainThread.IsMainThread)
+        {
+            // A fit-to-content picker is built up front: its rows are already in hand, so it goes
+            // through stage-before-show like any other pre-built body and opens at its exact height
+            // with the list in it — no placeholder, no resize.
+            Show(prebuilt: true);
+        }
+        else
+        {
+            // ⛔ Called OFF the UI thread (after a ConfigureAwait(false), typically). Views must be
+            // built ON it — and the answer to that is to go there, not to fall back to the factory
+            // path: a device trace showed exactly this case opening a six-row picker at the 180 dp
+            // loading floor and then growing it to 415 dp in full view.
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                try
+                {
+                    Show(prebuilt: true);
+                }
+                catch (Exception exception)
+                {
+                    openCompletion.TrySetException(exception);
+                }
+            });
+        }
 
         return tcs.Task;
     }
@@ -5850,6 +6725,12 @@ public static class G9BottomSheetHelper
         public G9BottomSheetHandleImpl(CustomizedSfG9BottomSheet ownerSheet)
         {
             _ownerSheet = new WeakReference<CustomizedSfG9BottomSheet>(ownerSheet);
+        }
+
+        public bool TryGetSheet([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out CustomizedSfG9BottomSheet? sheet)
+        {
+            sheet = null;
+            return _ownerSheet?.TryGetTarget(out sheet) == true && sheet is not null;
         }
 
         public void Close()
@@ -5904,6 +6785,11 @@ public static class G9BottomSheetHelper
         Func<View>? ContentFactory,
         Action<View>? OnContentCreated)
     {
+        // Set only by the awaitable show API. Completed with the sheet's handle once the sheet is
+        // attached, with null when the request is dropped (throttled, or superseded while queued),
+        // and faulted when the open pipeline throws — so it can never be left pending.
+        public TaskCompletionSource<IG9BottomSheetHandle?>? Completion { get; init; }
+
         public static SheetContentRequest FromContent(View content, Action<View>? onContentCreated = null)
         {
             return new SheetContentRequest(content, null, onContentCreated);
@@ -5927,6 +6813,19 @@ public static class G9BottomSheetHelper
 
         public bool IsClosing { get; set; }
 
+        // Runs once, in the frame the staged sheet starts its open motion (a stacked parent's recede,
+        // a replaced sheet's hand-off). Never runs for a sheet abandoned while staged.
+        public Action? BeforeShow { get; set; }
+
+        // The open sheet this one is taking the place of (G9BottomSheetOptions.ReplaceCurrentSheet).
+        public CustomizedSfG9BottomSheet? Replaces { get; set; }
+
+        // Dim inherited from a replaced sheet; see UpdateModalOverlayBackground.
+        public float OverlayAlphaFloor { get; set; }
+
+        // Set on a REPLACED sheet once its successor has taken its dim over.
+        public bool IsOverlayHandedOff { get; set; }
+
         // "Open then fill" content (IDeferredSheetLoad). Recorded when the sheet body is prepared
         // and invoked once, after the open animation completes (RunOpenedCommandLater), so the
         // heavy data fetch never blocks the tap → open path. The CTS is cancelled when the sheet
@@ -5934,6 +6833,10 @@ public static class G9BottomSheetHelper
         public IDeferredSheetLoad? DeferredLoad { get; set; }
 
         public CancellationTokenSource? DeferredLoadCts { get; set; }
+
+        // Factory bodies waiting behind a placeholder for the open motion to finish. Their build is
+        // started from that SIGNAL (TriggerDeferredViews), not from a timer sized to outlast it.
+        public List<DeferredContentView> DeferredViews { get; } = [];
 
         public double LastFitContentHeight { get; set; }
 

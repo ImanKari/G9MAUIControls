@@ -28,12 +28,47 @@ namespace G9MAUIControls.Popup;
 public static class G9PopupHelper
 {
     private static readonly SemaphoreSlim QueueGate = new(1, 1);
-    private static readonly Queue<G9PopupRequest> PendingRequests = new();
+
+    // A linked list rather than a Queue because a popup requested from INSIDE a running button
+    // callback has to go to the front — see SignalPumpIfBlockedOnUserCode.
+    private static readonly LinkedList<G9PopupRequest> PendingRequests = new();
     private static G9PopupSettings _defaultSettings = G9PopupSettings.CreateDefault();
     private static bool _isProcessing;
 
-    private static ILogger? Logger =>
-        G9ServiceProvider.GetServiceNullable<ILoggerFactory>()?.CreateLogger("G9PopupViewHelper");
+    /// <summary>
+    ///     The request the queue pump is presenting right now; <c>null</c> while the pump is idle or
+    ///     after it let a request go (see <see cref="TryParkOrRearm" />). Read from any thread by
+    ///     <see cref="SignalPumpIfBlockedOnUserCode" />.
+    /// </summary>
+    private static volatile G9PopupRequest? _pumpRequest;
+
+    /// <summary>
+    ///     The request whose content is mounted in the popup view. UI thread only. It is what stops a
+    ///     button callback that finishes late from closing a DIFFERENT popup that has since taken
+    ///     over the (single, shared) view.
+    /// </summary>
+    private static G9PopupRequest? _mountedRequest;
+
+    /// <summary>Bumped by <see cref="DismissAllG9PopupsAsync" />; see <see cref="G9PopupRequest.ParkedAtDismissEpoch" />.</summary>
+    private static int _dismissEpoch;
+
+    // GetServiceNullable THROWS while G9ServiceProvider is uninitialized, and this getter is read
+    // from catch blocks on the queue pump — where a second throw used to escape the pump and wedge
+    // the queue for the life of the process. Logging is never worth that.
+    private static ILogger? Logger
+    {
+        get
+        {
+            try
+            {
+                return G9ServiceProvider.GetServiceNullable<ILoggerFactory>()?.CreateLogger("G9PopupViewHelper");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
 
     private const double HeaderTitleFontSize = 17;
     private const double BodyMessageFontSize = 15;
@@ -272,6 +307,11 @@ public static class G9PopupHelper
     /// <summary>Dismisses the active popup (if any) and clears the queue.</summary>
     public static async Task DismissAllG9PopupsAsync()
     {
+        // A popup whose button callback is still running while a nested popup is on screen is in
+        // neither the queue nor the view, so nothing below can reach it. The epoch is how it learns
+        // that it was dismissed and must not re-present itself (G9PopupRequest.ParkedAtDismissEpoch).
+        Interlocked.Increment(ref _dismissEpoch);
+
         await ClearG9PopupQueueAsync().ConfigureAwait(false);
 
         if (!G9ModalHostRegistry.TryGetCurrentHost(out var host))
@@ -304,6 +344,14 @@ public static class G9PopupHelper
     ///         miss — signing out, discarding work — so the popup reads as a caution rather than a
     ///         neutral notice.
     ///     </para>
+    ///     <para>
+    ///         <b>Returns <c>false</c> for every exit that is not the OK button</b> — Cancel, hardware
+    ///         back, <see cref="DismissAllG9PopupsAsync" />, <see cref="ClearG9PopupQueueAsync" />,
+    ///         <see cref="CloseActiveG9PopupAsync" />, no visible host, a presentation failure. It used
+    ///         to await a flag that only the two buttons ever set, so any other dismissal suspended the
+    ///         caller forever — and, under <c>G9SafeCommand</c>, held its concurrency key forever too,
+    ///         which is how a button "stopped responding until the app restarts".
+    ///     </para>
     /// </summary>
     public static async Task<bool> ShowConfirmAsync(
         string message,
@@ -312,7 +360,7 @@ public static class G9PopupHelper
         Func<CancellationToken, Task>? cancelCallback = null,
         G9PopupType type = G9PopupType.Information)
     {
-        var tcs = new TaskCompletionSource<bool>();
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var ok = G9Strings.Get(G9StringKey.Ok);
         var cancel = G9Strings.Get(G9StringKey.Cancel);
@@ -325,7 +373,10 @@ public static class G9PopupHelper
                 IsPrimary = false,
                 CallbackAsync = async ct =>
                 {
-                    tcs.SetResult(false);
+                    // Try*, not Set*: the answer is decided once, and a second delivery (a double
+                    // tap that beats the footer's re-entrancy gate, a future caller) must be a
+                    // no-op rather than an InvalidOperationException on the UI thread.
+                    tcs.TrySetResult(false);
                     if (cancelCallback is not null)
                     {
                         await cancelCallback(ct);
@@ -340,7 +391,7 @@ public static class G9PopupHelper
                 IsPrimary = true,
                 CallbackAsync = async ct =>
                 {
-                    tcs.SetResult(true);
+                    tcs.TrySetResult(true);
                     if (okCallback is not null)
                     {
                         await okCallback(ct);
@@ -354,14 +405,70 @@ public static class G9PopupHelper
         var descriptor = G9PopupDescriptor.ForPreset(type, message, title, buttons, null, G9PopupAnimationType.SlideUp);
         await EnqueueAsync(descriptor);
 
+        // EnqueueAsync returns on EVERY way a popup can end, the buttons being only two of them. If
+        // neither button answered by now, nothing ever will: the popup is gone. That is a "no".
+        tcs.TrySetResult(false);
+
         return await tcs.Task;
     }
 
 
-    private sealed record G9PopupRequest(
-        G9PopupDescriptor Descriptor,
-        G9PopupSettings Settings,
-        TaskCompletionSource<G9PopupResult> Completion);
+    /// <summary>
+    ///     One queued / presented popup. A class (it was a positional record) because it now carries
+    ///     the mutable hand-over state between the queue pump and the footer-button handler.
+    /// </summary>
+    private sealed class G9PopupRequest(
+        G9PopupDescriptor descriptor,
+        G9PopupSettings settings,
+        TaskCompletionSource<G9PopupResult> completion)
+    {
+        private int _buttonGate;
+
+        public G9PopupDescriptor Descriptor { get; } = descriptor;
+        public G9PopupSettings Settings { get; } = settings;
+        public TaskCompletionSource<G9PopupResult> Completion { get; } = completion;
+
+        /// <summary>Guards the four members below. Never held across an await or while taking <c>QueueGate</c>.</summary>
+        public Lock SyncRoot { get; } = new();
+
+        /// <summary>
+        ///     True while consumer code belonging to this popup is executing — a footer button's
+        ///     <c>CallbackAsync</c>, or the <c>AfterCloseAsync</c> hook the pump is waiting on. That
+        ///     code may itself request a popup and await it, so while this is set the pump must be
+        ///     releasable (see <see cref="PreemptSignal" />).
+        /// </summary>
+        public bool IsUserCodeRunning { get; set; }
+
+        /// <summary>
+        ///     True once the pump stopped waiting on this request so that a nested popup could be
+        ///     shown. From then on the button handler — not the pump — finishes the request.
+        /// </summary>
+        public bool IsParked { get; set; }
+
+        /// <summary>
+        ///     <c>_dismissEpoch</c> at the moment the request was parked. If it has moved by the time a
+        ///     parked popup wants to come back, <c>DismissAllG9PopupsAsync</c> ran in between and the
+        ///     popup must stay gone (a form re-appearing on the login page after sign-out).
+        /// </summary>
+        public int ParkedAtDismissEpoch { get; set; }
+
+        /// <summary>Completed by an enqueue that finds this request's user code running. Wakes the pump.</summary>
+        public TaskCompletionSource<bool> PreemptSignal { get; set; } = NewSignal();
+
+        /// <summary>The view this request was mounted in. UI thread only.</summary>
+        public G9PopupView? PresentedOn { get; set; }
+
+        /// <summary>
+        ///     Footer re-entrancy gate, per REQUEST rather than per button: a double tap must not run a
+        ///     Delete callback twice, and OK-then-Cancel must not run both.
+        /// </summary>
+        public bool TryEnterButton() => Interlocked.CompareExchange(ref _buttonGate, 1, 0) == 0;
+
+        public void ExitButton() => Interlocked.Exchange(ref _buttonGate, 0);
+
+        public static TaskCompletionSource<bool> NewSignal() =>
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     private sealed record G9PopupInputRuntimeField(
         G9PopupInputField Descriptor,
@@ -372,17 +479,64 @@ public static class G9PopupHelper
 
     #region Queue Processing
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // How the queue avoids deadlocking on itself
+    //
+    // One pump presents one popup at a time, and a popup is "done" only when a footer button's
+    // CallbackAsync has RETURNED. That callback is consumer code, and consumer code asks for popups:
+    //
+    //     ShowConfirmAsync(okCallback: _ => G9SafeCommand.RunAsync(Delete))   // Delete throws
+    //
+    // The error popup used to queue behind the confirm, which was waiting for the callback, which
+    // was waiting for the error popup. Nothing ever moved again. AfterCloseAsync had the same shape.
+    //
+    // The rule now: THE PUMP NEVER WAITS ON CONSUMER CODE IT CANNOT BE WOKEN FROM. While a callback
+    // (or AfterCloseAsync) runs, the request is flagged IsUserCodeRunning, and any enqueue that sees
+    // the flag (a) goes to the FRONT of the queue and (b) completes the request's PreemptSignal. The
+    // pump wakes, "parks" the request — stops waiting on it, leaves its callback running — and
+    // presents the nested popup next. When the parked callback finally returns, the button handler
+    // finishes the request itself: completes it and runs its tail, or, if the answer was DoNothing
+    // (keep the popup open), puts the request back at the front so the pump shows it again.
+    //
+    // The flag is deliberately GLOBAL, not an AsyncLocal "am I inside the callback?" test. An
+    // AsyncLocal does not flow through a platform dispatcher hop (Android's Handler.Post does not
+    // carry ExecutionContext), so a nested request made after such a hop would look unrelated and
+    // deadlock exactly as before. The price is small: an unrelated popup that happens to arrive
+    // while a callback is running is shown straight away instead of after it. Never a hang.
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
     private static async Task<G9PopupResult> EnqueueAsync(G9PopupDescriptor descriptor)
+    {
+        var request = CreateRequest(descriptor);
+        await AddToQueueAsync(request, false).ConfigureAwait(false);
+        return await request.Completion.Task.ConfigureAwait(false);
+    }
+
+    private static G9PopupRequest CreateRequest(G9PopupDescriptor descriptor)
     {
         var tcs = new TaskCompletionSource<G9PopupResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var resolvedSettings = ResolveSettings(descriptor.Settings, descriptor.Animation);
-        var request = new G9PopupRequest(descriptor, resolvedSettings, tcs);
+        return new G9PopupRequest(descriptor, resolvedSettings, tcs);
+    }
+
+    private static async Task AddToQueueAsync(G9PopupRequest request, bool forceFront)
+    {
         var shouldStartProcessing = false;
 
         await QueueGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            PendingRequests.Enqueue(request);
+            // Evaluated inside the gate so the woken pump cannot look at the queue before the
+            // request it was woken for is actually in it.
+            if (forceFront || SignalPumpIfBlockedOnUserCode())
+            {
+                PendingRequests.AddFirst(request);
+            }
+            else
+            {
+                PendingRequests.AddLast(request);
+            }
+
             if (!_isProcessing)
             {
                 _isProcessing = true;
@@ -398,39 +552,159 @@ public static class G9PopupHelper
         {
             _ = ProcessQueueAsync();
         }
+    }
 
-        return await tcs.Task.ConfigureAwait(false);
+    /// <summary>
+    ///     If the pump is currently waiting on consumer code (a button callback / AfterCloseAsync of
+    ///     the popup it is presenting), wakes it and returns <c>true</c> — the caller then queues its
+    ///     request at the front. See the block comment at the top of this region.
+    /// </summary>
+    private static bool SignalPumpIfBlockedOnUserCode()
+    {
+        var blocking = _pumpRequest;
+        if (blocking is null)
+        {
+            return false;
+        }
+
+        lock (blocking.SyncRoot)
+        {
+            if (!blocking.IsUserCodeRunning)
+            {
+                return false;
+            }
+
+            blocking.PreemptSignal.TrySetResult(true);
+            return true;
+        }
     }
 
     private static async Task ProcessQueueAsync()
     {
-        while (true)
+        // This task is fire-and-forget, so NOTHING may escape it: an exception here used to leave
+        // _isProcessing == true with no pump running, and every later popup — including every error
+        // popup — queued forever behind a pump that no longer existed.
+        try
         {
-            G9PopupRequest? request = null;
+            while (true)
+            {
+                G9PopupRequest? request = null;
+                await QueueGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (PendingRequests.First is { } node)
+                    {
+                        request = node.Value;
+                        PendingRequests.RemoveFirst();
+                    }
+                    else
+                    {
+                        _isProcessing = false;
+                    }
+                }
+                finally
+                {
+                    QueueGate.Release();
+                }
+
+                if (request == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    await PresentAsync(request).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // PresentAsync guards itself; this is for a fault in its own cleanup. One bad
+                    // popup costs that popup, never the queue.
+                    LogErrorSafe(ex, "G9PopupViewHelper: presenting a popup failed; the queue continues.");
+                    request.Completion.TrySetResult(G9PopupResult.Close());
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogErrorSafe(ex, "G9PopupViewHelper: the popup queue pump failed; resetting the queue.");
+            await ResetQueueAfterPumpFailureAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    ///     Last resort for a fault in the pump's own bookkeeping: release every waiting caller and
+    ///     leave <c>_isProcessing</c> false so the next request starts a fresh pump. Never throws.
+    /// </summary>
+    private static async Task ResetQueueAfterPumpFailureAsync()
+    {
+        List<G9PopupRequest> dropped = [];
+        try
+        {
             await QueueGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (PendingRequests.Count > 0)
-                {
-                    request = PendingRequests.Dequeue();
-                }
-                else
-                {
-                    _isProcessing = false;
-                }
+                dropped = [.. PendingRequests];
+                PendingRequests.Clear();
+                _isProcessing = false;
             }
             finally
             {
                 QueueGate.Release();
             }
+        }
+        catch
+        {
+            // The gate itself is what failed. An unguarded write is still better than a flag that
+            // stays true forever.
+            _isProcessing = false;
+        }
 
-            if (request == null)
+        foreach (var pending in dropped)
+        {
+            pending.Completion.TrySetResult(G9PopupResult.Close());
+        }
+    }
+
+    /// <summary>
+    ///     Called by the pump when <see cref="G9PopupRequest.PreemptSignal" /> fired before the request
+    ///     completed. Returns <c>true</c> when the request is now parked (the pump must move on).
+    /// </summary>
+    private static bool TryParkOrRearm(G9PopupRequest request)
+    {
+        lock (request.SyncRoot)
+        {
+            if (request.Completion.Task.IsCompleted)
             {
-                return;
+                return false;
             }
 
-            await PresentAsync(request).ConfigureAwait(false);
+            if (request.IsUserCodeRunning)
+            {
+                request.IsParked = true;
+                request.ParkedAtDismissEpoch = Volatile.Read(ref _dismissEpoch);
+                return true;
+            }
+
+            // The callback that raised the signal has already returned DoNothing: the popup is still
+            // up, still interactive, and nobody is waiting on the pump any more. Keep presenting it
+            // (the nested request simply shows afterwards, as it always did) and arm a fresh signal
+            // for the next tap.
+            request.PreemptSignal = G9PopupRequest.NewSignal();
+            return false;
         }
+    }
+
+    /// <summary>Puts a parked request whose callback answered DoNothing back in front of the pump.</summary>
+    private static Task RequeueParkedAsync(G9PopupRequest request)
+    {
+        lock (request.SyncRoot)
+        {
+            request.IsParked = false;
+            request.PreemptSignal = G9PopupRequest.NewSignal();
+        }
+
+        return AddToQueueAsync(request, true);
     }
 
     #endregion
@@ -442,9 +716,17 @@ public static class G9PopupHelper
         G9PopupView? popup = null;
         EventHandler? backgroundTappedHandler = null;
         EventHandler? closedHandler = null;
+        var parked = false;
 
+        _pumpRequest = request;
         try
         {
+            if (request.Completion.Task.IsCompleted)
+            {
+                // A re-queued request that was completed while it waited (ClearG9PopupQueueAsync).
+                return;
+            }
+
             if (!G9ModalHostRegistry.TryGetCurrentHost(out var host))
             {
                 Logger?.LogWarning(
@@ -489,8 +771,41 @@ public static class G9PopupHelper
                 };
                 popup.Closed += closedHandler;
 
+                request.PresentedOn = popup;
+                _mountedRequest = request;
                 popup.Open(BuildOpenOptions(request.Settings, profile));
             }).ConfigureAwait(false);
+
+            // Wait for the popup to finish — or for a nested request to need the pump.
+            while (true)
+            {
+                Task preempted;
+                lock (request.SyncRoot)
+                {
+                    preempted = request.PreemptSignal.Task;
+                }
+
+                await Task.WhenAny(request.Completion.Task, preempted).ConfigureAwait(false);
+
+                if (request.Completion.Task.IsCompleted)
+                {
+                    break;
+                }
+
+                if (TryParkOrRearm(request))
+                {
+                    parked = true;
+                    break;
+                }
+            }
+
+            if (parked)
+            {
+                // The view is NOT closed here: the next PresentAsync closes it before mounting the
+                // nested popup, and the parked request's own handlers come off in the finally below
+                // so that close cannot complete it behind its callback's back.
+                return;
+            }
 
             var final = await request.Completion.Task.ConfigureAwait(false);
 
@@ -502,56 +817,161 @@ public static class G9PopupHelper
                 }
             }).ConfigureAwait(false);
 
-            if (final.Action == G9PopupResultAction.ShowNext && final.NextG9Popup != null)
-            {
-                _ = EnqueueAsync(final.NextG9Popup);
-            }
+            await RunTailAsync(request, final, true).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogErrorSafe(ex, "G9PopupViewHelper failed to show popup.");
+            request.Completion.TrySetResult(G9PopupResult.Close());
 
-            if (final.AfterCloseAsync != null)
+            if (popup is not null)
+            {
+                // Not CloseAsync: whatever just threw is quite likely to throw again, and a second
+                // throw from here is how the pump used to die. The view must end up hidden and
+                // input-transparent no matter what — it covers the whole page.
+                await ForceHideAsync(popup, request).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _pumpRequest = null;
+
+            if (popup is not null)
             {
                 try
                 {
-                    await final.AfterCloseAsync().ConfigureAwait(false);
+                    await MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        if (backgroundTappedHandler is not null)
+                        {
+                            popup.BackgroundTapped -= backgroundTappedHandler;
+                        }
+
+                        if (closedHandler is not null)
+                        {
+                            popup.Closed -= closedHandler;
+                        }
+
+                        // A parked request stays "mounted" until something replaces or closes it:
+                        // its button handler still needs to know whether the view is its to close.
+                        if (!parked && ReferenceEquals(_mountedRequest, request))
+                        {
+                            _mountedRequest = null;
+                        }
+                    }).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
-                    Logger?.LogError(ex, "G9PopupViewHelper AfterCloseAsync failed.");
+                    LogErrorSafe(ex, "G9PopupViewHelper failed to detach popup handlers.");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     What happens after a popup has completed and closed: enqueue <c>ShowNext</c>, run
+    ///     <c>AfterCloseAsync</c>. Runs on the pump for an ordinary popup, and on the button handler
+    ///     for a parked one (the pump has long moved on). Never throws.
+    /// </summary>
+    private static async Task RunTailAsync(G9PopupRequest request, G9PopupResult final, bool heldByPump)
+    {
+        try
+        {
+            if (final.Action == G9PopupResultAction.ShowNext && final.NextG9Popup != null)
+            {
+                // Awaited (the add, not the popup) so it is in the queue BEFORE AfterCloseAsync
+                // starts — otherwise it could land while IsUserCodeRunning is set and be mistaken
+                // for a nested request, releasing the pump early.
+                await AddToQueueAsync(CreateRequest(final.NextG9Popup), false).ConfigureAwait(false);
+            }
+
+            if (final.AfterCloseAsync is null)
+            {
+                return;
+            }
+
+            if (!heldByPump)
+            {
+                await RunAfterCloseGuardedAsync(final.AfterCloseAsync).ConfigureAwait(false);
+                return;
+            }
+
+            // The pump waits for AfterCloseAsync, as documented — navigation / cleanup should not
+            // race the next popup's open animation — but only until someone asks for a popup. If
+            // that someone is AfterCloseAsync itself, waiting on would be the same deadlock as a
+            // nested request from a button callback. The flag goes up BEFORE the hook is invoked:
+            // it may request its popup synchronously, before its first await.
+            Task preempted;
+            lock (request.SyncRoot)
+            {
+                request.IsUserCodeRunning = true;
+                preempted = request.PreemptSignal.Task;
+            }
+
+            try
+            {
+                var afterClose = RunAfterCloseGuardedAsync(final.AfterCloseAsync);
+                await Task.WhenAny(afterClose, preempted).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (request.SyncRoot)
+                {
+                    request.IsUserCodeRunning = false;
                 }
             }
         }
         catch (Exception ex)
         {
-            Logger?.LogError(ex, "G9PopupViewHelper failed to show popup: {Message}", ex.Message);
-            request.Completion.TrySetResult(G9PopupResult.Close());
-
-            if (popup is not null)
-            {
-                await MainThread.InvokeOnMainThreadAsync(async () =>
-                {
-                    if (popup.IsOpen)
-                    {
-                        await popup.CloseAsync().ConfigureAwait(true);
-                    }
-                });
-            }
+            LogErrorSafe(ex, "G9PopupViewHelper failed after closing a popup.");
         }
-        finally
-        {
-            if (popup is not null)
-            {
-                await MainThread.InvokeOnMainThreadAsync(() =>
-                {
-                    if (backgroundTappedHandler is not null)
-                    {
-                        popup.BackgroundTapped -= backgroundTappedHandler;
-                    }
+    }
 
-                    if (closedHandler is not null)
-                    {
-                        popup.Closed -= closedHandler;
-                    }
-                });
-            }
+    /// <summary>
+    ///     Runs the consumer's AfterCloseAsync so that it can be abandoned by the pump without ever
+    ///     surfacing as an unobserved task exception.
+    /// </summary>
+    private static async Task RunAfterCloseGuardedAsync(Func<Task> afterCloseAsync)
+    {
+        try
+        {
+            await afterCloseAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogErrorSafe(ex, "G9PopupViewHelper AfterCloseAsync failed.");
+        }
+    }
+
+    /// <summary>Failure-path hide. Never throws; see <see cref="G9PopupView.ForceClose" />.</summary>
+    private static async Task ForceHideAsync(G9PopupView popup, G9PopupRequest request)
+    {
+        try
+        {
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                popup.ForceClose();
+                if (ReferenceEquals(_mountedRequest, request))
+                {
+                    _mountedRequest = null;
+                }
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogErrorSafe(ex, "G9PopupViewHelper failed to force-hide the popup view.");
+        }
+    }
+
+    private static void LogErrorSafe(Exception ex, string message)
+    {
+        try
+        {
+            Logger?.LogError(ex, "{Message}", message);
+        }
+        catch
+        {
+            // A logging provider that throws must not take the popup queue down with it.
         }
     }
 
@@ -879,15 +1299,11 @@ public static class G9PopupHelper
             // Visual press feedback — instant scale-down + fade, then snap back when the
             // callback returns. Keeps the press tactile without needing a custom animation
             // controller per button.
-            _ = AnimateButtonPressAsync(buttonBorder, async () =>
-            {
-                if (!G9ModalHostRegistry.TryGetCurrentHost(out var host) || !host.G9Popup.IsOpen)
-                {
-                    return;
-                }
-
-                await ExecuteG9PopupButtonAsync(button, request, host.G9Popup).ConfigureAwait(true);
-            });
+            //
+            // ExecuteG9PopupButtonAsync resolves the view from the REQUEST (the one it was mounted
+            // in), not from "the current host": with more than one G9PageBase alive those can be two
+            // different popups, and the tap belongs to the one the button is sitting in.
+            _ = AnimateButtonPressAsync(buttonBorder, () => ExecuteG9PopupButtonAsync(button, request));
         };
         buttonBorder.GestureRecognizers.Add(tap);
         return buttonBorder;
@@ -924,39 +1340,148 @@ public static class G9PopupHelper
 
     #region Button Commands
 
-    private static async Task ExecuteG9PopupButtonAsync(
-        G9PopupButton button,
-        G9PopupRequest request,
-        G9PopupView popup)
+    /// <summary>
+    ///     Runs a footer button. Always entered on the UI thread (it comes from a tap) and never
+    ///     throws — it is awaited by a fire-and-forget press animation.
+    /// </summary>
+    private static async Task ExecuteG9PopupButtonAsync(G9PopupButton button, G9PopupRequest request)
     {
+        // One button run per popup at a time. Without this a double tap ran a Delete callback twice,
+        // and OK followed quickly by Cancel ran BOTH callbacks of the same confirm.
+        if (!request.TryEnterButton())
+        {
+            return;
+        }
+
+        // Held for good once the popup has an answer; handed back only when it stays open
+        // (DoNothing — e.g. the input form failed validation and the user must be able to retry).
+        var releaseGate = true;
+
         try
         {
-            var result = button.CallbackAsync != null
-                ? await button.CallbackAsync(CancellationToken.None).ConfigureAwait(false)
-                : G9PopupResult.Close();
-
-            if (result.Action == G9PopupResultAction.DoNothing)
+            // Stale content: this request is no longer what the view shows, or the view is already
+            // closing. (Was: "is the current host's popup open?", which could be another page's.)
+            if (!ReferenceEquals(_mountedRequest, request) || request.PresentedOn is not { IsOpen: true })
             {
                 return;
             }
 
-            request.Completion.TrySetResult(result);
+            G9PopupResult result;
 
-            if (popup.IsOpen)
+            // Raised BEFORE the callback is invoked, not after its first await: it may request its
+            // nested popup synchronously. See the block comment in "Queue Processing".
+            lock (request.SyncRoot)
             {
-                await popup.CloseAsync().ConfigureAwait(false);
+                request.IsUserCodeRunning = true;
+            }
+
+            try
+            {
+                // ConfigureAwait(true): everything below touches views. This used to be (false),
+                // and with Animation = None the CloseAsync that followed wrote IsVisible /
+                // InputTransparent from a thread-pool thread.
+                result = button.CallbackAsync != null
+                    ? await button.CallbackAsync(CancellationToken.None).ConfigureAwait(true)
+                    : G9PopupResult.Close();
+            }
+            catch (Exception ex)
+            {
+                LogErrorSafe(ex, "G9PopupViewHelper button callback failed.");
+                result = G9PopupResult.Close();
+            }
+
+            var keepOpen = result.Action == G9PopupResultAction.DoNothing;
+            bool parked;
+            bool dismissedWhileParked;
+
+            // One lock decides who finishes the request — the pump or this handler — so that its
+            // tail (ShowNext / AfterCloseAsync) runs exactly once. TryParkOrRearm is the other side.
+            lock (request.SyncRoot)
+            {
+                request.IsUserCodeRunning = false;
+                parked = request.IsParked;
+                dismissedWhileParked =
+                    parked && request.ParkedAtDismissEpoch != Volatile.Read(ref _dismissEpoch);
+
+                if (!keepOpen)
+                {
+                    request.Completion.TrySetResult(result);
+                }
+            }
+
+            if (keepOpen)
+            {
+                if (!parked)
+                {
+                    return;
+                }
+
+                // The popup wants to stay open, but a nested popup has taken its place in the view
+                // while the callback ran. Bring it back — unless everything was dismissed meanwhile.
+                if (dismissedWhileParked)
+                {
+                    request.Completion.TrySetResult(G9PopupResult.Close());
+                    return;
+                }
+
+                await RequeueParkedAsync(request).ConfigureAwait(true);
+                return;
+            }
+
+            releaseGate = false;
+
+            await CloseIfMountedAsync(request).ConfigureAwait(true);
+
+            if (parked)
+            {
+                // The pump let this request go; nobody else will run its tail.
+                await RunTailAsync(request, result, false).ConfigureAwait(true);
             }
         }
         catch (Exception ex)
         {
-            Logger?.LogError(ex, "G9PopupViewHelper button callback failed.");
+            LogErrorSafe(ex, "G9PopupViewHelper failed to complete a popup button.");
+            releaseGate = false;
             request.Completion.TrySetResult(G9PopupResult.Close());
 
-            if (popup.IsOpen)
+            if (request.PresentedOn is { } popup && ReferenceEquals(_mountedRequest, request))
             {
-                await popup.CloseAsync().ConfigureAwait(false);
+                await ForceHideAsync(popup, request).ConfigureAwait(true);
             }
         }
+        finally
+        {
+            if (releaseGate)
+            {
+                request.ExitButton();
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Closes the popup view on behalf of <paramref name="request" /> — on the UI thread, and only
+    ///     while that request's content is still what the view shows. A callback that finishes after a
+    ///     nested popup took over the view must not close the nested popup.
+    /// </summary>
+    private static Task CloseIfMountedAsync(G9PopupRequest request)
+    {
+        return MainThread.InvokeOnMainThreadAsync(async () =>
+        {
+            if (!ReferenceEquals(_mountedRequest, request))
+            {
+                return;
+            }
+
+            if (request.PresentedOn is { IsOpen: true } popup)
+            {
+                await popup.CloseAsync().ConfigureAwait(true);
+            }
+
+            if (ReferenceEquals(_mountedRequest, request))
+            {
+                _mountedRequest = null;
+            }
+        });
     }
 
     #endregion

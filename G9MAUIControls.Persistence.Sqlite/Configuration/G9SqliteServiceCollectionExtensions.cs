@@ -32,17 +32,16 @@ public static class G9SqliteServiceCollectionExtensions
     ///             sqlite.UseDatabaseLocator(new G9PerUserDatabaseLocator(() => session.UserId))
     ///                   .UseClock(new AppClock())
     ///                   .UseCurrentUserProvider(new SignedInUser(session))
-    ///                   .AddMigration&lt;Migration_001&gt;()
-    ///                   .Entity&lt;Sample&gt;(e => e
-    ///                       .HasGuidId(x => x.SamplingId)
-    ///                       .SoftDelete(x => x.IsDeleted)
-    ///                       .AlwaysFilter(x => !x.IsDeleted)
-    ///                       .Index(x => x.SamplingId)
-    ///                       .Cache(G9CachePolicy.Debounced()))
-    ///                   .AddInterceptor&lt;SyncMetadataInterceptor&gt;();
+    ///                   .UseCanonicalIdCase(G9IdCase.Lower);
     ///         });
     ///         </code>
     ///     </example>
+    ///     <para>
+    ///         <b>Those four settings are everything the builder does today.</b> The rest of its surface —
+    ///         <c>AddMigration</c>, <c>AddInterceptor</c>, <c>AddInitializer</c>, <c>UseBusyRetry</c> and the
+    ///         whole of <c>Entity&lt;T&gt;(…)</c> — is reserved: accepted, stored, and not read by anything
+    ///         yet. Each member's own remarks say what to use instead.
+    ///     </para>
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configure">

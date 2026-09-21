@@ -193,6 +193,10 @@ those platforms is resolved per-touch and the drag captures the gesture early.
   which combined with our manual inversion produced reversed dragging.
 - Edge labels swap visual position in RTL: `Min` sits on the visual right, `Max` on
   the visual left.
+- Direction comes from `G9Culture.IsRtl` (`G9Visuals.IsRtl`), the same source every other
+  self-mirroring drawable uses. The thumbs, the fill (which starts at the MINIMUM edge and keeps
+  its saturated end there) and the touch mapping all invert together. Until the 2026-09 fix the
+  drawable's `IsRtl` was hard-wired to `false` under a stale comment, so none of this happened.
 
 ## Behaviour Notes
 
@@ -200,6 +204,19 @@ those platforms is resolved per-touch and the drag captures the gesture early.
   logic can mutate `Value` / `RangeStart` / `RangeEnd` without re-entering the
   `OnValueChanged` handler.
 - If `RangeStart > RangeEnd`, the values are swapped automatically.
+- **Display is coerced immediately; the write-back is deferred.** The drawable always receives
+  clamped / snapped / ordered numbers, so what is painted is always consistent. Writing those
+  numbers back into `Value` / `RangeStart` / `RangeEnd` (two-way → into the view model) happens
+  on the next dispatcher turn, only while the control is loaded, and only once
+  `Maximum > Minimum`. Bindings are applied one property at a time, so normalizing inline clamped
+  a `Value` that arrived before `Maximum` against the default 0–100 and overwrote the view model.
+- `Minimum`, `Maximum` and `Step` changes re-normalize the stored values.
+- The control never writes `Minimum` / `Maximum`. An empty or inverted range is treated as
+  `Minimum … Minimum + 1` for painting only (it used to set `Maximum = Minimum + 1`, which
+  replaced the consumer's binding).
+- Value text (tooltip, edge labels, accessibility hint) is formatted with `G9Culture.CurrentCulture`.
+- Accessibility: the current value (or `start – end`) is exposed as the semantic hint. Give the
+  slider a name with `SemanticProperties.Description`.
 - The drag tooltip only renders while the thumb is being held AND `ShowLabels=true`.
   Releasing hides it.
 - Touch routing: `StartInteraction` picks the nearest thumb based on tap X. Subsequent

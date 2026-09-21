@@ -13,9 +13,12 @@ custom mouse-draggable drag-to-reveal — see "Platform behaviour" below.
 
 - Swipe-to-reveal row actions (edit / delete / archive) -> `G9SwipeView` with
   declarative `G9SwipeAction` items in `LeftActions` / `RightActions`.
-- Because `G9SwipeAction` is a plain model (not a `BindableObject`), inside a
-  `DataTemplate` push the row's data item onto each action's `CommandParameter` from the
-  `G9SwipeView.BindingContextChanged` handler so the `Invoked` handler can resolve it.
+- `G9SwipeAction` is a `BindableObject`, and `G9SwipeView` hands its own `BindingContext`
+  down to every action (on `BindingContextChanged` and whenever an action is added), so inside
+  a `DataTemplate` an action binds like any other element:
+  `Command="{Binding DeleteCommand}"`, `CommandParameter="{Binding .}"`. An action that sets its
+  own `BindingContext` keeps it. `Command` / `CommandParameter` are read at tap time, so a change
+  to either (every rebind of a recycled row) never rebuilds the action's visuals.
 
 ## Why a wrapper instead of a subclass
 

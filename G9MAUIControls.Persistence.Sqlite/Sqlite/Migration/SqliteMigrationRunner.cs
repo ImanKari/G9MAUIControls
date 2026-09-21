@@ -18,6 +18,10 @@ namespace G9MAUIControls.Persistence.Sqlite.Migrations;
 public static partial class SqliteMigrationRunner
 {
     private static readonly Lock RegistrationLock = new();
+
+    // One run at a time, process-wide — see RunAsync. A semaphore, not a Lock: the run awaits.
+    private static readonly SemaphoreSlim RunLock = new(1, 1);
+
     private static readonly SortedList<Version, Func<ISqliteMigration>> Migrations = new();
 
     /// <summary>
@@ -86,11 +90,41 @@ public static partial class SqliteMigrationRunner
     /// </param>
     /// <param name="logger">Logger used to emit structured boundary events.</param>
     /// <returns>A task that represents the asynchronous operation of applying the migrations.</returns>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Serialised.</b> Two overlapping calls used to both read the same recorded version and both
+    ///         run the same pending migrations side by side; migrations are required to be idempotent, not
+    ///         safe against a concurrent copy of themselves. A second caller now waits, then finds nothing
+    ///         pending. A migration must not call <see cref="RunAsync" /> itself — it would wait on its own run.
+    ///     </para>
+    ///     <para>
+    ///         <b>Known limitation — the bookkeeping is a HIGH-WATER MARK, not an applied set.</b>
+    ///         <c>__SqliteMigrationVersion</c> holds one row with the highest version applied, so a migration
+    ///         registered later with a LOWER version than the database already records never runs (a
+    ///         hot-fix branch merged after a newer release, for instance). Always give a new migration a
+    ///         version above every one already shipped. Left as is deliberately: consumers read that table
+    ///         directly, and which of the older migrations an existing database really ran cannot be
+    ///         reconstructed from a single number, so an applied-set table could only be back-filled by guess.
+    ///     </para>
+    /// </remarks>
     public static async Task RunAsync(G9SqliteConnectionProvider connectionProvider, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(connectionProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
+        await RunLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await RunCoreAsync(connectionProvider, logger).ConfigureAwait(false);
+        }
+        finally
+        {
+            RunLock.Release();
+        }
+    }
+
+    private static async Task RunCoreAsync(G9SqliteConnectionProvider connectionProvider, ILogger logger)
+    {
         KeyValuePair<Version, Func<ISqliteMigration>>[] snapshot;
         lock (RegistrationLock)
         {

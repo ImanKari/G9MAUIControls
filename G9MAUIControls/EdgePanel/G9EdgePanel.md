@@ -498,3 +498,21 @@ Edit [`G9EdgePanelMetrics.cs`](G9EdgePanelMetrics.cs) to change tab sizes, panel
 - `WidthRatio` — fraction of parent width (e.g. `0.40` = 40%).
 - `TopGap` — distance from top in dp (e.g. `112` to clear a toolbar).
 - `MaxPanelHeight` — max height before scrolling kicks in.
+
+## Hardware back and lifetime
+
+### Hardware / system back
+The suite has no back dispatcher of its own, so an open panel has no back path unless the HOST gives it one. Put this in the app's back chain — after popups and bottom sheets, before the page's own in-app back:
+
+```csharp
+if (G9EdgePanelHelper.HandleHardwareBackPressed()) return true;   // closed an open helper-managed panel
+```
+
+- `G9EdgePanelHelper.HandleHardwareBackPressed()` — `public static bool`. Returns `true` only when a mounted, open helper-managed panel was asked to close.
+- `G9EdgePanel.HandleHardwareBackPressed()` — `public bool`. The same for a panel you declared in XAML yourself.
+
+Both must be called on the main thread.
+
+### Lifetime
+- The static `G9Palette` / `G9Culture` subscriptions are dropped on EVERY `Unloaded` and re-made in `Loaded` (which also re-applies theme and layout, so nothing is missed). They used to sit behind the transient-unload guard (`Parent is not null`), which is also true at page teardown — so they pinned the panel and its page for the life of the process. The guard itself is unchanged and still protects in-flight animations from Android's transient unload / reload.
+- On handler teardown the panel also detaches from the `MenuItems` collection and clears the helper's active-panel slot. `G9EdgePanelHelper.ActivePanel` is held weakly.

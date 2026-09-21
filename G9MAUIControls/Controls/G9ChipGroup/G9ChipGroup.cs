@@ -73,11 +73,11 @@ public partial class G9ChipGroup : G9ControlBase
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnSelectedItemChanged))]
     private G9SelectionItem? _selectedItem;
 
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9ChipGroupSelectionMode _selectionMode;
+    [AutoBindable(OnChanged = nameof(OnSelectionModeChanged))] private G9ChipGroupSelectionMode _selectionMode;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _allowNullSelection;
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _itemSpacing;
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _chipHeight;
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private double _iconSize;
+    [AutoBindable(OnChanged = nameof(OnChipMetricsChanged))] private double _itemSpacing;
+    [AutoBindable(OnChanged = nameof(OnChipMetricsChanged))] private double _chipHeight;
+    [AutoBindable(OnChanged = nameof(OnChipMetricsChanged))] private double _iconSize;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private Color? _selectedBackground;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private Color? _selectedTextColor;
 
@@ -147,6 +147,13 @@ public partial class G9ChipGroup : G9ControlBase
         // retuning that one token restyles the chips with everything else.
         ShowSelectionCheckmark = true;
         ChipCornerRadius = G9LayoutMetrics.ControlCornerRadius;
+
+        // Both collections belong to the CONSUMER and usually outlive this control (a shared lookup
+        // list on a long-lived view-model); subscriptions held for the control's whole life kept
+        // the control - and its page - alive as long as the list. They are held only while the
+        // control is in the live tree, and re-synced on the way back in.
+        Loaded += OnChipGroupLoaded;
+        Unloaded += OnChipGroupUnloaded;
     }
 
     public event EventHandler<IReadOnlyList<G9SelectionItem>>? SelectionChanged;
@@ -197,6 +204,22 @@ public partial class G9ChipGroup : G9ControlBase
 
     private void OnVisualChanged() => RequestVisualUpdate();
 
+    /// <summary>
+    ///     <c>ChipHeight</c> / <c>ItemSpacing</c> / <c>IconSize</c> are baked into each chip when it is
+    ///     built, and the apply pass only recolours existing chips, so changing one after the first
+    ///     build did nothing. They now rebuild (coalesced; a no-op before the first build).
+    /// </summary>
+    private void OnChipMetricsChanged()
+    {
+        if (_bindings.Count > 0) ScheduleRebuild();
+    }
+
+    /// <summary>Which chips are "selected" depends on the mode (SelectedItem vs SelectedItems).</summary>
+    private void OnSelectionModeChanged()
+    {
+        if (_bindings.Count > 0) ApplySelectionState(animate: false);
+    }
+
     /// <summary>Swaps the host and re-parents the chips (a chip can only live in one layout at a time).</summary>
     private void OnLayoutModeChanged()
     {
@@ -221,25 +244,93 @@ public partial class G9ChipGroup : G9ControlBase
 
     private void OnItemsSourceChanged()
     {
-        if (_attachedItems is not null) _attachedItems.CollectionChanged -= OnSourceChanged;
-        _attachedItems = ItemsSource;
-        if (_attachedItems is not null) _attachedItems.CollectionChanged += OnSourceChanged;
+        if (IsLoaded) AttachCollections();
         RebuildAll();
     }
 
     private void OnSelectedItemsChanged()
     {
-        if (_attachedSelected is not null) _attachedSelected.CollectionChanged -= OnSelectionChangedExt;
-        _attachedSelected = SelectedItems;
-        if (_attachedSelected is not null) _attachedSelected.CollectionChanged += OnSelectionChangedExt;
+        if (IsLoaded) AttachCollections();
         ApplySelectionState(animate: true);
     }
 
     private void OnSelectedItemChanged() => ApplySelectionState(animate: true);
 
-    private void OnSourceChanged(object? sender, NotifyCollectionChangedEventArgs e) => RebuildAll();
+    /// <summary>Set once the subscriptions have been dropped, so the next Loaded knows it may have missed changes.</summary>
+    private bool _detachedSinceBuild;
 
-    private void OnSelectionChangedExt(object? sender, NotifyCollectionChangedEventArgs e) => ApplySelectionState(animate: true);
+    private void OnChipGroupLoaded(object? sender, EventArgs e)
+    {
+        AttachCollections();
+
+        // Re-sync with whatever the collections did while we were not listening. Not on the very
+        // first load: nothing was missed then, and the chips were just built.
+        if (!_detachedSinceBuild) return;
+        _detachedSinceBuild = false;
+        ScheduleRebuild();
+    }
+
+    private void OnChipGroupUnloaded(object? sender, EventArgs e)
+    {
+        _detachedSinceBuild = true;
+        if (_attachedItems is not null) _attachedItems.CollectionChanged -= OnSourceChanged;
+        if (_attachedSelected is not null) _attachedSelected.CollectionChanged -= OnSelectionChangedExt;
+        _attachedItems = null;
+        _attachedSelected = null;
+    }
+
+    /// <summary>Points the two subscriptions at the CURRENT collections (idempotent).</summary>
+    private void AttachCollections()
+    {
+        if (!ReferenceEquals(_attachedItems, ItemsSource))
+        {
+            if (_attachedItems is not null) _attachedItems.CollectionChanged -= OnSourceChanged;
+            _attachedItems = ItemsSource;
+            if (_attachedItems is not null) _attachedItems.CollectionChanged += OnSourceChanged;
+        }
+
+        if (!ReferenceEquals(_attachedSelected, SelectedItems))
+        {
+            if (_attachedSelected is not null) _attachedSelected.CollectionChanged -= OnSelectionChangedExt;
+            _attachedSelected = SelectedItems;
+            if (_attachedSelected is not null) _attachedSelected.CollectionChanged += OnSelectionChangedExt;
+        }
+    }
+
+    private void OnSourceChanged(object? sender, NotifyCollectionChangedEventArgs e) => ScheduleRebuild();
+
+    private void OnSelectionChangedExt(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        // An ObservableCollection raises on whatever thread mutated it; touching views from there
+        // throws on Android / WinUI (LES-0039, previously fixed only in G9TabView).
+        if (Dispatcher.IsDispatchRequired)
+        {
+            Dispatcher.Dispatch(() => ApplySelectionState(animate: true));
+            return;
+        }
+
+        ApplySelectionState(animate: true);
+    }
+
+    /// <summary>True while a rebuild is queued on the dispatcher.</summary>
+    private bool _rebuildQueued;
+
+    /// <summary>
+    ///     Coalesces rebuilds: a consumer filling the list with N <c>Add</c> calls used to trigger N
+    ///     full rebuilds (O(n^2) chip constructions). One dispatcher tick now serves the whole burst,
+    ///     and the hop also moves a background-thread mutation onto the UI thread (LES-0039).
+    /// </summary>
+    private void ScheduleRebuild()
+    {
+        if (_rebuildQueued) return;
+        _rebuildQueued = true;
+
+        Dispatcher.Dispatch(() =>
+        {
+            _rebuildQueued = false;
+            RebuildAll();
+        });
+    }
 
     protected override void OnApplyVisuals()
     {
@@ -394,7 +485,10 @@ public partial class G9ChipGroup : G9ControlBase
             Background = bgBrush,
             Content = row,
             BindingContext = item,
-            VerticalOptions = LayoutOptions.Start
+            VerticalOptions = LayoutOptions.Start,
+            // G9SelectionItem.IsEnabled was ignored here: a disabled chip looked and toggled like
+            // any other. Dimmed on the chip itself (constant for its life; no animation writes it).
+            Opacity = item.IsEnabled ? 1 : 0.45
         };
 
         var binding = new ChipBinding
@@ -653,6 +747,8 @@ public partial class G9ChipGroup : G9ControlBase
 
     private void Toggle(G9SelectionItem item)
     {
+        if (!item.IsEnabled) return;
+
         if (SelectionMode == G9ChipGroupSelectionMode.SingleSelection)
         {
             if (IsSelected(item))

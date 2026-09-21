@@ -71,7 +71,18 @@ public static class SqliteRepositoryCacheRegistry
 
         foreach (var resetAction in resetActions)
         {
-            resetAction();
+            try
+            {
+                resetAction();
+            }
+            catch (Exception)
+            {
+                // One cache failing to reset must not stop the rest. This runs at a session boundary, and
+                // every cache skipped here would go on serving the PREVIOUS user's rows to the next one —
+                // a far worse outcome than one reset that did not complete. Swallowed rather than collected
+                // and rethrown because the main caller is a synchronous DatabasePathChanged handler, which
+                // must not throw out of the locator's raise loop.
+            }
         }
     }
 

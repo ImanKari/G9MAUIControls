@@ -38,7 +38,7 @@ trailing icon properties, etc.
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `AcceptedCodeRegex` | `string?` | `null` | Regex pattern. Scanned codes must match before being accepted. Empty / null = accept any. |
+| `AcceptedCodeRegex` | `string?` | `null` | Regex pattern. Scanned codes must match before being accepted. Empty / null = accept any. Matched with a 250 ms timeout; a timeout or a malformed pattern REJECTS the code (`ScanState = Error`) instead of throwing into the scan callback. |
 | `ScanMode` | `G9BarcodeScanMode` | `Single` | `Single` replaces `Text`; `Multiple` appends to a comma-separated list. |
 | `IsEditable` | `bool` | `false` | Allow manual keyboard typing in addition to scanning. |
 | `ScanBusyText` | `string?` | `"Scanning..."` | Placeholder text shown while `ScanState == ScanBusy`. |
@@ -147,7 +147,27 @@ does nothing and shows nothing.
 
 - The placeholder is swapped automatically to `ScanBusyText` while
   `ScanState == ScanBusy` so the user sees a "Scanning..." hint while the camera
-  initializes.
+  initializes, and **the consumer's own `Placeholder` is put back when the state leaves
+  `ScanBusy`**.
+- **The scan state is layered over the consumer's values, not written through them.** The
+  state borrows `HasError`, `IsReadOnly`, `UseStatusColor`, `StatusColor`, `TrailingIcon` and
+  `Placeholder` from the base field. The control remembers what the consumer set for each and
+  resolves the effective value as:
+
+  | Property | Effective value |
+  |---|---|
+  | `HasError` | `ScanState == Error` **or** the consumer's value (incl. a failed `Validate()`) |
+  | `IsReadOnly` | `!IsEditable` **or** `ScanBusy` **or** the consumer's value |
+  | `UseStatusColor` | `ScanBusy` / `Accepted` **or** the consumer's value |
+  | `StatusColor` | `Success` when `Accepted`, `Primary` when `ScanBusy`, otherwise the consumer's colour |
+  | `TrailingIcon` | ✓ when `Accepted`, ⓘ when `Error`, otherwise the consumer's icon (default: the scan glyph) |
+
+  A property is only written when its effective value actually differs, so a consumer binding on
+  one of them survives every state that does not need to override it. One limit remains and is
+  MAUI's, not the control's: while a state DOES override a property (e.g. `Error` forcing
+  `HasError`), that manual write clears a **one-way** binding on it; the last bound value is
+  restored afterwards, the binding itself is not. Prefer driving the error / status look through
+  `ScanState` over binding those properties.
 - `Accepted` events do NOT fire from manual keyboard input — they only fire from
   `AcceptScannedCode`. If you need a hook for manual entry, listen to `Text` changes
   via the binding instead.

@@ -15,6 +15,14 @@ internal sealed class G9ProgressBarDrawable : IDrawable
     public bool IsPaused { get; set; }
     public float IndeterminateOffset { get; set; }
 
+    private static readonly Color SegmentDot = Colors.White.WithAlpha(0.50f);
+    private static readonly Color StripeColor = Colors.White.WithAlpha(0.16f);
+
+    // The fill gradient depends on ProgressColor alone, but was rebuilt on every paint — sixty
+    // times a second while indeterminate. Kept until the colour changes.
+    private LinearGradientPaint? _fillPaint;
+    private Color? _fillPaintColor;
+
     public void Draw(ICanvas canvas, RectF dirtyRect)
     {
         var height = (float)Math.Min(BarHeight, dirtyRect.Height);
@@ -33,17 +41,21 @@ internal sealed class G9ProgressBarDrawable : IDrawable
 
         if (fillRect.Width > 0)
         {
-            var gradient = new LinearGradientPaint
+            if (_fillPaint is null || !Equals(_fillPaintColor, ProgressColor))
             {
-                StartPoint = new Point(0, 0),
-                EndPoint = new Point(1, 0),
-                GradientStops =
-                [
-                    new PaintGradientStop(0, ProgressColor),
-                    new PaintGradientStop(1, G9ColorHelper.Lighten(ProgressColor, 0.24))
-                ]
-            };
-            canvas.SetFillPaint(gradient, fillRect);
+                _fillPaintColor = ProgressColor;
+                _fillPaint = new LinearGradientPaint
+                {
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(1, 0),
+                    GradientStops =
+                    [
+                        new PaintGradientStop(0, ProgressColor),
+                        new PaintGradientStop(1, G9ColorHelper.Lighten(ProgressColor, 0.24))
+                    ]
+                };
+            }
+            canvas.SetFillPaint(_fillPaint, fillRect);
             canvas.FillRoundedRectangle(fillRect, radius);
 
             if (!IsPaused)
@@ -54,7 +66,7 @@ internal sealed class G9ProgressBarDrawable : IDrawable
 
         if (ShowSegments)
         {
-            canvas.FillColor = Colors.White.WithAlpha(0.50f);
+            canvas.FillColor = SegmentDot;
             for (var i = 1; i < 5; i++)
             {
                 canvas.FillCircle(dirtyRect.Width * i / 5f, dirtyRect.Center.Y, 1.5f);
@@ -76,7 +88,7 @@ internal sealed class G9ProgressBarDrawable : IDrawable
     {
         canvas.SaveState();
         canvas.ClipRectangle(rect);
-        canvas.StrokeColor = Colors.White.WithAlpha(0.16f);
+        canvas.StrokeColor = StripeColor;
         canvas.StrokeSize = 5;
 
         for (var x = rect.Left - rect.Height * 2; x < rect.Right + rect.Height * 2; x += 16)

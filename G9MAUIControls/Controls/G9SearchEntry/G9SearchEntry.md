@@ -53,7 +53,7 @@ for the private state resolution.
 | Property | Type | Default | Description |
 |---|---|---|---|
 | `DebounceMs` | `int` | `250` | Delay between the last keystroke and `DebouncedTextChanged` / `SearchCommand` firing. Set to `0` to fire on every keystroke. |
-| `SearchCommand` | `ICommand?` | `null` | Fired with the current `Text` when the debounce window elapses, or immediately when `DebounceMs == 0`. |
+| `SearchCommand` | `ICommand?` | `null` | Fired with the current `Text` when the debounce window elapses, immediately when `DebounceMs == 0`, and immediately when the user presses the keyboard's **Search** return key (the inner Entry uses `ReturnType.Search`; its `Completed` calls `Submit()`). A pending debounce is cancelled when the control is unloaded. |
 
 ## Events
 

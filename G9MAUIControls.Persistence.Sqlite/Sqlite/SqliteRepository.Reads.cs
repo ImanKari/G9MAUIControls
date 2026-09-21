@@ -81,13 +81,18 @@ public partial class SqliteRepository<T> where T : class, new()
 
     public async Task<bool> AnyCoreAsync(Expression<Func<T, bool>> predicate)
     {
+        // EXISTS over "SELECT 1 … LIMIT 1" stops at the first matching row. This was
+        // SELECT COUNT(*) … LIMIT 1, where the LIMIT applies to the single aggregate ROW, not to the scan:
+        // every matching row was still counted just to learn whether there was one. Same answer, and the
+        // inner statement is the builder's own, so the predicate is translated and bound exactly as before.
         var statement = SqliteQueryFactory
             .Select<T>()
-            .SelectCount()
+            .SelectRaw("1")
             .Where(predicate)
             .Limit(1)
             .BuildStatement();
 
-        return await ScalarCoreAsync<int>(statement.Sql, statement.Parameters).ConfigureAwait(false) > 0;
+        return await ScalarCoreAsync<int>($"SELECT EXISTS({statement.Sql})", statement.Parameters)
+            .ConfigureAwait(false) > 0;
     }
 }

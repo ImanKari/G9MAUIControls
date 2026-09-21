@@ -373,7 +373,8 @@ public sealed partial class SqliteQueryBuilder<T> where T : class, new()
         string joinType)
     {
         EnsureTableKnown(leftType);
-        var rightTable = SqliteQueryFactory.GetTableName(rightType);
+        // Quoted once, here — see the note on _rootTable.
+        var rightTable = QuoteIdentifier(SqliteQueryFactory.GetTableName(rightType));
         _knownTables.TryAdd(rightType, rightTable);
 
         var leftTable = _knownTables[leftType];

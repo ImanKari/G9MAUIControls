@@ -12,6 +12,45 @@ using AndroidScrollView = Android.Widget.ScrollView;
 
 namespace G9MAUIControls.BottomSheet;
 
+internal partial class G9SheetViewBorder
+{
+    private bool _isMotionLayerApplied;
+
+    /// <summary>
+    ///     While the body moves, composite it from a hardware layer: the GPU re-blits one cached
+    ///     texture per frame instead of re-rasterizing every view in the sheet. A translation never
+    ///     dirties the layer, which is exactly the property the translation-only motion is built to
+    ///     exploit. Released the moment the motion ends — a permanent layer costs texture memory and
+    ///     makes every later content invalidation MORE expensive, not less.
+    /// </summary>
+    partial void OnBeginMotionLayer()
+    {
+        if (!G9SheetView.UseHardwareLayerDuringMotion ||
+            _isMotionLayerApplied ||
+            Handler?.PlatformView is not AndroidView platformView)
+        {
+            return;
+        }
+
+        platformView.SetLayerType(LayerType.Hardware, null);
+        _isMotionLayerApplied = true;
+    }
+
+    partial void OnEndMotionLayer()
+    {
+        if (!_isMotionLayerApplied)
+        {
+            return;
+        }
+
+        _isMotionLayerApplied = false;
+        if (Handler?.PlatformView is AndroidView platformView)
+        {
+            platformView.SetLayerType(LayerType.None, null);
+        }
+    }
+}
+
 /// <summary>
 ///     Android handler that swaps in a custom <see cref="ContentViewGroup" /> subclass for the
 ///     border. The platform group intercepts vertical drags so inner scrollables (RecyclerView,
@@ -56,14 +95,48 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
     private float _lastX;
     private float _lastY;
 
+    // Cached: Resources → DisplayMetrics → Density is three JNI hops, and this was being read on
+    // every single touch event. Refreshed in OnConfigurationChanged, the only time it can change.
+    private float _density;
+
+    // The pointer that started the gesture. MotionEvent.GetX()/GetY() read pointer INDEX 0, which
+    // becomes a different finger the moment the first one lifts — the body then jumps to it.
+    private const int InvalidPointerId = -1;
+    private int _activePointerId = InvalidPointerId;
+
+    // Release speed for the sheet's fling decision. Fed with SCREEN coordinates: this view moves
+    // with the finger while it is being dragged, so view-relative Y barely changes and a tracker
+    // fed with it would report almost no velocity for the fastest flick.
+    private VelocityTracker? _velocityTracker;
+    private long _lastTrackedEventTime = -1;
+
     public G9SheetViewBorderPlatformView(Context context, G9SheetViewBorder border)
         : base(context)
     {
         _borderRef = new WeakReference<G9SheetViewBorder>(border);
         SetClipChildren(true);
         _touchSlop = ViewConfiguration.Get(context) is { } vc ? vc.ScaledTouchSlop : 8;
+        _density = ReadDensity();
         Clickable = true;
         Focusable = true;
+    }
+
+    private float ReadDensity()
+    {
+        var density = Resources?.DisplayMetrics?.Density ?? 1f;
+        return density > 0 ? density : 1f;
+    }
+
+    protected override void OnConfigurationChanged(Android.Content.Res.Configuration? newConfig)
+    {
+        base.OnConfigurationChanged(newConfig);
+        _density = ReadDensity();
+    }
+
+    protected override void OnDetachedFromWindow()
+    {
+        RecycleVelocityTracker();
+        base.OnDetachedFromWindow();
     }
 
     public override bool OnInterceptTouchEvent(MotionEvent? ev)
@@ -76,11 +149,13 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
         switch (ev.ActionMasked)
         {
             case MotionEventActions.Down:
+                _activePointerId = ev.GetPointerId(0);
                 _lastX = ev.GetX();
                 _lastY = ev.GetY();
                 _scrollableUnderFinger = FindScrollableUnder(this, (int)ev.GetX(), (int)ev.GetY());
                 _insideScrollable = _scrollableUnderFinger is not null;
                 _gestureForwarded = false;
+                BeginVelocityTracking(ev);
                 DisallowParentIntercept(true);
 
                 // Never intercept Down. We want children to get a chance at it (so taps on
@@ -98,13 +173,16 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
                 // so we deliberately skip the previous "always-intercept on vertical drag"
                 // path here to avoid a double-fire (OnInterceptTouchEvent(Move) forwarding
                 // *and* OnTouchEvent(Move) forwarding the same event).
+                TrackVelocity(ev);
+
                 if (!_insideScrollable || _scrollableUnderFinger is null)
                 {
                     return false;
                 }
 
-                var curX = ev.GetX();
-                var curY = ev.GetY();
+                var pointerIndex = ResolveActivePointerIndex(ev);
+                var curX = ev.GetX(pointerIndex);
+                var curY = ev.GetY(pointerIndex);
                 var dx = curX - _lastX;
                 var dy = curY - _lastY;
 
@@ -136,7 +214,8 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
 
                 if (innerMayConsume && CanChildScrollVertically(_scrollableUnderFinger, dir))
                 {
-                    DisallowParentIntercept(true);
+                    // No DisallowParentIntercept here: the request made on Down holds for the whole
+                    // gesture. Repeating it on every move was an ancestor-chain walk per frame.
                     _lastX = curX;
                     _lastY = curY;
                     return false;
@@ -187,10 +266,82 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
             return;
         }
 
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
-        var dpPoint = new Microsoft.Maui.Graphics.Point(ev.GetX() / density, ev.GetY() / density);
+        var dpPoint = ToDpPoint(ev);
         border.ForwardTouch(G9SheetViewTouchAction.Pressed, dpPoint);
         border.ForwardTouch(G9SheetViewTouchAction.Moved, dpPoint);
+    }
+
+    private Microsoft.Maui.Graphics.Point ToDpPoint(MotionEvent ev)
+    {
+        var index = ResolveActivePointerIndex(ev);
+        return new Microsoft.Maui.Graphics.Point(ev.GetX(index) / _density, ev.GetY(index) / _density);
+    }
+
+    private int ResolveActivePointerIndex(MotionEvent ev)
+    {
+        if (_activePointerId == InvalidPointerId)
+        {
+            return 0;
+        }
+
+        var index = ev.FindPointerIndex(_activePointerId);
+        return index >= 0 ? index : 0;
+    }
+
+    private void BeginVelocityTracking(MotionEvent ev)
+    {
+        RecycleVelocityTracker();
+        _velocityTracker = VelocityTracker.Obtain();
+        _lastTrackedEventTime = -1;
+        TrackVelocity(ev);
+    }
+
+    private void TrackVelocity(MotionEvent ev)
+    {
+        // The same event can arrive through OnInterceptTouchEvent AND OnTouchEvent; feed it once.
+        if (_velocityTracker is null || ev.EventTime == _lastTrackedEventTime)
+        {
+            return;
+        }
+
+        _lastTrackedEventTime = ev.EventTime;
+
+        var screenEvent = MotionEvent.Obtain(ev);
+        if (screenEvent is null)
+        {
+            return;
+        }
+
+        try
+        {
+            screenEvent.OffsetLocation(ev.RawX - ev.GetX(), ev.RawY - ev.GetY());
+            _velocityTracker.AddMovement(screenEvent);
+        }
+        finally
+        {
+            screenEvent.Recycle();
+        }
+    }
+
+    /// <summary>Vertical release speed in dp/s, positive downward; 0 when it cannot be measured.</summary>
+    private double ResolveReleaseVelocityDp()
+    {
+        if (_velocityTracker is null)
+        {
+            return 0;
+        }
+
+        _velocityTracker.ComputeCurrentVelocity(1000);
+        var pixelsPerSecond = _activePointerId == InvalidPointerId
+            ? _velocityTracker.YVelocity
+            : _velocityTracker.GetYVelocity(_activePointerId);
+        return pixelsPerSecond / _density;
+    }
+
+    private void RecycleVelocityTracker()
+    {
+        _velocityTracker?.Recycle();
+        _velocityTracker = null;
     }
 
     public override bool OnTouchEvent(MotionEvent? ev)
@@ -208,8 +359,8 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
             return base.OnTouchEvent(ev);
         }
 
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
-        var dpPoint = new Microsoft.Maui.Graphics.Point(ev.GetX() / density, ev.GetY() / density);
+        TrackVelocity(ev);
+        var dpPoint = ToDpPoint(ev);
 
         switch (ev.ActionMasked)
         {
@@ -218,6 +369,25 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
                 // before any Move forwarding can move the body.
                 border.ForwardTouch(G9SheetViewTouchAction.Pressed, dpPoint);
                 _gestureForwarded = true;
+                return true;
+
+            case MotionEventActions.PointerUp:
+                // The finger that owns the drag lifted while another is still down. Index 0 now
+                // belongs to that other finger, so carrying on would teleport the body to it. End
+                // the gesture cleanly; the remaining finger starts a new one on its next Down.
+                if (ev.GetPointerId(ev.ActionIndex) == _activePointerId)
+                {
+                    if (_gestureForwarded)
+                    {
+                        border.ForwardTouch(
+                            G9SheetViewTouchAction.Released,
+                            dpPoint,
+                            ResolveReleaseVelocityDp());
+                    }
+
+                    ResetGestureState();
+                }
+
                 return true;
 
             case MotionEventActions.Move:
@@ -237,7 +407,7 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
             case MotionEventActions.Up:
                 if (_gestureForwarded)
                 {
-                    border.ForwardTouch(G9SheetViewTouchAction.Released, dpPoint);
+                    border.ForwardTouch(G9SheetViewTouchAction.Released, dpPoint, ResolveReleaseVelocityDp());
                 }
 
                 ResetGestureState();
@@ -258,12 +428,10 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
 
     private void DisallowParentIntercept(bool disallow)
     {
-        var p = Parent;
-        while (p is not null)
-        {
-            p.RequestDisallowInterceptTouchEvent(disallow);
-            p = p.Parent;
-        }
+        // ONE call. ViewGroup.requestDisallowInterceptTouchEvent forwards the request to its own
+        // parent natively, all the way up — walking the chain here as well made it O(depth²) JNI
+        // calls, and it used to run on every qualifying move.
+        Parent?.RequestDisallowInterceptTouchEvent(disallow);
     }
 
     private static AndroidView? FindScrollableUnder(ViewGroup root, int x, int y)
@@ -359,6 +527,8 @@ internal sealed class G9SheetViewBorderPlatformView : ContentViewGroup
         _insideScrollable = false;
         _scrollableUnderFinger = null;
         _gestureForwarded = false;
+        _activePointerId = InvalidPointerId;
+        RecycleVelocityTracker();
     }
 }
 #endif

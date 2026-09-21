@@ -1,3 +1,4 @@
+using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Maui.BindableProperty.Generator.Core;
 using Microsoft.Maui.Controls.Shapes;
@@ -96,7 +97,10 @@ public partial class G9PinEntry : G9ControlBase
     private bool _suppress;
     private bool _completedFired;
 
-    [AutoBindable(OnChanged = nameof(OnLayoutChanged))] private int _length = 4;
+    // [AutoBindable] ignores private-field initializers (the generated default is default(T)),
+    // so the documented defaults are declared on the attribute. Without it Length was 0 — one
+    // cell instead of four — and Separator was null, so a grouped PIN rendered no separators.
+    [AutoBindable(DefaultValue = "4", OnChanged = nameof(OnLayoutChanged))] private int _length = 4;
 
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnValueExternalChanged))]
     private string? _value;
@@ -105,7 +109,7 @@ public partial class G9PinEntry : G9ControlBase
     [AutoBindable(OnChanged = nameof(OnVisualOnly))] private string? _placeholder;
     [AutoBindable(OnChanged = nameof(OnVisualOnly))] private char _maskCharacter = '\u25CF';
     [AutoBindable(OnChanged = nameof(OnLayoutChanged))] private string? _groupSizes;
-    [AutoBindable(OnChanged = nameof(OnLayoutChanged))] private string? _separator = "-";
+    [AutoBindable(DefaultValue = "-", OnChanged = nameof(OnLayoutChanged))] private string? _separator = "-";
     [AutoBindable(OnChanged = nameof(OnVisualOnly))] private double _cellWidth;
     [AutoBindable(OnChanged = nameof(OnVisualOnly))] private double _cellHeight;
     [AutoBindable] private bool _autoFocus;
@@ -348,9 +352,15 @@ public partial class G9PinEntry : G9ControlBase
         if (string.IsNullOrEmpty(raw)) return string.Empty;
         var max = _cells.Count > 0 ? _cells.Count : raw.Length;
         var sb = new StringBuilder(Math.Min(raw.Length, max));
-        foreach (var ch in raw)
+        foreach (var typed in raw)
         {
             if (sb.Length >= max) break;
+
+            // Digits are stored as ASCII whatever keyboard produced them. char.IsDigit accepts
+            // Persian (U+06F0–06F9) and Arabic-Indic (U+0660–0669) digits, so without this a code
+            // typed on a Persian keyboard reached Value as "۱۲۳۴" and never compared equal to the
+            // "1234" the server sent. Letters are untouched — only digits are mapped.
+            var ch = G9Digits.NormalizeToAscii(typed);
             if (IsAllowed(ch)) sb.Append(ch);
         }
         return sb.ToString();
@@ -466,7 +476,11 @@ public partial class G9PinEntry : G9ControlBase
 
     // ── Windows hidden-Entry text bridge ────────────────────────────────────────
 #if WINDOWS
-    private bool _winUiBridgeHooked;
+    // The platform TextBox the bridge is currently attached to. A flag was not enough: MAUI can
+    // re-create the handler (and with it the TextBox) for the same virtual Entry — a page revisit,
+    // a window re-attach — and a once-only flag left the NEW TextBox unhooked, i.e. back to
+    // "typing does nothing". Tracking the instance lets us move the hook and drop the old one.
+    private Microsoft.UI.Xaml.Controls.TextBox? _winUiBridgedTextBox;
 
     /// <summary>
     ///     Bridge the platform <see cref="Microsoft.UI.Xaml.Controls.TextBox" />'s text
@@ -492,23 +506,41 @@ public partial class G9PinEntry : G9ControlBase
     /// </summary>
     private void HookWinUiTextBridge()
     {
-        if (_hidden.Handler?.PlatformView is not Microsoft.UI.Xaml.Controls.TextBox tb)
-        {
-            return;
-        }
-        if (_winUiBridgeHooked) return;
-        _winUiBridgeHooked = true;
+        var tb = _hidden.Handler?.PlatformView as Microsoft.UI.Xaml.Controls.TextBox;
+        if (ReferenceEquals(tb, _winUiBridgedTextBox)) return;
 
-        tb.TextChanging += (s, _) =>
+        if (_winUiBridgedTextBox is not null)
         {
-            var platformText = s.Text ?? string.Empty;
-            if ((_hidden.Text ?? string.Empty) != platformText)
+            try
             {
-                // Pushing the virtual Text fires the virtual TextChanged
-                // (OnHiddenTextChanged) which runs the normal PIN update flow.
-                _hidden.Text = platformText;
+                _winUiBridgedTextBox.TextChanging -= OnWinUiTextChanging;
             }
-        };
+            catch (Exception)
+            {
+                // The old TextBox may already be closed on the WinRT side by the time the
+                // handler is swapped; there is nothing left to unhook from in that case.
+            }
+        }
+
+        _winUiBridgedTextBox = tb;
+
+        if (tb is not null)
+        {
+            tb.TextChanging += OnWinUiTextChanging;
+        }
+    }
+
+    private void OnWinUiTextChanging(
+        Microsoft.UI.Xaml.Controls.TextBox sender,
+        Microsoft.UI.Xaml.Controls.TextBoxTextChangingEventArgs args)
+    {
+        var platformText = sender.Text ?? string.Empty;
+        if ((_hidden.Text ?? string.Empty) != platformText)
+        {
+            // Pushing the virtual Text fires the virtual TextChanged
+            // (OnHiddenTextChanged) which runs the normal PIN update flow.
+            _hidden.Text = platformText;
+        }
     }
 #endif
 }
@@ -750,6 +782,16 @@ public partial class G9PinEntry
                 sep.FontFamily = culturalFont;
             }
         }
+
+        // One accessible element for the whole row: the cells are visuals, not inputs, so a
+        // screen reader would otherwise find N anonymous boxes. The control has no label of its
+        // own (Placeholder is the per-cell filler glyph, not a name) and the string catalogue has
+        // no key for one, so the NAME is left to the consumer's SemanticProperties.Description;
+        // what the control can always say is its progress, which is language-neutral. A masked
+        // PIN never exposes its characters — only how many have been entered.
+        ApplySemantics(
+            null,
+            string.Create(G9Culture.CurrentCulture, $"{raw.Length} / {_cells.Count}"));
 
         if (AutoFocus && !_hidden.IsFocused)
         {

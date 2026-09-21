@@ -22,7 +22,10 @@ public partial class G9TimeSpanPicker : G9OutlinedFieldBase
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.TwoWay), OnChanged = nameof(OnVisualChanged))]
     private TimeSpan? _selectedTimeSpan;
 
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))]
+    // Declared through DefaultValue: [AutoBindable] ignores a field initializer, so the generated
+    // BindableProperty default was default(enum) = YearsMonths and the days drum never appeared
+    // unless the consumer set Mode explicitly.
+    [AutoBindable(DefaultValue = "G9TimeSpanPickerMode.YearsMonthsDays", OnChanged = nameof(OnVisualChanged))]
     private G9TimeSpanPickerMode _mode = G9TimeSpanPickerMode.YearsMonthsDays;
 
     public G9TimeSpanPicker()
@@ -114,12 +117,16 @@ public partial class G9TimeSpanPicker : G9OutlinedFieldBase
         var parts = new System.Collections.Generic.List<string>();
         var culture = G9Culture.CurrentCulture;
 
-        if (value.Days / 365 > 0)
-            parts.Add(string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanYearsFormat), value.Days / 365));
-        if (value.Days % 365 / 30 > 0 || (value.Days / 365 == 0 && value.Days % 365 / 30 > 0))
-            parts.Add(string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanMonthsFormat), value.Days % 365 / 30));
-        if (Mode >= G9TimeSpanPickerMode.YearsMonthsDays && value.Days % 30 > 0)
-            parts.Add(string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanDaysFormat), value.Days % 30));
+        // Same decomposition the sheet's drums use, so the field never reads differently from the
+        // sheet it opens (it used to take days as `Days % 30` — 370 days read "1 year 10 days").
+        var (years, months, days) = G9TimeSpanMath.Decompose(value.Days);
+
+        if (years > 0)
+            parts.Add(string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanYearsFormat), years));
+        if (months > 0)
+            parts.Add(string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanMonthsFormat), months));
+        if (Mode >= G9TimeSpanPickerMode.YearsMonthsDays && days > 0)
+            parts.Add(string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanDaysFormat), days));
 
         if (parts.Count == 0)
             return string.Format(culture, G9Strings.Get(G9StringKey.TimeSpanDaysFormat), 0);

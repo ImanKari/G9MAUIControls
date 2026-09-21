@@ -242,6 +242,19 @@ PinField.FocusFirstEmpty();    // jump to the first unfilled cell (or last cell)
 
 ## Behaviour notes
 
+- **Digits are stored as ASCII.** Every typed / pasted / bound character goes through
+  `G9Digits.NormalizeToAscii` before the type filter, so a code entered on a Persian or Arabic
+  keyboard ("۱۲۳۴" / "١٢٣٤") reaches `Value` as `"1234"` and compares equal to what the server
+  sent. Letters are untouched.
+- **Defaults live on the attribute.** `Length` (4) and `Separator` ("-") are declared with
+  `[AutoBindable(DefaultValue = …)]`; the generator ignores field initializers, so without it
+  the real defaults were `0` (one cell) and `null` (no separators).
+- **Accessibility.** The cell row is one semantic element whose hint is the progress
+  (`"2 / 4"`); a masked PIN never exposes its characters. The control has no label of its own —
+  give it a name with `SemanticProperties.Description`.
+- **Windows text bridge** follows the hidden Entry's handler: when MAUI re-creates the platform
+  `TextBox`, the `TextChanging` hook moves to the new instance and is removed from the old one.
+
 - `Value` setters are guarded with a `_suppress` flag so the hidden Entry's
   `TextChanged` handler doesn't echo back into the `Value` setter during
   programmatic distribution.

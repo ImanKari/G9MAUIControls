@@ -119,12 +119,24 @@ public partial class SqliteRepository<T> where T : class, new()
             return total;
         }
 
-        foreach (var batch in Batch(buffered, batchSize))
+        // runInSingleTransaction: false means "one transaction PER BATCH", not "no transaction". It used to
+        // pass runInTransaction: false to sqlite-net, which is autocommit per row: a failure at row N left
+        // N-1 rows of that batch committed with no way to tell which, and threw past the cache refresh, so
+        // the cache did not show the rows that HAD been written. Now a failing batch rolls back whole,
+        // earlier batches stay committed (that is what the caller asked for), and the cache is refreshed for
+        // them either way.
+        try
         {
-            total += await Db.InsertAllAsync(batch, false).ConfigureAwait(false);
+            foreach (var batch in Batch(buffered, batchSize))
+            {
+                total += await Db.InsertAllAsync(batch, true).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await RefreshCacheAfterWriteAsync(total).ConfigureAwait(false);
         }
 
-        await RefreshCacheAfterWriteAsync(total).ConfigureAwait(false);
         return total;
     }
 
@@ -222,6 +234,7 @@ public partial class SqliteRepository<T> where T : class, new()
         ApplyUpsertAuditIfNeeded(buffered, Options.Clock.Now(), SqliteEntityAuditDefaults.ResolveCurrentUserId(Options.CurrentUser));
         NormalizeGuidStringIdProperties(buffered);
         EnsureGeneratedPrimaryKey(buffered);
+        RejectEmptyGuidPrimaryKeys(buffered);
 
         var conflictColumns = ResolveConflictColumns(keyProperties);
         var sql = GetOrBuildMergeSql(conflictColumns);
@@ -240,6 +253,42 @@ public partial class SqliteRepository<T> where T : class, new()
 
         await RefreshCacheAfterWriteAsync(affectedRows).ConfigureAwait(false);
         return affectedRows;
+    }
+
+    /// <summary>
+    ///     Refuses a merge that carries the all-zero GUID as a library-managed primary key.
+    /// </summary>
+    /// <remarks>
+    ///     <c>Guid.Empty</c> is a placeholder, not an identity, but it is not BLANK — so
+    ///     <see cref="EnsureGeneratedPrimaryKey(T)" /> leaves it alone, and every entity carrying it then
+    ///     conflicts on the same key: each one silently overwrote the previous, and N rows went in as one.
+    ///     Thrown before the transaction opens, so nothing is written. Minting a fresh id instead would be
+    ///     worse — the same input merged twice would insert the rows twice. Same narrow scope as the
+    ///     generator: only a primary key the library treats as a GUID id.
+    /// </remarks>
+    private static void RejectEmptyGuidPrimaryKeys(IEnumerable<T> entities)
+    {
+        foreach (var column in Metadata.Columns)
+        {
+            if (!column.IsPrimaryKey || !column.IsGuidStringId)
+            {
+                continue;
+            }
+
+            foreach (var entity in entities)
+            {
+                if (column.Property.GetValue(entity) is string value &&
+                    Guid.TryParse(value, out var id) &&
+                    id == Guid.Empty)
+                {
+                    throw new ArgumentException(
+                        $"Merge of {typeof(T).Name}: '{column.PropertyName}' is the empty GUID. It is a " +
+                        "placeholder, and every row carrying it would be upserted onto the SAME row. Leave " +
+                        "the id blank to have one generated, or supply the real id.",
+                        nameof(entities));
+                }
+            }
+        }
     }
 
     private static object[] BuildMergeArgs(T entity)
@@ -267,9 +316,19 @@ public partial class SqliteRepository<T> where T : class, new()
         var conflictSql = string.Join(", ", conflictColumns.Select(QuoteIdentifier));
 
         var keySet = new HashSet<string>(conflictColumns, StringComparer.OrdinalIgnoreCase);
+
+        // On an audited entity the created pair is "set once, on insert" (IG9AuditedEntity). The upsert
+        // used to copy every non-key column from the incoming row, and the incoming row has just been
+        // stamped with NOW by the insert-audit defaults — so merging over an existing row rewrote when, and
+        // by whom, it was created. Both columns are still INSERTED; they are only left out of the
+        // DO UPDATE SET, so an existing row keeps its own.
+        var isAudited = typeof(IG9AuditedEntity).IsAssignableFrom(typeof(T));
         var updatableColumns = Metadata.Columns
+            .Where(c => !keySet.Contains(c.ColumnName))
+            .Where(c => !isAudited ||
+                        c.PropertyName is not (nameof(IG9AuditedEntity.CreatedTime)
+                            or nameof(IG9AuditedEntity.CreatedByUserId)))
             .Select(c => c.ColumnName)
-            .Where(c => !keySet.Contains(c))
             .ToArray();
 
         if (updatableColumns.Length == 0)

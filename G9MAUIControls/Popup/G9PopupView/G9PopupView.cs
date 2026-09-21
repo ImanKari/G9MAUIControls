@@ -55,6 +55,14 @@ public sealed class G9PopupView : Grid
     private const double MinimumCardWidth = 160;
     private const double MinimumCompactCardWidth = 120;
 
+    /// <summary>
+    ///     Grace period added to the close animation's own duration before the watchdog in
+    ///     <see cref="CloseAsync" /> finalizes the close itself. Long enough that a healthy animation
+    ///     always wins (a late frame or a GC pause is tens of ms), short enough that a lost
+    ///     finished-callback is not felt as a hang.
+    /// </summary>
+    private const int CloseWatchdogMarginMs = 400;
+
     public G9PopupView()
     {
         // The control fills its host (OverlayHost). It is input-transparent while closed so
@@ -196,10 +204,37 @@ public sealed class G9PopupView : Grid
         var pendingClose = _closeAnimationCompleted;
         _closeAnimationCompleted = null;
 
-        AbortRunningAnimations();
-        AnimateOpen(options);
+        try
+        {
+            AbortRunningAnimations();
 
-        pendingClose?.TrySetResult(true);
+            // Animate(...) resolves its IAnimationManager through the MauiContext and THROWS when
+            // there is none — a popup requested before the page has a handler (e.g. from
+            // OnApplyTemplate, which runs inside the page constructor). Before this guard that
+            // throw left the view IsVisible + input-opaque at opacity 0: an invisible sheet of
+            // glass over the whole page. With no context there is nothing to animate on anyway,
+            // so snap to the resting open state instead.
+            if (CanAnimate)
+            {
+                AnimateOpen(options);
+            }
+            else
+            {
+                ApplyOpenedVisuals();
+            }
+        }
+        catch
+        {
+            // The animator failed part-way. The popup is already visible and capturing input, so
+            // it must also be SEEN: force the resting open state. Deliberately not rethrown — a
+            // popup that appears without its animation still does its job (it is very often the
+            // error popup), whereas failing the request would drop the message entirely.
+            ApplyOpenedVisuals();
+        }
+        finally
+        {
+            pendingClose?.TrySetResult(true);
+        }
     }
 
     /// <summary>
@@ -219,19 +254,131 @@ public sealed class G9PopupView : Grid
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _closeAnimationCompleted = tcs;
 
-        AbortRunningAnimations();
-        AnimateClose(_options, () =>
+        var animated = false;
+        try
         {
-            // If a re-open superseded this close (e.g. G9PopupHelper queue advanced before
-            // this animation completed), Open() flipped _isOpen back to true and is now
-            // authoritative for the visual state. Bail without touching IsVisible /
-            // InputTransparent / Closed event — the new popup is already showing. Open()
-            // is responsible for completing the close TCS in that path.
-            if (_isOpen)
+            AbortRunningAnimations();
+            if (CanAnimate)
             {
-                return;
+                AnimateClose(_options, () => CompleteClose(tcs));
+                animated = true;
+            }
+        }
+        catch
+        {
+            // Same hazard as Open(): no MauiContext, or the animator rejected the request. The
+            // caller is awaiting this task (the helper's queue pump is), so a throw here must
+            // still end in a hidden view and a completed task — fall through to the snap path.
+            animated = false;
+        }
+
+        if (!animated)
+        {
+            ApplyClosedVisuals();
+            CompleteClose(tcs);
+            return tcs.Task;
+        }
+
+        // The finished-callback is the ONLY thing that completes this task on the animated path,
+        // and MAUI does not promise it: a view whose handler is torn down mid-animation (page
+        // swap, window close) can lose its ticker and never be called back. G9PopupHelper's single
+        // queue pump awaits this task, so one lost callback would stall every later popup for the
+        // life of the process. The watchdog turns "never" into "a moment late". (Animation = None
+        // completes synchronously inside AnimateClose, so there is nothing left to guard.)
+        if (!tcs.Task.IsCompleted)
+        {
+            _ = EnsureCloseCompletesAsync(tcs, _options.AnimationDuration);
+        }
+
+        return tcs.Task;
+    }
+
+    /// <summary>
+    ///     Hides the popup immediately, without animation, and releases anyone awaiting
+    ///     <see cref="CloseAsync" />. Failure-path only: <c>G9PopupHelper</c> calls it when presenting
+    ///     or closing threw, because the alternative is a view stuck visible and input-opaque over the
+    ///     page. Never throws.
+    /// </summary>
+    internal void ForceClose()
+    {
+        try
+        {
+            _isOpen = false;
+            CancelAutoCloseTimer();
+
+            try
+            {
+                // Aborting fires the pending close animation's finished-callback synchronously,
+                // which may already finalize the view; the state check below makes that harmless.
+                AbortRunningAnimations();
+            }
+            catch
+            {
+                // Best effort — the hidden state below is what matters.
             }
 
+            var pendingClose = _closeAnimationCompleted;
+            _closeAnimationCompleted = null;
+
+            ApplyClosedVisuals();
+            if (IsVisible || !InputTransparent)
+            {
+                InputTransparent = true;
+                IsVisible = false;
+                SetContent(null);
+                Closed?.Invoke(this, EventArgs.Empty);
+            }
+
+            pendingClose?.TrySetResult(true);
+        }
+        catch
+        {
+            // Last line of defence on a failure path; there is no one left to report to.
+        }
+    }
+
+    /// <summary>
+    ///     True when the view can run a MAUI animation. <c>Animate(...)</c> needs an
+    ///     <c>IAnimationManager</c>, which it finds through the handler's <c>MauiContext</c>; without
+    ///     one it throws rather than no-ops.
+    /// </summary>
+    private bool CanAnimate => Handler?.MauiContext is not null;
+
+    private void ApplyOpenedVisuals()
+    {
+        _overlay.Opacity = 1;
+        _cardContainer.Opacity = 1;
+        _cardContainer.Scale = 1;
+        _cardContainer.TranslationY = 0;
+    }
+
+    private void ApplyClosedVisuals()
+    {
+        _overlay.Opacity = 0;
+        _cardContainer.Opacity = 0;
+    }
+
+    private void CompleteClose(TaskCompletionSource<bool> tcs)
+    {
+        // If a re-open superseded this close (e.g. G9PopupHelper queue advanced before
+        // this animation completed), Open() flipped _isOpen back to true and is now
+        // authoritative for the visual state. Bail without touching IsVisible /
+        // InputTransparent / Closed event — the new popup is already showing. Open()
+        // is responsible for completing the close TCS in that path.
+        if (_isOpen)
+        {
+            return;
+        }
+
+        // Reached twice for one close when the watchdog and a late finished-callback both fire.
+        // The task is completed last (below), so "already completed" means "already finalized".
+        if (tcs.Task.IsCompleted)
+        {
+            return;
+        }
+
+        try
+        {
             // Fully off-screen and non-interactive so taps fall through immediately. We
             // detach the content as part of the cleanup so the next Show() can mount a fresh
             // view without parent-already-set conflicts.
@@ -239,10 +386,46 @@ public sealed class G9PopupView : Grid
             IsVisible = false;
             SetContent(null);
             Closed?.Invoke(this, EventArgs.Empty);
-            tcs.TrySetResult(true);
-        });
+        }
+        finally
+        {
+            // In a finally so a throwing Closed subscriber cannot leave the awaiter hanging.
+            if (ReferenceEquals(_closeAnimationCompleted, tcs))
+            {
+                _closeAnimationCompleted = null;
+            }
 
-        return tcs.Task;
+            tcs.TrySetResult(true);
+        }
+    }
+
+    private async Task EnsureCloseCompletesAsync(TaskCompletionSource<bool> tcs, uint animationDuration)
+    {
+        try
+        {
+            await Task.Delay((int)Math.Min(animationDuration, 60_000u) + CloseWatchdogMarginMs).ConfigureAwait(true);
+
+            if (tcs.Task.IsCompleted)
+            {
+                return;
+            }
+
+            // CompleteClose mutates the view, so it has to run on the UI thread even if CloseAsync
+            // was (incorrectly) called from a background one and this continuation followed it.
+            if (MainThread.IsMainThread)
+            {
+                CompleteClose(tcs);
+            }
+            else
+            {
+                MainThread.BeginInvokeOnMainThread(() => CompleteClose(tcs));
+            }
+        }
+        catch
+        {
+            // No dispatcher / view already torn down: the view no longer matters, the awaiter does.
+            tcs.TrySetResult(true);
+        }
     }
 
     private void ApplyOptions(G9PopupViewOpenOptions options)

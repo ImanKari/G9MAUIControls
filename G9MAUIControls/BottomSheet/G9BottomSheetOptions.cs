@@ -123,6 +123,99 @@ public sealed record G9BottomSheetSettings
     /// </summary>
     public Color BackdropCardColor { get; init; } = Colors.Black;
 
+    /// <summary>
+    ///     Master switch for <b>stage before show</b> (default <c>true</c>): a sheet's body is
+    ///     attached BELOW the screen edge, given its platform handlers, measured for real, laid out
+    ///     and drawn — and only then does the open motion start.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         This is what lets a sheet open at its exact height with finished content from the
+    ///         first visible frame: no loading skeleton for a body whose data is already in hand,
+    ///         no height guess to correct afterwards, and no icon glyphs painting late. The work
+    ///         it moves in FRONT of the motion is work that used to happen during or after it, in
+    ///         full view.
+    ///     </para>
+    ///     <para>
+    ///         Set to <c>false</c> to get the pre-1.1 pipeline back (first measure before attach,
+    ///         timed settle passes). It exists as a rollback for a release, not as a preference.
+    ///     </para>
+    /// </remarks>
+    public bool StageBeforeShow { get; init; } = true;
+
+    /// <summary>
+    ///     How many DRAWN frames a staged body is held off-screen after its layout has settled,
+    ///     before the open motion starts. Default <c>2</c>.
+    /// </summary>
+    /// <remarks>
+    ///     Frame one is the first real measure / layout / draw of the body; frame two absorbs the
+    ///     follow-up pass MAUI posts during the first, and gives asynchronously-loaded icon images
+    ///     (<c>FontImageSource</c> resolves through the platform image loader, a frame or two late)
+    ///     time to land. At 60 Hz that is ~33 ms — against the 220 ms opaque cover it replaces.
+    ///     Raise it if a device still shows icons arriving late; <c>0</c> opens on the first frame
+    ///     the layout is ready.
+    /// </remarks>
+    public int PreOpenSettleFrames { get; init; } = 2;
+
+    /// <summary>
+    ///     Hard cap (ms) on the whole off-screen hold — layout wait, settle frames and content
+    ///     readiness together. Default <c>250</c>. A sheet ALWAYS opens by this deadline, so a body
+    ///     that never reports ready can delay an open but can never hang one.
+    /// </summary>
+    public int PreOpenMaxHoldMs { get; init; } = 250;
+
+    /// <summary>
+    ///     Legacy switch (default <c>false</c>): wrap an ALREADY-BUILT view in a
+    ///     <c>DeferredContentView</c> behind a loading placeholder, as every sheet did before 1.1.
+    /// </summary>
+    /// <remarks>
+    ///     Deferring a view that is already constructed defers only its handler creation — the
+    ///     expensive part, its XAML construction, was paid before the show call — and then makes
+    ///     the user wait out a fixed placeholder window for nothing. With
+    ///     <see cref="StageBeforeShow" /> the handlers are created off-screen instead. Factory
+    ///     content is unaffected: it is still built after the open motion, behind its placeholder.
+    /// </remarks>
+    public bool DeferPrebuiltContent { get; init; }
+
+    /// <summary>
+    ///     Android: composite the sheet body from a hardware layer while it moves. Default
+    ///     <c>true</c>. See <see cref="G9SheetView.UseHardwareLayerDuringMotion" />.
+    /// </summary>
+    public bool UseHardwareLayerDuringMotion { get; init; } = true;
+
+    /// <summary>
+    ///     How sheet motion is timed and shaped. Default
+    ///     <see cref="G9SheetMotionStyle.PlatformNative" />: every open, close, detent change and
+    ///     drag release moves the way the platform's own bottom sheet does.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Under <see cref="G9SheetMotionStyle.PlatformNative" /> the duration is resolved per
+    ///         motion — from the distance travelled and the speed the finger released at — so the
+    ///         app-wide <see cref="OpenAnimationDurationMs" />, <see cref="CloseAnimationDurationMs" />
+    ///         and <see cref="SizeScaledAnimationDuration" /> are NOT used. A per-sheet
+    ///         <see cref="G9BottomSheetOptions.OpenAnimationDurationMs" /> /
+    ///         <see cref="G9BottomSheetOptions.CloseAnimationDurationMs" /> still wins for that
+    ///         sheet's motion in that direction (it keeps the native curve and takes the stated
+    ///         time), so a sheet that deliberately moves slowly or instantly keeps doing so.
+    ///     </para>
+    ///     <para>
+    ///         Why the old model was replaced: scaling a fixed duration by the distance travelled
+    ///         gives every sheet the same constant speed, so a short sheet barely animates at all —
+    ///         with the 199 ms the AgriPad app configured, a 200 dp picker "opened" in 40 ms. No
+    ///         native sheet is timed like that; both platforms take roughly 250–500 ms whatever the
+    ///         distance, and spend most of it decelerating.
+    ///     </para>
+    /// </remarks>
+    public G9SheetMotionStyle MotionStyle { get; init; } = G9SheetMotionStyle.PlatformNative;
+
+    /// <summary>
+    ///     Drive sheet motion from the display's frame clock where the platform exposes one
+    ///     (Android). Default <c>true</c>. A kill switch: <c>false</c> runs motion on MAUI's
+    ///     animation ticker. See <see cref="G9SheetMotionDriver" /> for what the frame clock buys.
+    /// </summary>
+    public bool UseFrameClockMotion { get; init; } = true;
+
     internal G9BottomSheetSettings Normalize()
     {
         var minimumOpacity = Math.Clamp(ModalOverlayMinimumOpacity, 0, 1);
@@ -148,7 +241,9 @@ public sealed record G9BottomSheetSettings
             CloseAnimationDurationMs = closeMs,
             SizeScaledAnimationDuration = SizeScaledAnimationDuration,
             EnableBackdropCardEffect = EnableBackdropCardEffect,
-            BackdropCardColor = BackdropCardColor
+            BackdropCardColor = BackdropCardColor,
+            PreOpenSettleFrames = Math.Clamp(PreOpenSettleFrames, 0, 30),
+            PreOpenMaxHoldMs = Math.Clamp(PreOpenMaxHoldMs, 0, 5000)
         };
     }
 }
@@ -488,6 +583,32 @@ public sealed record G9BottomSheetOptions
     ///     should render over a still-visible partial-height parent.
     /// </summary>
     public bool RecedeParentOnStack { get; init; } = true;
+
+    /// <summary>
+    ///     When <c>true</c> and exactly one sheet is open (the primary, nothing stacked on it), this
+    ///     sheet TAKES ITS PLACE instead of stacking on it: the new sheet is built and staged while
+    ///     the current one stays on screen, and at the moment it is ready the current sheet slides
+    ///     out and this one slides in — in the same frame, with the dim handed from one to the other.
+    ///     Default <c>false</c>.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         For a step that REPLACES the sheet it was launched from (a task's detail sheet →
+    ///         the task's full-screen view). The alternative — close the current sheet, wait for it,
+    ///         then build and open the next — leaves the screen with no sheet at all for the length
+    ///         of a close, a cleanup, a view construction and a staging pass: a device trace measured
+    ///         970 ms from the tap to the next sheet starting to rise, most of it an empty, dimmed
+    ///         page.
+    ///     </para>
+    ///     <para>
+    ///         The replaced sheet is closed normally — its <c>ClosingCommand</c> / <c>ClosedCommand</c>
+    ///         run — just later than its successor is attached. Closing the successor lands on the
+    ///         page, not back on the replaced sheet (that is stacking: leave this <c>false</c>). Has
+    ///         no effect, and the sheet simply stacks / opens as usual, when nothing is open, when
+    ///         something is stacked, or with <c>G9BottomSheetSettings.StageBeforeShow</c> off.
+    ///     </para>
+    /// </remarks>
+    public bool ReplaceCurrentSheet { get; init; }
 
     /// <summary>
     ///     Explicit key for the session height memo. Prebuilt bodies are memoized automatically by

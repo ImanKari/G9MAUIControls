@@ -83,9 +83,23 @@ public partial class SqliteRepository<[DynamicallyAccessedMembers(DynamicallyAcc
     private static readonly SemaphoreSlim CacheRefreshLock = new(1, 1);
     private static readonly TimeSpan DefaultRefreshGap = TimeSpan.FromMilliseconds(300);
 
-    private static SQLiteAsyncConnection? CacheConnection;
+    // The PROVIDER, never a connection. A captured SQLiteAsyncConnection outlives a sign-out: a refresh
+    // already in flight would finish against the previous user's database and publish those rows to the
+    // next user. The connection is resolved from here at refresh time instead, and the provider is kept
+    // across a session reset so the first read afterwards re-resolves rather than throwing.
+    private static G9SqliteConnectionProvider? CacheProvider;
     private static List<T>? CacheRows;
-    private static readonly List<WeakReference<Action<List<T>>>> CacheListeners = [];
+
+    // Bumped by every session reset, under CacheStateLock. A refresh notes the value BEFORE it resolves
+    // its connection and publishes only if it is unchanged afterwards — so rows that were loaded on one
+    // side of a reset can never be published on the other.
+    private static int CacheGeneration;
+
+    // Held STRONGLY — ordinary event semantics. These were WeakReference<delegate>, which sounds safe and
+    // is not: nothing else references the delegate object created by `ListenToCacheData(OnRows)` or by an
+    // inline lambda, so it was collected at the next GC and the listener silently stopped being notified
+    // while its owner was still alive. Unsubscribe with StopListeningToCacheData.
+    private static readonly List<Action<List<T>>> CacheListeners = [];
     private static CancellationTokenSource? CacheDebounceCts;
     private static bool CacheDefined;
     private static bool CacheInitialized;

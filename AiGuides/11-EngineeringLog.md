@@ -1684,3 +1684,66 @@ through `ApplyLeadingIcon`'s emoji / image branch.
 - **Reported as a feature bug, fixed in the base class.** The tester's words were about a combobox; the
   defect was in shared field chrome and affected every control that mixes a default icon with a
   subclass-supplied one.
+
+---
+
+## RSK-0003 — Known open defects in 1.1.0, carried over from the remediation pass
+
+The 1.1.0 remediation pass (2026-09-21) read the whole library and fixed most of what it found. This is
+what it **did not** fix, recorded here because the plan file that held the list is a one-off and this log
+is not. Each line is a real defect in shipped code, not a wish: it was read in the source, judged, and
+deliberately left. Status words are the plan's own — *partly* means exactly that, and the unfinished half
+is named. The `BS-` / `CT-` / `IN-` / `XC-` ids are the plan's; they survive only here and in ADR-0022,
+because nothing else uses that numbering. What 1.1.0 DID fix is `09-Progress.md` → 1.1.0; the reasoning
+for the large deferrals is ADR-0022 → *Rejected* and ADR-0023.
+
+**Nothing below has been re-verified against a device.** 1.1.0 was compile-verified on four TFMs and then
+traced on an emulator through three rounds (`09-Progress.md` → *The honest gap*). A defect that is only
+visible on a low-end device is not in this list, because nobody has looked yet.
+
+### Bottom sheet
+
+| What | Why it was left |
+|---|---|
+| **The touch layer still works by interception**, not `INestedScrollingParent3` (BS-09, partly). Single parent-disallow, cached density, active pointer id and velocity are in; hand-off is still one-directional — once the sheet takes a gesture it keeps it, so "drag the sheet to its top detent and keep scrolling the list in the same gesture" is impossible. | Platform gesture code that cannot be validated without a device, and it would meet the layers sheet's gesture history head-on. |
+| **The shell is rebuilt on every open** (BS-18, partly). `_contentBorder` is gone — one native container and clip per sheet — but a new `G9SheetView`, header, footer, overlay host and scrim are still constructed per open. Pooling is not done. | A large refactor with no user-visible effect on its own. The device trace since then has put numbers behind it: request → motion start is *content* cost (attach 39 / first layout 43 ms median, 450–660 ms for a heavy form), so keeping heavy bodies alive is now the next real lever, not a nice-to-have. |
+| **Dead options stay public** (BS-13, not done). `AndroidTheme`, `AndroidMaxWidth`, `AndroidMaxHeight`, `AndroidMargin`, `AndroidShouldRemoveExpandedCorners`, `WindowsMaxHeight`, `WindowsMinWidth`, `WindowsMinHeight`, `AnimateOverlayToColorOnIos` — nine of 84 options that nothing reads. | `[Obsolete]` is a build break for a consumer with `TreatWarningsAsErrors`, which is this subtree's own posture (ADR-0008). Remove in 2.0. |
+| **`GetFullExpandedPosition` / `GetHalfExpandedPosition` are getters that set `State` and `HeightRequest`** (BS-19, not done). | Not worth the regression risk without a device to see what depends on the side effect. |
+| **Full-screen height is stamped once at open and never re-applied** (BS-20, partly). A large host-height change now animates instead of jumping, but a keyboard still leaves a full-screen sheet hanging past its container. | It interacts with the app-side `KeyboardInsetScope`, which is still the safety net. Proper IME-synchronised translation (`ViewCompat.SetWindowInsetsAnimationCallback`, API 30+) is deferred with it. |
+| **The managed ticker stays** (BS-05, partly). Per-frame allocation is gone and a hardware layer is taken for the duration of a motion. | Twice diagnosed, twice wrong about the cure: a native animator runs on the same UI thread and stalls with it (ADR-0022), and what the motion actually needed was the platform's *timing* on the display's frame clock (ADR-0023). |
+| **The 6,000-line helper is still one static class with eleven `ConditionalWeakTable`s** (BS-12, not done), and the sheet's detent / release / resize maths is therefore still untestable — it lives inside `G9SheetView` and would have to be extracted into a dependency-free type first (XC-05). | ADR-0022 → *Rejected*. A refactor of that size, shipped blind, would have put the part that fixes the actual complaints at risk. |
+| Also not done and named in ADR-0022: the structural `G9Redacted` skeleton, a predictive-back callback, the optional iOS 16+ native presenter, and deleting the AgriPad-side compensations (10 height seeds, 6 hand-written height providers, 2 memo keys, `OperationsMenuContentViewBase`, `CompactListSheetHelper`). | The app-side compensations are harmless with the new engine and they are the safety net until it has been seen on a real device. |
+
+### Controls, hosting and the rest
+
+| What | Where |
+|---|---|
+| **`G9TimeSpanPickerMode` declares `…Hours`, `…HoursMinutes` and `…HoursMinutesSeconds`, and the sheet implements none of them.** A consumer who sets one gets the days drum and no error. | `G9TimeSpanPicker.cs:8-15`; `G9TimeSpanPickerSheet.cs` |
+| **`RestoreOnCancel` breaks a one-way binding.** On cancel the picker re-assigns `SelectedDateTime` / `SelectedItem` itself, so a `OneWay`-bound source is written back to. Defaults to `true` on both controls. | `G9DateTimePicker.cs:67,123`; `G9Picker.cs:69,267` |
+| **`G9ChipGroup` still matches key-less chips by label.** CT-06 gave the selection sheet a `SelectionIdentity`; the chip group did not get it, so two chips with the same visible text are the same chip. | `G9ChipGroup.cs` |
+| **`G9CascadePanel`'s two animation `finished` callbacks ignore `cancelled`** — the XC-04 class that BS-06 and CT-26 were fixed for, missed in one file. The release-checklist grep for it is `finished:\s*\(_,\s*_\)`. | `G9CascadePanel.cs:728,780` |
+| **`G9PageBase.OnDisappearing`'s `RunSafe` key is still the page TYPE name.** `OnAppearing` was fixed to an instance key (`_lifecycleKey`) for exactly this reason — a second live instance of the same page type has its run skipped as "already running" — and the disappearing half was left on `$"{GetType().Name}.OnDisappearingAfterParent"`. Same class as IN-14. | `G9PageBase.cs:441` vs `:393` |
+| **`G9AndroidHost.CurrentActivity` is a static strong reference** to an `Activity`. | `G9AndroidHost.cs:86` |
+| **`G9Diagnostics` has no error channel**, so `G9Press.ReportFailure` — the single funnel every control's press failure now goes through (XC-03) — ends in `Debug.WriteLine`. In a Release build a failed command press leaves no trace at all, which is the failure mode XC-11 exists to prevent. | `G9Press.cs:90` |
+| **Toast `CancelAnimations()` does not stop the inline fill animation** (cosmetic). The fill is committed under the name `InlineToastFillAnimationName`; `CancelAnimations()` cancels unnamed animations, so only the explicit `AbortAnimation(InlineToastFillAnimationName)` at one of the four sites actually stops it. | `G9ToastHelper.cs:573-575,686,1078,1121` |
+| **`G9TabView` loses a realized lazy tab across a runtime item change** (CT-17, partly). | `G9TabView.cs` |
+| **`G9PlusButton` still animates `Height`/`Width`** (CT-27, partly) — a relayout per frame, against XC-07. `Scale` was rejected: it would squash the button's text and its hit area. | `G9PlusButton.xaml.cs` |
+| **Accessibility is wired into six controls and no further** (CT-29, partly). Not done: `AutomationId` forwarding to the inner `Entry` (the app's QA layer maps `x:Name` → `AutomationId`), and the Expanded / Collapsed and switch On / Off strings. | suite-wide |
+| **Bottom toasts still ignore the keyboard** (IN-25, partly). | `G9ToastHelper.cs` |
+| **The migration high-water mark stays** (IN-29, mostly) — there is no persisted applied-set to migrate from. Large `IN` lists now go through `json_each`. | `SqliteMigrationRunner.cs` |
+| **`MauiXamlInflator` is unpinned and package validation is off** (IN-30, partly), so a source-mode Debug device check runtime-inflates XAML that the package ships XamlC-compiled — the two artifacts are not the same thing (XC-10). `global.json` was left alone deliberately: changing `rollForward` alone breaks local builds. The recommended single change is `version` 10.0.401 + `rollForward: latestPatch`, `useGlobalJson: true` in the pipeline, and a pinned workload. | `Directory.Build.props`, `global.json`, `azure-pipelines.yml` |
+| **No pipeline job builds a consumer against the packed `.nupkg`** (IN-11, mostly). The obvious version — build the Gallery — would not have caught LES-0036, because the Gallery does not reference the Sqlite package; it needs a consumer project that does. The publish gate itself is fixed (`batch: true`, `refs/heads/main` only, core pushed first, loop stops on the first failure) but **has never run on a hosted agent.** | `azure-pipelines.yml` |
+| **`G9SafeCommand.OperationFailed` needs an app change to be useful** (IN-32). The hook is raised once per failure; AgriPad's log filter keeps only categories starting with `Agriculture.AgriPad.App`, so a library failure is still silent there until the app subscribes or widens the filter. | app-side, once it references 1.1.0 |
+| Deliberately skipped, each for a stated reason: `G9Palette` fan-out isolation (the event belongs to `ObservableObject`), `G9KeyboardHelper`'s always-`Resize` restore, `G9RelativeTimeFormatter`'s `Unspecified` kind, and the synchronous `G9SafeCommand.Run` (all seven app callers rely on "it has run when it returns"). | |
+
+### One regression to watch, not a defect
+
+**IN-20 is the highest-risk change in 1.1.0.** Android inset re-application used to run `InvalidateMeasure`
+on the page plus `RequestLayout` on up to 240 native views, twice, on every resume and focus regain, even
+when nothing had changed. That blanket re-layout is gone — and it may have been hiding OEM "white bands".
+Check the Doogee S96Pro after returning from the camera or a picker before assuming it is a clean win.
+
+**Rule this register exists to enforce.** *A defect found and consciously not fixed must outlive the
+document that found it.* The remediation plan was a one-off artifact with an expiry date; a known defect
+has none. Anything left undone in an audit gets copied into this log before the audit's own file is
+deleted, or the next reader re-discovers it from scratch and pays for the reading twice.

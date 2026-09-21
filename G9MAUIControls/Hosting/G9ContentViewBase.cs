@@ -85,8 +85,11 @@ public abstract partial class G9ContentViewBase : ContentView
         // Default themed background. G9PageTemplate paints the area behind ContentHost
         // black to support the bottom-sheet recede effect, so every content view must own
         // an opaque background or that black bleeds through.
+        //
+        // Painted once here. The live palette subscription is made in OnHandlerChanging, as a pair with
+        // its removal: made from the constructor, a view that was built but never attached had no
+        // teardown to unsubscribe in and stayed pinned by the static palette.
         ApplyThemedBackground();
-        G9Palette.Current.PropertyChanged += OnG9PaletteChanged;
     }
 
     /// <inheritdoc />
@@ -97,7 +100,25 @@ public abstract partial class G9ContentViewBase : ContentView
         if (args.NewHandler is null)
         {
             G9Palette.Current.PropertyChanged -= OnG9PaletteChanged;
+
+            // The host page can die while this view is the active tab, and then nobody calls
+            // Deactivate: the culture subscription stays, the activation token is never cancelled and —
+            // the one with consequences outside this view — the background-work suppression is never
+            // disposed, leaving the host app's sync paused. Release all of it here. The view is NOT
+            // hidden: if it is attached again it must still be visible, and the host's next Activate()
+            // finds IsActive false and runs normally.
+            DeactivateCore(hide: false);
+            return;
         }
+
+        // `-=` first keeps a handler swap (old → new, no null between) at a single subscription. The
+        // removal used to be one-way, so a view that was detached and attached again stopped following
+        // the theme.
+        G9Palette.Current.PropertyChanged -= OnG9PaletteChanged;
+        G9Palette.Current.PropertyChanged += OnG9PaletteChanged;
+
+        // Catch up on a theme switch that happened while nothing was subscribed.
+        ApplyThemedBackground();
     }
 
     private void OnG9PaletteChanged(object? sender, PropertyChangedEventArgs e)
@@ -339,6 +360,15 @@ public abstract partial class G9ContentViewBase : ContentView
     /// </summary>
     public void Deactivate()
     {
+        DeactivateCore(hide: true);
+    }
+
+    /// <summary>
+    ///     The whole of <see cref="Deactivate" />, shared with the handler-teardown path in
+    ///     <see cref="OnHandlerChanging" />, which releases everything but must not hide the view.
+    /// </summary>
+    private void DeactivateCore(bool hide)
+    {
         if (!IsActive)
         {
             return;
@@ -378,7 +408,10 @@ public abstract partial class G9ContentViewBase : ContentView
                 ThrottleKey = $"{GetType().Name}.Deactivate"
             });
 
-        IsVisible = false;
+        if (hide)
+        {
+            IsVisible = false;
+        }
     }
 
     /// <summary>

@@ -96,6 +96,17 @@ public sealed class SqliteUpdateQueryBuilder<[DynamicallyAccessedMembers(Dynamic
         return this;
     }
 
+    /// <summary>
+    ///     States that this UPDATE is meant to affect <b>every row</b>. Without it — and without a WHERE
+    ///     condition — building the statement throws, because an UPDATE with no WHERE rewrites the whole
+    ///     table and the usual cause is a conditional <c>.Where(...)</c> that did not run.
+    /// </summary>
+    public SqliteUpdateQueryBuilder<T> AllRows()
+    {
+        _sqliteQueryBuilder.AllRows();
+        return this;
+    }
+
     #endregion
 
     #region Build

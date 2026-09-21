@@ -40,7 +40,14 @@ public static partial class SqliteDtoCache<
     // query, and the repository now needs the frozen options (clock, current user, descriptors).
     private static G9SqliteOptions? CacheOptions;
     private static List<TDto>? CacheRows;
-    private static readonly List<WeakReference<Action<List<TDto>>>> CacheListeners = [];
+
+    // Bumped by every session reset, under CacheStateLock. A refresh notes the value BEFORE it runs its
+    // query and publishes only if it is unchanged afterwards — so DTOs projected from one user's database
+    // can never be published into the next user's session. Same mechanism as the entity cache.
+    private static int CacheGeneration;
+
+    // Held STRONGLY — ordinary event semantics; see ListenToCacheData for why the weak references went.
+    private static readonly List<Action<List<TDto>>> CacheListeners = [];
     private static CancellationTokenSource? CacheDebounceCts;
     private static bool CacheDefined;
     private static bool CacheInitialized;
@@ -174,11 +181,26 @@ public static partial class SqliteDtoCache<
     }
 
     /// <summary>
-    ///     Registers a listener that is notified with the current cache data when it becomes available.
+    ///     Registers a listener that is called with a copy of the cached DTOs after every refresh, and with
+    ///     an empty list when the cache is reset at a session boundary. If the cache is already populated
+    ///     the listener is also called once, immediately.
     /// </summary>
     /// <remarks>
-    ///     Listeners are stored as weak references to prevent memory leaks. If the listener is no longer
-    ///     referenced elsewhere, it may be garbage collected.
+    ///     <para>
+    ///         <b>The listener is held strongly, like an ordinary event handler.</b> It — and whatever it
+    ///         captures — stays alive until <see cref="StopListeningToCacheData" /> is called, so a
+    ///         short-lived subscriber (a page, a view model) must unsubscribe when it goes away.
+    ///     </para>
+    ///     <para>
+    ///         It used to be held through a weak reference to the DELEGATE, "to prevent memory leaks". That
+    ///         did not tie the subscription to the subscriber's lifetime as intended: the delegate object is
+    ///         referenced by nothing else, so it was collected at the next GC and the listener silently
+    ///         stopped being called while its owner was still alive.
+    ///     </para>
+    ///     <para>
+    ///         Listeners run outside the cache's refresh lock, so calling <see cref="GetCacheData" /> from
+    ///         inside one is safe.
+    ///     </para>
     /// </remarks>
     /// <param name="listener">
     ///     The action to invoke with the current cache data, represented as a list of DTOs. This parameter
@@ -190,12 +212,39 @@ public static partial class SqliteDtoCache<
 
         lock (CacheListenerLock)
         {
-            CacheListeners.Add(new WeakReference<Action<List<TDto>>>(listener));
+            CacheListeners.Add(listener);
         }
 
         if (TryGetCacheRows(out var cacheRows))
         {
             SafeInvokeListener(listener, cacheRows);
+        }
+    }
+
+    /// <summary>
+    ///     Removes a listener added with <see cref="ListenToCacheData" />.
+    /// </summary>
+    /// <remarks>
+    ///     Delegates compare by target and method, so passing the same method group again removes it — the
+    ///     instance does not have to be kept. A lambda must be kept in a field to be removable, exactly as
+    ///     with a C# event. When the same listener was added more than once, one registration is removed
+    ///     per call.
+    /// </remarks>
+    /// <returns><c>true</c> when a registration was found and removed.</returns>
+    public static bool StopListeningToCacheData(Action<List<TDto>> listener)
+    {
+        ArgumentNullException.ThrowIfNull(listener);
+
+        lock (CacheListenerLock)
+        {
+            var index = CacheListeners.LastIndexOf(listener);
+            if (index < 0)
+            {
+                return false;
+            }
+
+            CacheListeners.RemoveAt(index);
+            return true;
         }
     }
 
@@ -227,7 +276,9 @@ public static partial class SqliteDtoCache<
             refreshGap = CacheRefreshGap;
         }
 
-        previousDebounceCts?.Cancel();
+        // Quietly: the previous debounce task may already have disposed its own source, and this runs
+        // right after the caller's write committed — see G9SqliteFireAndForget.CancelQuietly.
+        G9SqliteFireAndForget.CancelQuietly(previousDebounceCts);
         G9SqliteFireAndForget.Run(() => RunDebouncedRefreshAsync(debounceCts, refreshGap));
     }
 }

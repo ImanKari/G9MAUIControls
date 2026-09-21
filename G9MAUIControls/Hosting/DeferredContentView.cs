@@ -88,12 +88,21 @@ public sealed class DeferredContentView : ContentView
     public bool FadeContentIn { get; set; }
 
     /// <summary>
-    ///     Glyph-settle window (ms): how long the OPAQUE loading placeholder stays over the
+    ///     Settle-window CAP (ms) — the window itself is <see cref="RevealSettleFrames" /> drawn frames
+    ///     after the content's first layout, and this is the longest it may ever take. It is how long
+    ///     at most the OPAQUE loading placeholder stays over the
     ///     already-parented content before fading away, so native realization AND icon-font
     ///     application finish while covered (the first-frame "tofu rectangle" race). Only used
     ///     when <see cref="FadeContentIn" /> is <c>true</c>.
     /// </summary>
     public int FadeRevealDelayMs { get; set; } = 220;
+
+    /// <summary>
+    ///     Drawn frames the covered content is given, after its first layout, before the placeholder
+    ///     starts to fade. Bounded by <see cref="FadeRevealDelayMs" />, which is the hard cap on the
+    ///     whole settle window. Only used when <see cref="FadeContentIn" /> is <c>true</c>.
+    /// </summary>
+    public int RevealSettleFrames { get; set; } = 2;
 
     /// <summary>
     ///     Delay (ms) between <c>Loaded</c> firing and the deferred content being built/swapped in.
@@ -219,6 +228,14 @@ public sealed class DeferredContentView : ContentView
 
             if (linkedCts.Token.IsCancellationRequested)
             {
+                // Same as the OperationCanceledException path below: a cancelled load must be
+                // repeatable. Returning with the latch still set meant a view that was detached
+                // during its delay and later re-attached never loaded at all.
+                lock (_lock)
+                {
+                    _isContentLoaded = false;
+                }
+
                 return;
             }
 
@@ -240,6 +257,24 @@ public sealed class DeferredContentView : ContentView
             {
                 _isContentLoaded = false;
             }
+        }
+        catch (Exception)
+        {
+            // ⛔ The factory (or a created-callback) threw. This used to be caught by nothing: the
+            // latch stayed set, so the body could never be built again, the placeholder stayed up
+            // forever, and — because the load is fire-and-forget — the exception was never
+            // observed, so nothing was logged either. A sheet that spins for ever with no trace is
+            // the worst failure this view can have. Release the latch, stop claiming to be loading
+            // (so a host holding its size for us lets go), and RETHROW: every caller runs this
+            // through G9SafeCommand, which logs it and tells the user.
+            lock (_lock)
+            {
+                _isContentLoaded = false;
+            }
+
+            IsRevealSettled = true;
+            RevealSettled?.Invoke(this, EventArgs.Empty);
+            throw;
         }
         finally
         {
@@ -329,11 +364,22 @@ public sealed class DeferredContentView : ContentView
     {
         try
         {
-            // Glyph-settle window: the covered content finishes native realization + font
-            // application here, before anything of it becomes visible.
+            // Settle window: the covered content finishes its first layout and draw — and any
+            // asynchronously-loaded icon images land — before anything of it becomes visible.
+            //
+            // It is measured in FRAMES, with FadeRevealDelayMs as the cap. It used to be a flat
+            // 220 ms delay: a number sized for the slowest device and then paid in full by every
+            // other one, on every reveal. What the delay was standing in for is "the content has
+            // been laid out and drawn", which takes a couple of frames (~33 ms at 60 Hz); the cap
+            // keeps the worst case exactly where it was.
             if (FadeRevealDelayMs > 0)
             {
-                await Task.Delay(FadeRevealDelayMs).ConfigureAwait(true);
+                var deadline = G9FrameAwaiter.Deadline.After(FadeRevealDelayMs);
+                await G9FrameAwaiter.WaitUntilAsync(
+                        () => newContent.Handler is null || (newContent.Width > 0 && newContent.Height > 0),
+                        deadline)
+                    .ConfigureAwait(true);
+                await G9FrameAwaiter.WaitFramesAsync(RevealSettleFrames, deadline).ConfigureAwait(true);
             }
 
             // The content is parented under the opaque spinner here, so its Loaded has fired and any
@@ -422,7 +468,16 @@ public sealed class DeferredContentView : ContentView
             return;
         }
 
-        _ = LoadContentAsync();
+        Helpers.G9SafeCommand.RunSafe(
+            () => LoadContentAsync(),
+            new Helpers.G9SafeCommandOptions
+            {
+                Source = nameof(DeferredContentView),
+                ThrottleKey = $"{nameof(DeferredContentView)}.{nameof(OnLoaded)}",
+                EnableThrottle = false,
+                PreventConcurrentExecution = false,
+                RunActionOnMainThread = true
+            });
     }
 
     private void DetachLoadedHandler()

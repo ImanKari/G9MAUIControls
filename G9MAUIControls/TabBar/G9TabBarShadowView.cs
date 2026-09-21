@@ -45,32 +45,62 @@ internal sealed class G9TabBarShadowView : SKCanvasView
     private float _notchCenterX;
     private float _centerProgress;
     private SKColor _shadowColor = new(0, 0, 0, 130);
+    private float _shadowOffsetX;
+    private float _shadowOffsetY;
+    private float _fabCenterX;
+    private float _fabCenterY;
+    private float _fabRadius;
+    private float _fabVisibility;
+
+    // Set by any setter below whose value really changed; consumed by InvalidateIfChanged. Starts true
+    // so the first request always paints.
+    private bool _isDirty = true;
+
+    // Skia objects are native handles. They used to be created inside every OnPaintSurface — a new
+    // SKPath, two SKPaints and two SKMaskFilters per paint — and the two blur filters were never
+    // disposed at all (disposing an SKPaint does not dispose the MaskFilter assigned to it), so each
+    // repaint left two native objects for the finalizer. They are now created once, reused, and
+    // released in ReleaseSkiaResources when the handler goes away.
+    private SKMaskFilter? _blurFilter;
+    private SKPaint? _barPaint;
+    private SKPaint? _fabPaint;
+    private SKPath? _barPath;
+    private BarPathKey _barPathKey;
 
     /// <summary>Control (bar host) reserved height in DIP — the bar bottom sits at this Y.</summary>
     public float LayoutHeightDip
     {
         get => _layoutHeightDip;
-        set => _layoutHeightDip = value;
+        set => Set(ref _layoutHeightDip, value);
     }
 
     /// <summary>FAB / notch center X in the bar's own (control) coordinate space, DIP.</summary>
     public float NotchCenterX
     {
         get => _notchCenterX;
-        set => _notchCenterX = value;
+        set => Set(ref _notchCenterX, value);
     }
 
     /// <summary>Notch open progress 0..1 (mirrors the chrome's notch progress).</summary>
     public float CenterProgress
     {
         get => _centerProgress;
-        set => _centerProgress = value;
+        set => Set(ref _centerProgress, value);
     }
 
     public SKColor ShadowColor
     {
         get => _shadowColor;
-        set => _shadowColor = value;
+        set
+        {
+            if (_shadowColor == value)
+            {
+                return;
+            }
+
+            _shadowColor = value;
+            _isDirty = true;
+        }
     }
 
     /// <summary>
@@ -78,8 +108,17 @@ internal sealed class G9TabBarShadowView : SKCanvasView
     ///     shadow centered directly under the bar so the soft halo wraps every border evenly
     ///     instead of dropping toward one side. Set non-zero only if a directional cast is wanted.
     /// </summary>
-    public float ShadowOffsetX { get; set; }
-    public float ShadowOffsetY { get; set; }
+    public float ShadowOffsetX
+    {
+        get => _shadowOffsetX;
+        set => Set(ref _shadowOffsetX, value);
+    }
+
+    public float ShadowOffsetY
+    {
+        get => _shadowOffsetY;
+        set => Set(ref _shadowOffsetY, value);
+    }
 
     /// <summary>
     ///     FAB geometry, mirrored from <c>G9TabBar.LayoutFabButton</c> every time the FAB is
@@ -94,12 +133,94 @@ internal sealed class G9TabBarShadowView : SKCanvasView
     ///         everywhere — same rationale as the bar shadow itself (see class doc).
     ///     </para>
     /// </summary>
-    public float FabCenterX { get; set; }
-    public float FabCenterY { get; set; }
-    public float FabRadius { get; set; }
+    public float FabCenterX
+    {
+        get => _fabCenterX;
+        set => Set(ref _fabCenterX, value);
+    }
+
+    public float FabCenterY
+    {
+        get => _fabCenterY;
+        set => Set(ref _fabCenterY, value);
+    }
+
+    public float FabRadius
+    {
+        get => _fabRadius;
+        set => Set(ref _fabRadius, value);
+    }
 
     /// <summary>FAB visibility 0..1 — scales the circle's alpha so the shadow fades with the FAB.</summary>
-    public float FabVisibility { get; set; }
+    public float FabVisibility
+    {
+        get => _fabVisibility;
+        set => Set(ref _fabVisibility, value);
+    }
+
+    /// <summary>
+    ///     Repaints only if a property that feeds the picture changed since the last request.
+    ///     <para>
+    ///         The tab bar pushes its geometry here from every layout pass and every animation frame,
+    ///         most of which move nothing the shadow draws (the sub-menu open animation, for one, leaves
+    ///         the bar, the notch and the FAB exactly where they were). Each repaint is two blurred Skia
+    ///         fills, so an unconditional <c>InvalidateSurface()</c> per frame was real work for an
+    ///         identical result. A size change still repaints on its own — <c>SKCanvasView</c> does that.
+    ///     </para>
+    /// </summary>
+    public void InvalidateIfChanged()
+    {
+        if (!_isDirty)
+        {
+            return;
+        }
+
+        _isDirty = false;
+        InvalidateSurface();
+    }
+
+    private void Set(ref float field, float value)
+    {
+        // Exact comparison is the point: "the same number was pushed again" is the case being filtered.
+        if (field.Equals(value))
+        {
+            return;
+        }
+
+        field = value;
+        _isDirty = true;
+    }
+
+    /// <inheritdoc />
+    protected override void OnHandlerChanging(HandlerChangingEventArgs args)
+    {
+        base.OnHandlerChanging(args);
+
+        if (args.NewHandler is null)
+        {
+            ReleaseSkiaResources();
+
+            // A later handler starts from an empty surface.
+            _isDirty = true;
+        }
+    }
+
+    private void ReleaseSkiaResources()
+    {
+        _barPath?.Dispose();
+        _barPath = null;
+        _barPathKey = default;
+
+        _barPaint?.Dispose();
+        _barPaint = null;
+
+        _fabPaint?.Dispose();
+        _fabPaint = null;
+
+        // After the paints that reference it.
+        _blurFilter?.Dispose();
+        _blurFilter = null;
+    }
 
     public G9TabBarShadowView()
     {
@@ -145,17 +266,27 @@ internal sealed class G9TabBarShadowView : SKCanvasView
         var progress = Math.Clamp(_centerProgress, 0f, 1f);
         var r = NotchCircleRadius * progress;
 
-        using var path = BuildBarPath(barLeft, barRight, barTop, barBottom, centerX, ref r, progress);
-
-        using var paint = new SKPaint
+        // Same recipe as before — one Normal blur at BlurSigmaDip shared by both fills — built once.
+        _blurFilter ??= SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurSigmaDip);
+        _barPaint ??= new SKPaint
         {
             IsAntialias = true,
             Style = SKPaintStyle.Fill,
-            Color = _shadowColor,
-            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurSigmaDip)
+            MaskFilter = _blurFilter
         };
+        _barPaint.Color = _shadowColor;
 
-        canvas.DrawPath(path, paint);
+        // The silhouette only changes with the bar's size or the notch, not with the FAB circle, so it
+        // is rebuilt only when one of its inputs does.
+        var pathKey = new BarPathKey(barLeft, barRight, barTop, barBottom, centerX, r, progress);
+        if (_barPath is null || pathKey != _barPathKey)
+        {
+            _barPath?.Dispose();
+            _barPath = BuildBarPath(barLeft, barRight, barTop, barBottom, centerX, ref r, progress);
+            _barPathKey = pathKey;
+        }
+
+        canvas.DrawPath(_barPath, _barPaint);
 
         // FAB circle shadow — same blur recipe as the bar so the two halos read as one system.
         // Drawn as its own pass because its alpha follows the FAB's visibility fade; while the
@@ -166,17 +297,26 @@ internal sealed class G9TabBarShadowView : SKCanvasView
         var fabAlpha = Math.Clamp(FabVisibility, 0f, 1f);
         if (fabAlpha > 0.01f && FabRadius > 0.5f)
         {
-            using var fabPaint = new SKPaint
+            _fabPaint ??= new SKPaint
             {
                 IsAntialias = true,
                 Style = SKPaintStyle.Fill,
-                Color = _shadowColor.WithAlpha((byte)(_shadowColor.Alpha * fabAlpha)),
-                MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurSigmaDip)
+                MaskFilter = _blurFilter
             };
+            _fabPaint.Color = _shadowColor.WithAlpha((byte)(_shadowColor.Alpha * fabAlpha));
 
-            canvas.DrawCircle(FabCenterX, FabCenterY, FabRadius, fabPaint);
+            canvas.DrawCircle(FabCenterX, FabCenterY, FabRadius, _fabPaint);
         }
     }
+
+    private readonly record struct BarPathKey(
+        float Left,
+        float Right,
+        float Top,
+        float Bottom,
+        float CenterX,
+        float NotchRadius,
+        float Progress);
 
     /// <summary>
     ///     Builds the bar silhouette (rounded rect + optional FAB notch) as an

@@ -7,6 +7,20 @@ G9DesignSystem MAUI implementation spec. For UI actions, consumers use
 spinner, error popup, `Command -> SafeCommand` routing). See `G9IconButton.md` for the
 icon-only variant.
 
+**Safe-layer contract (shared by both, implemented once in `Shared/G9SafeExecution.cs`).**
+
+- `Command` / `CommandParameter` are *read* at press time and run through the safe layer; they
+  are never copied into `SafeCommand` / `SafeCommandParameter` and never cleared. An explicit
+  `SafeCommand` / `SafeCommandParameter` wins over the plain pair. This is what makes
+  `CommandParameter="{Binding .}"` correct in a recycled `CollectionView` cell — the old routing
+  captured the first row's item once and nulled the binding away.
+- The safe buttons never write `IsEnabled`. "Busy" (`DisableWhileLoading`) and the command's
+  `CanExecute` are internal flags that the tap guard and the disabled look consult, so a
+  consumer's `IsEnabled="{Binding CanSave}"` keeps working after the first click.
+- `CanExecuteChanged` is observed only while the button is loaded (re-subscribed on the next
+  load) and handled on the UI thread, so a long-lived view-model command no longer keeps the
+  button and its page alive.
+
 ## When to use
 
 - Text or text+icon action -> `G9SafeButton` (wraps `G9Button`).
@@ -49,6 +63,21 @@ consumer asked for a taller-than-Medium button without also bumping `Size`). Pre
 explicit `HeightRequest` for one-off cases (e.g. a prominent CTA that needs to be taller than
 `Large` but isn't full-width like `Hero`).
 
+**Presets only overwrite their own writes.** The button remembers the height it last wrote, so a
+later `Size` change DOES resize a button whose height came from a preset (it used to stick at the
+first preset forever), while a consumer-set `HeightRequest` is still never touched. Likewise the
+`Hero` preset's `HorizontalOptions = Fill` is reverted to the previous value when `Size` leaves
+`Hero` — unless the consumer changed the alignment meanwhile.
+
+**Paint objects are stable (G9Controls.md §12).** The frame's stroke brush is one instance whose
+colour is mutated; the background brush is rebuilt only when its colour or solid/gradient kind
+changes; the corner shape is built once; and the leading / trailing icon views are rebuilt only
+when the icon inputs (emoji, icon, image path, the `ImageSource` *instance*, `IconSize`) change —
+they are hidden, not destroyed, while `IsLoading`.
+
+**Click handlers that throw** are caught (a button must not crash the app) and reported through
+`G9Press.ReportFailure` instead of being swallowed silently.
+
 ## Bindable Properties
 
 | Property | Type | Default | Description |
@@ -68,7 +97,7 @@ explicit `HeightRequest` for one-off cases (e.g. a prominent CTA that needs to b
 | `TextTruncation` | `bool` | `true` | When true (default) a label too wide for the button is truncated with a trailing ellipsis ("…") instead of overflowing the frame; the cap is re-measured on resize and on icon/text change. Set false to keep the label's natural width (legacy behaviour). The label is always single-line (`MaxLines = 1`). |
 | `LoadingText` | `string?` | `null` | Optional text shown next to the spinner while `IsLoading` is true. When null or empty, the button shows the spinner ONLY. When set, the regular `Text` is hidden during loading and `LoadingText` takes its place; `Text` is restored when loading ends. |
 | `IconSize` | `double` | `20` | Icon size in dp. |
-| `FontSize` | `double` | `14` | Override label font size. Auto-resolved from `Size` when ≤ 0. |
+| `FontSize` | `double` | `14` | OVERRIDE for the label font size. Leave it unset and the label takes the `Size` preset's font (12 / 14 / 15 / 16); an explicit value > 0 wins. The preset is applied to the label only and never written back to this property — the constructor used to assign `14`, which made every button look explicitly sized and silently disabled the 12 / 15 / 16 presets. |
 | `FontAttributes` | `FontAttributes` | `Bold` | Label font attributes. |
 | `Command` | `ICommand?` | `null` | Executed on tap after the `Clicked` event. |
 | `CommandParameter` | `object?` | `null` | Passed to `Command`. |

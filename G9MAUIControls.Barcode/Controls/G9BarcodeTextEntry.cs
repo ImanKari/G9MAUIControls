@@ -41,7 +41,34 @@ public partial class G9BarcodeTextEntry : G9TextEntry
     [AutoBindable(OnChanged = nameof(OnBarcodeChanged))] private string? _scanBusyText;
     [AutoBindable(OnChanged = nameof(OnBarcodeChanged))] private G9BarcodeTextEntryState _scanState;
 
+    /// <summary>
+    ///     Upper bound for one <see cref="AcceptedCodeRegex" /> match. The pattern comes from the
+    ///     consumer and the input from a camera, so a backtracking-heavy pattern must not be able
+    ///     to hang the UI thread on one scan.
+    /// </summary>
+    private static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromMilliseconds(250);
+
     private EventHandler? _scanRequested;
+
+    // ── What the CONSUMER asked for ────────────────────────────────────────────────────────────
+    // The scan state borrows five inherited properties (HasError, IsReadOnly, UseStatusColor,
+    // StatusColor, TrailingIcon) plus Placeholder to paint itself. It used to write all of them on
+    // every change, so a consumer's own HasError / IsReadOnly / status colour / trailing icon was
+    // overwritten the moment any barcode property moved, and the "Scanning…" placeholder was never
+    // put back. These fields remember the consumer's value (tracked in OnPropertyChanged from every
+    // write that is not ours); ApplyBarcodeState layers the state on top and falls back to them.
+    private bool _consumerHasError;
+    private bool _consumerIsReadOnly;
+    private bool _consumerUseStatusColor;
+    private Color? _consumerStatusColor;
+    private G9IconSource? _consumerTrailingIcon;
+    private string? _consumerPlaceholder;
+
+    /// <summary>True while <see cref="ApplyBarcodeState" /> is the one writing the borrowed properties.</summary>
+    private bool _applyingBarcodeState;
+
+    /// <summary>False until the ctor has finished — base-ctor writes are not "the consumer".</summary>
+    private readonly bool _barcodeInitialized;
 
     public G9BarcodeTextEntry()
     {
@@ -55,6 +82,7 @@ public partial class G9BarcodeTextEntry : G9TextEntry
         TrailingIcon = G9Glyphs.ScanCode;
         KeyboardType = G9KeyboardType.Default;
 
+        _barcodeInitialized = true;
         ApplyBarcodeState();
     }
 
@@ -151,31 +179,114 @@ public partial class G9BarcodeTextEntry : G9TextEntry
     private bool IsCodeAccepted(string code)
     {
         if (string.IsNullOrWhiteSpace(AcceptedCodeRegex)) return true;
-        return Regex.IsMatch(code, AcceptedCodeRegex, RegexOptions.CultureInvariant);
+
+        try
+        {
+            return Regex.IsMatch(code ?? string.Empty, AcceptedCodeRegex, RegexOptions.CultureInvariant, RegexMatchTimeout);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // A code that cannot be validated in time is not an accepted code.
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            // Malformed consumer pattern. This runs inside a scan callback — usually an async void
+            // handler — where an exception takes the app down; reject the code instead.
+            return false;
+        }
     }
 
     private void OnBarcodeChanged() => ApplyBarcodeState();
 
-    private void ApplyBarcodeState()
+    /// <inheritdoc />
+    protected override void OnPropertyChanged(string? propertyName = null)
     {
-        var palette = G9Palette.Current;
+        base.OnPropertyChanged(propertyName);
 
-        IsReadOnly = !IsEditable || ScanState == G9BarcodeTextEntryState.ScanBusy;
-        IsTrailingBusy = ScanState == G9BarcodeTextEntryState.ScanBusy;
-        UseStatusColor = ScanState is G9BarcodeTextEntryState.ScanBusy or G9BarcodeTextEntryState.Accepted;
-        StatusColor = ScanState == G9BarcodeTextEntryState.Accepted ? palette.Success : palette.Primary;
-        HasError = ScanState == G9BarcodeTextEntryState.Error;
+        if (!_barcodeInitialized || _applyingBarcodeState) return;
 
-        if (ScanState == G9BarcodeTextEntryState.ScanBusy)
+        // A write that is not ours is the consumer's: remember it, then re-layer the scan state.
+        switch (propertyName)
         {
-            Placeholder = ScanBusyText;
+            case nameof(HasError):
+                _consumerHasError = HasError;
+                break;
+            case nameof(IsReadOnly):
+                _consumerIsReadOnly = IsReadOnly;
+                break;
+            case nameof(UseStatusColor):
+                _consumerUseStatusColor = UseStatusColor;
+                break;
+            case nameof(StatusColor):
+                _consumerStatusColor = StatusColor;
+                break;
+            case nameof(TrailingIcon):
+                _consumerTrailingIcon = TrailingIcon;
+                break;
+            case nameof(Placeholder):
+                _consumerPlaceholder = Placeholder;
+                break;
+            default:
+                return;
         }
 
-        TrailingIcon = ScanState switch
+        ApplyBarcodeState();
+    }
+
+    /// <summary>
+    ///     Layers the scan state over the consumer's values. Every property is written ONLY when its
+    ///     effective value differs from the current one: a manual write clears a one-way binding,
+    ///     so an unconditional <c>HasError = false</c> here used to cut the consumer's
+    ///     <c>HasError="{Binding …}"</c> on the first barcode property change.
+    /// </summary>
+    private void ApplyBarcodeState()
+    {
+        if (!_barcodeInitialized) return; // the ctor applies once everything is set
+
+        var palette = G9Palette.Current;
+        var state = ScanState;
+        var isBusy = state == G9BarcodeTextEntryState.ScanBusy;
+
+        _applyingBarcodeState = true;
+        try
         {
-            G9BarcodeTextEntryState.Accepted => G9Glyphs.Success,
-            G9BarcodeTextEntryState.Error => G9Glyphs.Info,
-            _ => G9Glyphs.ScanCode
-        };
+            var readOnly = !IsEditable || isBusy || _consumerIsReadOnly;
+            if (IsReadOnly != readOnly) IsReadOnly = readOnly;
+
+            if (IsTrailingBusy != isBusy) IsTrailingBusy = isBusy;
+
+            var ownsStatusColor = state is G9BarcodeTextEntryState.ScanBusy or G9BarcodeTextEntryState.Accepted;
+            var useStatusColor = ownsStatusColor || _consumerUseStatusColor;
+            if (UseStatusColor != useStatusColor) UseStatusColor = useStatusColor;
+
+            var statusColor = state switch
+            {
+                G9BarcodeTextEntryState.Accepted => palette.Success,
+                G9BarcodeTextEntryState.ScanBusy => palette.Primary,
+                _ => _consumerStatusColor
+            };
+            if (!Equals(StatusColor, statusColor)) StatusColor = statusColor;
+
+            var hasError = state == G9BarcodeTextEntryState.Error || _consumerHasError;
+            if (HasError != hasError) HasError = hasError;
+
+            // "Scanning…" only while busy; the consumer's own placeholder comes back afterwards.
+            // It never did, so a label-less field read "Scanning…" for good after its first scan.
+            var placeholder = isBusy ? ScanBusyText : _consumerPlaceholder;
+            if (!string.Equals(Placeholder, placeholder, StringComparison.Ordinal)) Placeholder = placeholder;
+
+            G9IconSource? trailingIcon = state switch
+            {
+                G9BarcodeTextEntryState.Accepted => G9Glyphs.Success,
+                G9BarcodeTextEntryState.Error => G9Glyphs.Info,
+                _ => _consumerTrailingIcon ?? G9Glyphs.ScanCode
+            };
+            if (!Nullable.Equals(TrailingIcon, trailingIcon)) TrailingIcon = trailingIcon;
+        }
+        finally
+        {
+            _applyingBarcodeState = false;
+        }
     }
 }

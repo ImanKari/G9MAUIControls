@@ -230,6 +230,22 @@ public sealed class ProcessingSheetContentView : LoadableSheetContentView, IG9Bo
     {
         var handle = G9BottomSheetHandle;
 
+        // ⛔ The exception is REPORTED first, on both paths. It used to be shown to the user as a
+        // generic "unexpected error" and then dropped: nothing was logged, so a sheet that failed to
+        // build in the field left no trace of why. Routing it through G9SafeCommand gives it the
+        // same logging and diagnostics every other failure gets; the popup is left off here because
+        // each path below decides for itself what the user sees.
+        await Helpers.G9SafeCommand.RunAsync(
+            _ => Task.FromException(ex),
+            new Helpers.G9SafeCommandOptions
+            {
+                Source = nameof(ProcessingSheetContentView),
+                ThrottleKey = $"{nameof(ProcessingSheetContentView)}.{nameof(HandleBuildErrorAsync)}",
+                EnableThrottle = false,
+                PreventConcurrentExecution = false,
+                ShowErrorG9Popup = false
+            }).ConfigureAwait(false);
+
         if (_onError is not null)
         {
             try

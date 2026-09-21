@@ -464,8 +464,17 @@ internal sealed class G9ProgressOverlaySession
     // explains the wait. Cleared the instant the run actually stops.
     private const int CancelWatchdogMs = 5000;
 
-    private readonly Layout _parent;
-    private readonly G9PageBase? _page;
+    // Progress reports are applied at most this often (~10 Hz). See OnG9ProgressReport.
+    private const int ReportMinIntervalMs = 100;
+
+    // How long the view may stay out of the visual tree before a pending failure acknowledgement is
+    // completed on the user's behalf. Long enough to ride out Android's transient unload / reload and
+    // the re-parenting done in OnCurrentHostChanged; short next to "forever".
+    private const int OrphanGraceMs = 1500;
+
+    // Not readonly: the overlay follows the current page (OnCurrentHostChanged). Main-thread only.
+    private Layout _parent;
+    private G9PageBase? _page;
     private readonly G9ProgressOverlayPosition _position;
     private readonly G9ProgressOverlayView _view;
     private readonly List<G9ProgressOverlayHandle> _leases = new();
@@ -484,6 +493,11 @@ internal sealed class G9ProgressOverlaySession
     private bool _isCanceling;
     private CancellationTokenSource? _cancelWatchdogCts;
 
+    // Report coalescing (guarded by _gate): only the newest unapplied report is kept.
+    private G9ProgressReport? _pendingReport;
+    private bool _reportFlushScheduled;
+    private long _lastReportAppliedTick;
+
     internal G9ProgressOverlaySession(
         Layout parent,
         G9PageBase? page,
@@ -501,6 +515,13 @@ internal sealed class G9ProgressOverlaySession
         WeakReferenceMessenger.Default.Register<G9ProgressQueuedCount>(this, OnG9ProgressQueuedCount);
         _view.SizeChanged += OnViewSizeChanged;
         _view.CancelRequested += OnViewCancelRequested;
+        _view.Unloaded += OnViewUnloaded;
+
+        // The layer captured above belongs to ONE page. IG9OverlayHost's own documentation says a
+        // long-lived overlay must follow CurrentChanged instead of caching a layer, and a sync easily
+        // outlives a root-page swap (sign-out / sign-in): without this the overlay stayed parented to a
+        // page that was no longer on screen. Removed again in TearDownAsync.
+        G9OverlayHosts.CurrentChanged += OnCurrentHostChanged;
     }
 
     internal bool IsActive
@@ -555,6 +576,7 @@ internal sealed class G9ProgressOverlaySession
                 _isFailureAcknowledged = false;
                 ackToRelease = _failureAcknowledgmentTcs;
                 _failureAcknowledgmentTcs = null;
+                _pendingReport = null;
                 _view.Reset();
                 _view.SetContextText(contextText);
             }
@@ -579,6 +601,10 @@ internal sealed class G9ProgressOverlaySession
             if (!isLast && wasFront)
             {
                 newFrontContext = _leases[0].ContextText;
+
+                // The view is about to be reset for the next sync; a coalesced report still waiting
+                // belongs to the one that just ended.
+                _pendingReport = null;
             }
         }
 
@@ -680,7 +706,97 @@ internal sealed class G9ProgressOverlaySession
             : () => StartRetryAsync(retryAction);
         Func<Task> wrappedClose = AcknowledgeFailureAsync;
 
+        // The banner may be raised on a view that is ALREADY out of the tree (its Unloaded came and
+        // went before there was anything to acknowledge), so check from here as well.
+        _ = AcknowledgeFailureIfOrphanedAsync();
+
         return _view.ShowFailureAsync(reason, retryText, wrappedRetry, wrappedClose);
+    }
+
+    private void OnViewUnloaded(object? sender, EventArgs e)
+    {
+        _ = AcknowledgeFailureIfOrphanedAsync();
+    }
+
+    /// <summary>
+    ///     A failure terminal waits for the user to tap retry or close — which they cannot do when the
+    ///     view is no longer in a live visual tree (its page was torn down and no current host took it
+    ///     over). <c>DisposeAsync</c> awaited that acknowledgement with no bound, so the caller's
+    ///     <c>await using</c> never returned. After a grace period that rides out transient unloads and
+    ///     re-parenting, a still-unloaded view has its acknowledgement completed for it, exactly as if the
+    ///     user had closed the banner.
+    /// </summary>
+    private async Task AcknowledgeFailureIfOrphanedAsync()
+    {
+        try
+        {
+            await Task.Delay(OrphanGraceMs).ConfigureAwait(false);
+
+            lock (_gate)
+            {
+                if (_isTornDown || !_isFailureTerminal || _isFailureAcknowledged)
+                {
+                    return;
+                }
+            }
+
+            var isLoaded = await MainThread.InvokeOnMainThreadAsync(() => _view.IsLoaded).ConfigureAwait(false);
+            if (!isLoaded)
+            {
+                await AcknowledgeFailureAsync().ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            // Best effort: this exists to unblock a waiter, it must never fault one.
+        }
+    }
+
+    /// <summary>
+    ///     Moves the overlay to the page that just became current. Raised on the main thread. A
+    ///     <c>null</c> host (no page left) changes nothing — there is nowhere better to be.
+    /// </summary>
+    private void OnCurrentHostChanged(object? sender, IG9OverlayHost? host)
+    {
+        if (host is null || ReferenceEquals(host.ToastLayer, _parent))
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_isTornDown)
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            var previousParent = _parent;
+            var wasMounted = ReferenceEquals(_view.Parent, previousParent);
+
+            _parent = host.ToastLayer;
+            _page = host.Page;
+
+            // Not mounted yet: MountAsync will use the new target. Mounted: carry the view across.
+            if (!wasMounted)
+            {
+                return;
+            }
+
+            previousParent.Remove(_view);
+            G9ProgressOverlayHelper.PrepareOverlayPlacement(_parent, _view);
+            G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _position);
+            _parent.Add(_view);
+
+            _ = G9ToastHelper.ReflowInlineToastsForHostAsync(previousParent, animate: false);
+            _ = G9ToastHelper.ReflowInlineToastsForHostAsync(_parent, animate: false);
+        }
+        catch
+        {
+            // A page mid-teardown can reject the move; the orphan check above still bounds the wait.
+        }
     }
 
     private Task AcknowledgeFailureAsync()
@@ -738,6 +854,11 @@ internal sealed class G9ProgressOverlaySession
 
     private async Task StartRetryCoreAsync(Func<Task> retryAction)
     {
+        lock (_gate)
+        {
+            _pendingReport = null;
+        }
+
         await MainThread.InvokeOnMainThreadAsync(_view.Reset).ConfigureAwait(false);
 
         try
@@ -813,6 +934,8 @@ internal sealed class G9ProgressOverlaySession
         WeakReferenceMessenger.Default.Unregister<G9ProgressQueuedCount>(this);
         _view.SizeChanged -= OnViewSizeChanged;
         _view.CancelRequested -= OnViewCancelRequested;
+        _view.Unloaded -= OnViewUnloaded;
+        G9OverlayHosts.CurrentChanged -= OnCurrentHostChanged;
         G9ProgressOverlayHelper.ClearSession(this);
 
         await MainThread.InvokeOnMainThreadAsync(async () =>
@@ -833,14 +956,78 @@ internal sealed class G9ProgressOverlaySession
                 // Best effort dismissal.
             }
 
-            _parent.Remove(_view);
-            await G9ToastHelper.ReflowInlineToastsForHostAsync(_parent).ConfigureAwait(true);
+            // Whatever layout holds it NOW — it may have been re-parented since it was mounted.
+            var parent = _parent;
+            (_view.Parent as Layout ?? parent).Remove(_view);
+            await G9ToastHelper.ReflowInlineToastsForHostAsync(parent).ConfigureAwait(true);
         }).ConfigureAwait(false);
     }
 
+    /// <summary>
+    ///     Coalesces progress. Every applied report costs the view a CancellationTokenSource, a
+    ///     TaskCompletionSource and a MAUI <c>Animation</c>, and reporters (a row loop, an HTTP progress
+    ///     callback) can fire hundreds of times a second. Only the NEWEST unapplied report is kept and the
+    ///     view is fed at most ~10 times a second. The first report after a quiet spell is applied
+    ///     immediately, so sparse reporters behave exactly as before; the last report of a burst is
+    ///     always delivered, at most one interval late.
+    /// </summary>
     private void OnG9ProgressReport(object recipient, G9ProgressReport message)
     {
-        _view.ApplyProgress(message);
+        int delayMs;
+        lock (_gate)
+        {
+            if (_isTornDown)
+            {
+                return;
+            }
+
+            _pendingReport = message;
+            if (_reportFlushScheduled)
+            {
+                return;
+            }
+
+            _reportFlushScheduled = true;
+            var sinceLast = Environment.TickCount64 - _lastReportAppliedTick;
+            delayMs = sinceLast >= ReportMinIntervalMs ? 0 : (int)(ReportMinIntervalMs - sinceLast);
+        }
+
+        _ = FlushPendingReportAsync(delayMs);
+    }
+
+    private async Task FlushPendingReportAsync(int delayMs)
+    {
+        try
+        {
+            if (delayMs > 0)
+            {
+                await Task.Delay(delayMs).ConfigureAwait(false);
+            }
+
+            G9ProgressReport? report;
+            lock (_gate)
+            {
+                report = _pendingReport;
+                _pendingReport = null;
+                _reportFlushScheduled = false;
+                _lastReportAppliedTick = Environment.TickCount64;
+
+                if (_isTornDown)
+                {
+                    return;
+                }
+            }
+
+            if (report is not null)
+            {
+                // Marshals itself to the main thread and ignores reports outside the Running state.
+                _view.ApplyProgress(report);
+            }
+        }
+        catch
+        {
+            // Progress is decorative; a view mid-teardown must not surface as an unobserved fault.
+        }
     }
 
     private void OnG9ProgressQueuedCount(object recipient, G9ProgressQueuedCount message)

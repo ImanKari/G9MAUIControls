@@ -21,6 +21,9 @@ public partial class G9Picker : G9OutlinedFieldBase
     private readonly Label _valueLabel;
     private readonly HorizontalStackLayout _content;
     private View? _valueIcon;
+
+    /// <summary>What <see cref="_valueIcon" /> was built for, so an apply pass that did not change the item keeps the view.</summary>
+    private string? _valueIconSignature;
     private ObservableCollection<G9SelectionItem>? _attachedItems;
     private bool _isOpening;
 
@@ -64,6 +67,12 @@ public partial class G9Picker : G9OutlinedFieldBase
         Box.GestureRecognizers.Add(tap);
 
         RestoreOnCancel = true;
+
+        // ItemsSource is the CONSUMER's collection and usually outlives this control (a shared
+        // lookup list); a subscription held for the control's whole life kept the control and its
+        // page alive as long as the list. Held only while the control is in the live tree.
+        Loaded += OnPickerLoaded;
+        Unloaded += OnPickerUnloaded;
     }
 
     public event EventHandler<G9SelectionItem?>? ItemSelected;
@@ -77,10 +86,31 @@ public partial class G9Picker : G9OutlinedFieldBase
 
     private void OnItemsSourceChanged()
     {
+        if (IsLoaded) AttachItems();
+        RequestVisualUpdate();
+    }
+
+    private void OnPickerLoaded(object? sender, EventArgs e)
+    {
+        AttachItems();
+        // Re-sync: whatever the collection did while we were not listening.
+        RequestVisualUpdate();
+    }
+
+    private void OnPickerUnloaded(object? sender, EventArgs e)
+    {
+        if (_attachedItems is not null) _attachedItems.CollectionChanged -= OnCollectionChanged;
+        _attachedItems = null;
+    }
+
+    /// <summary>Points the subscription at the CURRENT collection (idempotent).</summary>
+    private void AttachItems()
+    {
+        if (ReferenceEquals(_attachedItems, ItemsSource)) return;
+
         if (_attachedItems is not null) _attachedItems.CollectionChanged -= OnCollectionChanged;
         _attachedItems = ItemsSource;
         if (_attachedItems is not null) _attachedItems.CollectionChanged += OnCollectionChanged;
-        RequestVisualUpdate();
     }
 
     private void OnSelectedItemChanged() => RequestVisualUpdate();
@@ -141,6 +171,30 @@ public partial class G9Picker : G9OutlinedFieldBase
     /// </summary>
     private void RefreshValueIcon(G9SelectionItem? item)
     {
+        var palette = G9Palette.Current;
+
+        // OnRefresh runs on every apply pass (focus, enabled, a palette flip). The icon view used to
+        // be removed and rebuilt each time; it is rebuilt only when the ITEM's icon identity
+        // changes, and recoloured in place otherwise (G9Controls.md §12 / §12a).
+        var signature = item is null
+            ? null
+            : G9IconFactory.Signature(item.Emoji, item.Icon, item.IconPath, item.IconSource)
+              + "|" + item.SwatchFirstColor?.ToArgbHex(true)
+              + "|" + item.SwatchSecondColor?.ToArgbHex(true);
+
+        if (signature == _valueIconSignature)
+        {
+            if (item is not null && _valueIcon is G9IconView existing)
+            {
+                var color = item.IconTintColor ?? palette.OnSurfaceVariant;
+                if (!Equals(existing.Color, color)) existing.Color = color;
+            }
+
+            return;
+        }
+
+        _valueIconSignature = signature;
+
         if (_valueIcon is not null)
         {
             _content.Children.Remove(_valueIcon);
@@ -152,7 +206,6 @@ public partial class G9Picker : G9OutlinedFieldBase
             return;
         }
 
-        var palette = G9Palette.Current;
         View? icon = null;
 
         if (G9IconFactory.HasIcon(item.Emoji, item.Icon, item.IconPath, item.IconSource))
@@ -179,7 +232,11 @@ public partial class G9Picker : G9OutlinedFieldBase
     {
         if (!IsEnabled || IsReadOnly || _isOpening) return;
 
-        var items = ItemsSource?.Where(i => i.IsEnabled).ToList() ?? [];
+        var previous = SelectedItem;
+
+        // Disabled items stay out of the list, except the one currently selected: it must remain a
+        // candidate so the sheet can show (and scroll to) it. It renders dimmed and non-tappable.
+        var items = ItemsSource?.Where(i => i.IsEnabled || ReferenceEquals(i, previous)).ToList() ?? [];
         if (items.Count == 0) return;
 
         _isOpening = true;
@@ -187,18 +244,20 @@ public partial class G9Picker : G9OutlinedFieldBase
         {
             this.Unfocus();
 
-            var previous = SelectedItem;
             var title = string.IsNullOrWhiteSpace(SheetTitle)
                 ? Label ?? Placeholder ?? string.Empty
                 : SheetTitle!;
 
-            var result = await G9SelectionSheet.ShowAsync(
+            var result = await G9SelectionSheet.ShowForResultAsync(
                 title, items, previous is null ? null : [previous],
                 allowMultiple: false,
                 closeOnSingleSelection: true,
                 showSearch: false).ConfigureAwait(true);
 
-            var next = result.FirstOrDefault();
+            // Only a PICK is a selection. A dismissed sheet hands back the previous item, which the
+            // bare list could not tell from a pick — so ItemSelected / SelectionAcceptedCommand
+            // fired although the user had cancelled.
+            var next = result.WasAccepted ? result.Items.FirstOrDefault() : null;
             if (next is not null)
             {
                 SelectedItem = next;

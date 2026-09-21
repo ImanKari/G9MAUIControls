@@ -67,6 +67,7 @@ internal sealed class G9SheetViewPanGestureRecognizer : UIPanGestureRecognizer
     private bool _insideScrollable;
     private bool _handoff;
     private CGPoint _lastPoint;
+    private CGPoint _pinnedOffset;
     private static readonly nfloat EdgeEpsilon = 1f;
 
     public G9SheetViewPanGestureRecognizer(G9SheetViewBorder border, UIView platformView)
@@ -152,6 +153,16 @@ internal sealed class G9SheetViewPanGestureRecognizer : UIPanGestureRecognizer
                     {
                         border.ForwardTouch(G9SheetViewTouchAction.Pressed, dpPoint);
                         _handoff = true;
+                        _pinnedOffset = scroll.ContentOffset;
+                    }
+
+                    // This recognizer runs SIMULTANEOUSLY with the scroll view's own pan, so once
+                    // the sheet owns the gesture the scroller is still receiving it too — and
+                    // rubber-bands against its edge while the sheet moves under the same finger.
+                    // Holding its offset for the rest of the gesture is what UIKit's own sheets do.
+                    if (scroll.ContentOffset != _pinnedOffset)
+                    {
+                        scroll.SetContentOffset(_pinnedOffset, false);
                     }
                 }
 
@@ -168,11 +179,18 @@ internal sealed class G9SheetViewPanGestureRecognizer : UIPanGestureRecognizer
             case UIGestureRecognizerState.Failed:
                 if (_handoff)
                 {
+                    // Points per second in the WINDOW's space (null view): this view is moving with
+                    // the finger, so a velocity measured relative to it would read as almost zero.
+                    var velocityY = State == UIGestureRecognizerState.Ended
+                        ? (double)VelocityInView(null).Y
+                        : 0;
+
                     border.ForwardTouch(
                         State == UIGestureRecognizerState.Cancelled
                             ? G9SheetViewTouchAction.Cancelled
                             : G9SheetViewTouchAction.Released,
-                        dpPoint);
+                        dpPoint,
+                        velocityY);
                 }
 
                 ResetState();

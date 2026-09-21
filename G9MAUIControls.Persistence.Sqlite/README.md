@@ -16,10 +16,10 @@ If you store GUIDs as strings — which this package does — **every in-memory 
 case-insensitive**, and the library cannot enforce that for you.
 
 Rows can arrive in any case: a sync engine's apply phase writes server casing verbatim, and a second store
-(a geodatabase, an import) has its own. Every id column this package creates is `COLLATE NOCASE`, so
-anything expressed as a **query** is already correct. But once rows are objects, `==`,
-`FirstOrDefault(x => x.Id == id)`, `Dictionary<string, …>` and `HashSet<string>` are **ordinal**, and
-silently return "no match".
+(a geodatabase, an import) has its own. **Declare every id column `COLLATE NOCASE` in your schema** — this
+package does not create your tables or columns, so it cannot do that for you — and anything expressed as a
+**query** is then correct. But once rows are objects, `==`, `FirstOrDefault(x => x.Id == id)`,
+`Dictionary<string, …>` and `HashSet<string>` are **ordinal**, and silently return "no match".
 
 ```csharp
 // GOOD
@@ -38,7 +38,7 @@ Better still: **push the filter into the query.** Never load-all-then-filter-by-
 ```csharp
 using G9MAUIControls.Persistence.Sqlite;
 
-var id       = SqliteEntityAuditDefaults.CreateNewId();   // canonical: upper-case GUID, no braces
+var id       = SqliteEntityAuditDefaults.CreateNewId();   // canonical: lower-case GUID, no braces
 var incoming = rawId.NormalizeSqliteGuidId();             // extension, on string / Guid / Guid?
 ```
 
@@ -61,7 +61,11 @@ in-memory cache once made an entire screen of data silently vanish while every S
 - **Batch insert and merge** with `ON CONFLICT`, inside one transaction.
 - **Debounced caches** for small hot reference tables, invalidated by writes so UI reads stay consistent
   with the database without blocking queries.
-- **Ordered migrations**, and built-in `SQLITE_BUSY` back-off retry — not something each caller reimplements.
+- **Ordered migrations** through `SqliteMigrationRunner` (`Register<TMigration>(version)`, then
+  `RunAsync(provider, logger)`).
+- **Connection tuning that survives a reconnect**: `ApplyPerformancePragmasAsync()` opts in once (WAL,
+  `synchronous=NORMAL`, a 5 s `busy_timeout`, …) and the provider re-applies it to every connection it opens
+  afterwards. There is **no** built-in `SQLITE_BUSY` retry loop — see "Reserved" below.
 
 ```csharp
 var rows = await sampleRepo.Select.QueryAsync(q => q
@@ -89,22 +93,31 @@ services.AddG9Sqlite(sqlite =>
     sqlite.UseDatabaseLocator(new PerUserDatabaseLocator(partitions))  // where the file lives
           .UseClock(new AppClock())                                   // what "now" means
           .UseCurrentUserProvider(new SignedInUser(auth))             // audit columns
-          // Migrations and interceptors DO take a type argument (new() constraint), or an instance.
-          .AddMigration<Migration_001>()
-          .Entity<Sample>(e => e
-              .HasGuidId(x => x.SamplingId)
-              .SoftDelete(x => x.IsDeleted)
-              .AlwaysFilter(x => !x.IsDeleted)
-              .Index(x => x.SamplingId)
-              .Cache(G9CachePolicy.Debounced(250)))
-          .AddInterceptor<SyncMetadataInterceptor>();      // per-write hooks
+          .UseCanonicalIdCase(G9IdCase.Lower);                        // choose once, before first release
 });
 ```
 
-Audit fields, soft delete, tenancy, sync metadata, conflict policy, value converters, indexes and
-per-entity rules all arrive through the builder, the entity descriptors, and the interceptor pipeline. The
-package knows nothing about your entities or your business rules — and deliberately knows nothing about
-any particular sync framework.
+Those four settings are what the builder does **today**. The package knows nothing about your entities or
+your business rules — and deliberately knows nothing about any particular sync framework.
+
+### Reserved — accepted by the builder, currently with NO effect
+
+The rest of the builder surface is the designed shape of a later version. It compiles, it is stored on
+`G9SqliteOptions`, and **nothing reads it yet**. Do not build on it:
+
+| Builder member | What actually happens today | Use instead |
+|---|---|---|
+| `AddMigration` | stored, never run | `SqliteMigrationRunner.Register<T>(version)` + `RunAsync` |
+| `AddInterceptor`, `AddInitializer` | stored, never called | your own code around the write |
+| `Entity<T>().SoftDelete(…)` | every delete is a **hard** delete | `Update.ExecuteAsync(q => q.Set(x => x.IsDeleted, true).Where(…))` |
+| `Entity<T>().AlwaysFilter(…)` | **no query is filtered** | put the predicate in each `Where` |
+| `Entity<T>().HasGuidId(…)`, `[G9GuidId]` | not read | `[SqliteGuidIdColumn]` on the property (a property named `Id` is automatic) |
+| `Entity<T>().Index(…)` / `Unique(…)` | no index is created, no uniqueness enforced | a migration, or sqlite-net's `[Indexed]` |
+| `Entity<T>().OnConflict(…)` | not read | the method chooses: `Insert.OneAsync` fails, `OrReplaceAsync` replaces, `MergeAsync` upserts |
+| `Entity<T>().Cache(…)` | no cache is created | `SqliteRepository<T>.DefineCache(provider)` / `SqliteDtoCache<,>.DefineCache(…)` |
+| `UseBusyRetry` | no retry loop exists | the 5 s `busy_timeout` from `ApplyPerformancePragmasAsync()`; your own retry if you need more |
+
+Each of these members says the same in its XML documentation.
 
 The clock and the current user are **interfaces read at write time**, not values captured at
 registration. A captured user id would stamp every later row with whoever was signed in when DI built the
@@ -138,7 +151,60 @@ project — where they are errors and fail the publish with `NETSDK1144`. A `[Su
 cannot reach them, because they originate inside this assembly. Everything builds green right up to
 `publish`.
 
-A `TrimmerRootDescriptor` ships in the package to help.
+No `TrimmerRootDescriptor` ships in the package, and one could not do this for you: what has to be rooted
+is **your** entity assembly, whose name a library cannot know. The two settings above are the whole recipe.
+
+---
+
+## Session boundaries (sign-out, user switch)
+
+```csharp
+await provider.SwitchDatabaseAsync();   // closes the connection and resets every cache, without blocking
+partitions.Deactivate();                // THEN let the locator change its answer
+```
+
+`IG9SqliteDatabaseLocator.DatabasePathChanged` still closes the connection and resets the caches on its
+own, but it is a synchronous event, so it has to block the raising thread — usually the UI thread — while
+SQLite closes. Awaiting `SwitchDatabaseAsync()` first leaves that handler nothing to wait for.
+
+Cache listeners (`ListenToCacheData`) are held **strongly**, like event handlers: unsubscribe with
+`StopListeningToCacheData` when the subscriber goes away.
+
+---
+
+## Changes that can alter what existing code does
+
+**Read this list before upgrading.** Everything else in this release is additive or a pure fix.
+
+- **`!=` now returns rows whose column is NULL.** `Where(x => x.Status != value)` is emitted as
+  `([Status] != ? OR [Status] IS NULL)`. That is what the C# predicate says — `null != value` is `true` —
+  but it was previously emitted as `[Status] != ?`, which SQL evaluates to NULL for a NULL column and so
+  **dropped** those rows. Queries that relied on that, knowingly or not, now return MORE rows, and an
+  `Update`/`Delete` using such a predicate now affects more rows. A query that already says
+  `x.Col != null && x.Col != value` is unaffected. If you want the old result, say so:
+  `x.Col != null && x.Col != value`.
+- **A captured `null` now compares as NULL.** `Where(x => x.ParentId == parentId)` with `parentId == null`
+  is emitted as `[ParentId] IS NULL` (and `!=` as `IS NOT NULL`). It was `[ParentId] = NULL`, which matched
+  nothing — so such a query now returns rows where it used to return none.
+- **`Update` / `Delete` builders refuse to build without a `WHERE`.** They throw
+  `InvalidOperationException` instead of emitting a statement that hits every row. Call the new `.AllRows()`
+  when the whole table really is the target. (`Delete.AllAsync()` is unchanged.)
+- **`Insert.MergeAsync`** no longer overwrites `CreatedTime` / `CreatedByUserId` of an existing row on an
+  `IG9AuditedEntity`, and throws `ArgumentException` when a library-managed GUID primary key is the empty GUID
+  (every such row used to be upserted onto the same row).
+- **`Insert.BatchAsync(…, runInSingleTransaction: false)`** now means one transaction **per batch**; it used
+  to mean no transaction at all, so a failure mid-batch left part of that batch committed.
+- **Partial updates no longer write `UpdatedByUserId = NULL`** when nobody is signed in; the column is left
+  as it was. `UpdatedTime` is still stamped.
+- **A failed cache refresh is retried by the next read** instead of the cache serving pre-write rows
+  indefinitely — so a read can now surface a database error that used to be swallowed.
+- **Cache reads after a session reset re-resolve the connection** instead of throwing until the next write.
+- Generated SQL text differs where the result does not: table names are quoted (`FROM [Sample]`),
+  arithmetic is parenthesised (`(([A] + [B]) * [C])`), `Offset` without `Limit` emits `LIMIT -1 OFFSET n`
+  (it was a syntax error), `AnyAsync` runs `SELECT EXISTS(…)`, and an `IN` list above 16,000 values is sent
+  as one JSON parameter (`IN (SELECT value FROM json_each(?))`) — above 32,766 it used to fail outright.
+  C# 14's `array.Contains(x.Id)` is now translated; the `((IEnumerable<string>)ids).Contains(…)` workaround
+  keeps working and is no longer needed.
 
 ---
 

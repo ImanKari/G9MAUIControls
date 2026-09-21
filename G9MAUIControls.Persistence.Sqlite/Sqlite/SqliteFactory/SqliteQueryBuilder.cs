@@ -4,6 +4,8 @@ using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
 
 namespace G9MAUIControls.Persistence.Sqlite.Queries;
@@ -77,12 +79,128 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
                 return normalizedSql;
             }
 
-            var left = Visit(b.Left);
-            var right = Visit(b.Right);
+            var isLogical = b.NodeType is ExpressionType.AndAlso or ExpressionType.OrElse;
 
-            return b.NodeType is ExpressionType.AndAlso or ExpressionType.OrElse
+            var leftStart = Parameters.Count;
+            var left = VisitOperand(b.Left, isLogical);
+            var rightStart = Parameters.Count;
+            var right = VisitOperand(b.Right, isLogical);
+
+            if (b.NodeType is ExpressionType.Equal or ExpressionType.NotEqual &&
+                TryBuildNullAwareEquality(
+                    b.NodeType == ExpressionType.Equal, left, leftStart, right, rightStart, out var nullAwareSql))
+            {
+                return nullAwareSql;
+            }
+
+            // Logical AND arithmetic nodes carry their own parentheses, so the C# tree's grouping survives
+            // whatever they end up nested in. Arithmetic used to be emitted bare, which let SQL's operator
+            // precedence regroup it: (A + B) * C became A + B * C. A comparison stays bare at the top level
+            // — the common case reads the same as before — and is wrapped by VisitOperand when it is itself
+            // an operand.
+            return isLogical || IsArithmetic(b.NodeType)
                 ? $"({left} {op} {right})"
                 : $"{left} {op} {right}";
+        }
+
+        private string VisitOperand(Expression operand, bool parentIsLogical)
+        {
+            var sql = Visit(operand);
+
+            // Under AND/OR a comparison needs no help: every comparison operator binds tighter than both.
+            // Under another comparison or arithmetic it does — (a == b) != c must not become a = b != c.
+            return !parentIsLogical &&
+                   UnwrapConvert(operand) is BinaryExpression nested &&
+                   IsValueComparison(nested.NodeType)
+                ? $"({sql})"
+                : sql;
+        }
+
+        private static bool IsArithmetic(ExpressionType nodeType)
+        {
+            return nodeType is ExpressionType.Add
+                or ExpressionType.Subtract
+                or ExpressionType.Multiply
+                or ExpressionType.Divide
+                or ExpressionType.Modulo;
+        }
+
+        /// <summary>
+        ///     Gives <c>==</c> / <c>!=</c> against an EVALUATED value the meaning the C# predicate has,
+        ///     where SQL's three-valued logic would otherwise disagree.
+        /// </summary>
+        /// <remarks>
+        ///     <para>
+        ///         Only a literal <c>null</c> used to be recognised. A CAPTURED null —
+        ///         <c>Where(x =&gt; x.ParentId == parentId)</c> with <c>parentId == null</c> — was bound as a
+        ///         parameter, producing <c>ParentId = NULL</c>, which is never true: the query for "rows
+        ///         with no parent" returned nothing. Likewise <c>col != ?</c> is NULL, not true, for a row
+        ///         whose column is NULL, so <c>!=</c> silently dropped exactly the rows C# would keep.
+        ///     </para>
+        ///     <para>
+        ///         A side counts as a value when it rendered as a single <c>?</c> and contributed exactly one
+        ///         parameter — which is what <see cref="VisitMember" /> and <see cref="VisitConstant" /> do
+        ///         for anything that is not a mapped column. Column-to-column comparisons (join conditions)
+        ///         are deliberately left alone, and so is <c>==</c> against a non-null value: that SQL was
+        ///         already right and is emitted byte-for-byte as before.
+        ///     </para>
+        /// </remarks>
+        private bool TryBuildNullAwareEquality(
+            bool isEqual,
+            string left,
+            int leftStart,
+            string right,
+            int rightStart,
+            out string sql)
+        {
+            sql = string.Empty;
+
+            var leftIsValue = left == "?" && rightStart == leftStart + 1;
+            var rightIsValue = right == "?" && Parameters.Count == rightStart + 1;
+
+            if (leftIsValue && rightIsValue)
+            {
+                // Two values and no column. `=` is only wrong here when a null is involved; IS / IS NOT are
+                // SQLite's null-safe forms and agree with C# for every combination.
+                if (Parameters[leftStart] is not null && Parameters[rightStart] is not null)
+                {
+                    return false;
+                }
+
+                sql = isEqual ? "? IS ?" : "? IS NOT ?";
+                return true;
+            }
+
+            if (!leftIsValue && !rightIsValue)
+            {
+                return false;
+            }
+
+            var valueIndex = rightIsValue ? rightStart : leftStart;
+            var other = rightIsValue ? left : right;
+
+            if (Parameters[valueIndex] is null)
+            {
+                // The value was bound before it was known to be null; IS NULL takes no parameter.
+                Parameters.RemoveAt(valueIndex);
+                sql = isEqual ? $"{other} IS NULL" : $"{other} IS NOT NULL";
+                return true;
+            }
+
+            if (isEqual)
+            {
+                return false;
+            }
+
+            // The other side now appears twice in the SQL, so any parameters IT bound (arithmetic such as
+            // x.A + offset) must be bound twice too, in the order the placeholders appear.
+            var otherParameters = rightIsValue
+                ? Parameters.GetRange(leftStart, rightStart - leftStart)
+                : Parameters.GetRange(rightStart, Parameters.Count - rightStart);
+
+            Parameters.AddRange(otherParameters);
+            sql = $"({left} != {right} OR {other} IS NULL)";
+            return true;
         }
 
         private string VisitUnary(UnaryExpression u)
@@ -192,6 +310,30 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
                 return BuildIn(col, collection);
             }
 
+            // C# 14 "first-class spans": `array.Contains(x.Id)` no longer binds to Enumerable.Contains but
+            // to MemoryExtensions.Contains(ReadOnlySpan<T>, T), with the array reaching it through an
+            // implicit span conversion. Same meaning, different tree — and it was unsupported, so every
+            // consumer had to write ((IEnumerable<string>)ids).Contains(x.Id) instead. The conversion node
+            // is peeled off and the collection underneath evaluated: a span cannot be produced by
+            // reflection at all (it is a ref struct), so evaluating the conversion itself is not an option.
+            if (method.Name == "Contains" && method.DeclaringType == typeof(MemoryExtensions)
+                                          && mc.Object == null && mc.Arguments.Count == 2
+                                          && TryUnwrapSpanConversion(mc.Arguments[0], out var spanSource))
+            {
+                // A string converts to ReadOnlySpan<char>, but "abc".Contains(x.Letter) is a character
+                // test, not an id list — leave that to the not-supported error below.
+                if (Evaluate(spanSource) is IEnumerable collection and not string)
+                {
+                    if (TryGetGuidStringIdColumn(mc.Arguments[1], out var idColumn))
+                    {
+                        return BuildIn(idColumn, collection, true);
+                    }
+
+                    var col = Visit(mc.Arguments[1]);
+                    return BuildIn(col, collection);
+                }
+            }
+
             throw new NotSupportedException(
                 $"Method {method.DeclaringType?.Name}.{method.Name} is not supported in SQL expressions.");
         }
@@ -244,8 +386,7 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
                 !IsMappedColumnMember(rightExpression) &&
                 TryEvaluate(rightExpression, out var rightValue))
             {
-                AddParam(rightValue, true);
-                sql = $"{leftColumn} {op} ?";
+                sql = BuildGuidStringIdValueComparison(leftColumn, op, rightValue, true);
                 return true;
             }
 
@@ -253,12 +394,61 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
                 !IsMappedColumnMember(leftExpression) &&
                 TryEvaluate(leftExpression, out var leftValue))
             {
-                AddParam(leftValue, true);
-                sql = $"? {op} {rightColumn}";
+                sql = BuildGuidStringIdValueComparison(rightColumn, op, leftValue, false);
                 return true;
             }
 
             return false;
+        }
+
+        // The id-column twin of TryBuildNullAwareEquality — see there for why. An id column renders as a
+        // bare column reference and binds nothing, so repeating it needs no parameter bookkeeping.
+        private string BuildGuidStringIdValueComparison(string column, string op, object? value, bool columnOnLeft)
+        {
+            if (value is null && op is "=" or "!=")
+            {
+                return op == "=" ? $"{column} IS NULL" : $"{column} IS NOT NULL";
+            }
+
+            AddParam(value, true);
+            var comparison = columnOnLeft ? $"{column} {op} ?" : $"? {op} {column}";
+            return op == "!=" ? $"({comparison} OR {column} IS NULL)" : comparison;
+        }
+
+        private static bool TryUnwrapSpanConversion(Expression expression, out Expression source)
+        {
+            source = expression;
+            var unwrapped = false;
+
+            // A loop because T[] -> Span<T> -> ReadOnlySpan<T> is two conversions.
+            while (true)
+            {
+                switch (source)
+                {
+                    // The shape the compiler emits: a call to Span<T>/ReadOnlySpan<T>.op_Implicit.
+                    case MethodCallExpression { Method.Name: "op_Implicit", Object: null, Arguments.Count: 1 } call
+                        when IsSpanType(call.Type):
+                        source = call.Arguments[0];
+                        unwrapped = true;
+                        continue;
+
+                    // The shape a hand-built tree (Expression.Convert) produces for the same conversion.
+                    case UnaryExpression { NodeType: ExpressionType.Convert } convert when IsSpanType(convert.Type):
+                        source = convert.Operand;
+                        unwrapped = true;
+                        continue;
+
+                    default:
+                        return unwrapped;
+                }
+            }
+
+            static bool IsSpanType(Type type)
+            {
+                return type.IsGenericType &&
+                       (type.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>) ||
+                        type.GetGenericTypeDefinition() == typeof(Span<>));
+            }
         }
 
         private bool TryGetGuidStringIdColumn(Expression expression, out string columnSql)
@@ -331,6 +521,12 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
             return $@"{column} LIKE ? ESCAPE '\'";
         }
 
+        // Above this many values an IN list stops being sent as one placeholder per value — see
+        // TryBuildJsonIn. Half of the bundled SQLite's 32,766-variable budget: the budget is per STATEMENT,
+        // so the rest has to stay available for the other predicates, or for a second list. Far above the
+        // ~1,000-value chunks callers conventionally use, so ordinary queries are emitted exactly as before.
+        private const int MaxInListParameters = 16_000;
+
         private string BuildIn(string column, IEnumerable? values, bool normalizeGuidStringIds = false)
         {
             if (values == null)
@@ -349,6 +545,12 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
                 return "0 = 1";
             }
 
+            if (items.Count > MaxInListParameters &&
+                TryBuildJsonIn(column, items, normalizeGuidStringIds, out var jsonInSql))
+            {
+                return jsonInSql;
+            }
+
             var sb = new StringBuilder();
             sb.Append(column).Append(" IN (");
             for (var i = 0; i < items.Count; i++)
@@ -364,6 +566,76 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
 
             sb.Append(')');
             return sb.ToString();
+        }
+
+        /// <summary>
+        ///     Sends an oversized IN list as ONE parameter — a JSON array expanded by <c>json_each</c>.
+        /// </summary>
+        /// <remarks>
+        ///     <para>
+        ///         SQLite caps bound variables PER STATEMENT (32,766 in the bundled build), so a list beyond
+        ///         that failed at prepare time with "too many SQL variables". Splitting it into OR-ed IN
+        ///         groups would not help: the cap counts every placeholder in the statement, not the ones in
+        ///         a single list. One JSON parameter has no such ceiling, stays fully parameterised, and
+        ///         <c>x IN (SELECT value …)</c> follows the same affinity and collation rules as
+        ///         <c>x IN (?, ?, …)</c> — including under <c>NOT</c>, and including a NULL in the list.
+        ///     </para>
+        ///     <para>
+        ///         Only for values JSON carries without reinterpretation: text and integers (which is what
+        ///         bool and enum values already are by the time they get here). A date, a Guid, a decimal or
+        ///         a blob is bound by sqlite-net in a format that depends on the connection's settings, which
+        ///         this builder cannot see — a list of those keeps the placeholder form, large or not.
+        ///     </para>
+        /// </remarks>
+        private bool TryBuildJsonIn(string column, List<object> items, bool normalizeGuidStringIds, out string sql)
+        {
+            sql = string.Empty;
+
+            var values = new object?[items.Count];
+            for (var i = 0; i < items.Count; i++)
+            {
+                object? value = items[i];
+                if (normalizeGuidStringIds)
+                {
+                    value = SqliteGuidStringNormalizer.NormalizeIdLikeValue(value);
+                }
+
+                value = SqliteQueryFactory.NormalizeParam(value);
+                if (value is not (null or string or sbyte or byte or short or ushort or int or uint or long))
+                {
+                    return false;
+                }
+
+                values[i] = value;
+            }
+
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(
+                       buffer, new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+            {
+                writer.WriteStartArray();
+                foreach (var value in values)
+                {
+                    switch (value)
+                    {
+                        case null:
+                            writer.WriteNullValue();
+                            break;
+                        case string text:
+                            writer.WriteStringValue(text);
+                            break;
+                        default:
+                            writer.WriteNumberValue(Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture));
+                            break;
+                    }
+                }
+
+                writer.WriteEndArray();
+            }
+
+            Parameters.Add(Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length));
+            sql = $"{column} IN (SELECT value FROM json_each(?))";
+            return true;
         }
 
         /// <summary>
@@ -430,10 +702,13 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
 
     #region State
 
-    private readonly string _rootTable = SqliteQueryFactory.GetTableName(typeof(T));
+    // Table names are held ALREADY QUOTED, so every place that emits one — FROM, JOIN, UPDATE, DELETE and
+    // the table qualifier in front of a column — quotes it the same way columns always were. Bare, a table
+    // named after a keyword (Order, Group, Transaction) produced SQL that did not parse.
+    private readonly string _rootTable = QuoteIdentifier(SqliteQueryFactory.GetTableName(typeof(T)));
 
     private readonly Dictionary<Type, string> _knownTables =
-        new() { [typeof(T)] = SqliteQueryFactory.GetTableName(typeof(T)) };
+        new() { [typeof(T)] = QuoteIdentifier(SqliteQueryFactory.GetTableName(typeof(T))) };
 
     private readonly HashSet<(Type EntityType, string PropertyName)> _localizedOverrides = [];
     private readonly List<string> _selectParts = [];
@@ -446,6 +721,7 @@ public sealed partial class SqliteQueryBuilder<[DynamicallyAccessedMembers(Dynam
     private string? _havingSql;
     private readonly List<object> _havingParams = [];
     private readonly List<SetClause> _setClauses = [];
+    private bool _allRows;
     private int? _limit;
     private int? _offset;
     private bool _distinct;

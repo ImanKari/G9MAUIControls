@@ -150,12 +150,20 @@ public partial class G9DateTimePicker : G9OutlinedFieldBase
             return FormattedDisplayText!;
         }
 
-        return G9Culture.IsRtl ? FormatPersian(value) : FormatGregorian(value);
+        // The calendar follows the LANGUAGE (fa → Jalali), not the reading direction: this used to
+        // branch on IsRtl, which handed Arabic and Hebrew apps Jalali dates. And PersianCalendar
+        // throws for anything before 0622-03-22 — a bound default(DateTime) took the app down from
+        // inside OnRefresh, which the base does not catch — so such a value renders Gregorian.
+        return G9Calendar.IsPersianLanguage(G9Culture.CurrentCulture) && G9Calendar.IsSupportedByPersianCalendar(value)
+            ? FormatPersian(value)
+            : FormatGregorian(value);
     }
 
     private string FormatGregorian(DateTime value)
     {
-        var culture = G9Culture.CurrentCulture;
+        // Not the raw culture: ToString formats in the culture's OWN calendar, so under fa-IR this
+        // "Gregorian" fallback would throw the same out-of-range exception (G9Calendar).
+        var culture = G9Calendar.GetGregorianFormatCulture(G9Culture.CurrentCulture);
         return DisplayFormat switch
         {
             G9DateTimeDisplayFormat.LongDate => value.ToString("MMMM d, yyyy", culture),

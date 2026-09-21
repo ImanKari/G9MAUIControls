@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 
 namespace G9MAUIControls.Helpers;
 
@@ -22,11 +23,17 @@ namespace G9MAUIControls.Helpers;
 /// </summary>
 public static class G9SafeCommand
 {
-    private static readonly ConcurrentDictionary<string, DateTime> ThrottleTimestamps = new();
+    // Throttle state is kept in Environment.TickCount64 milliseconds — a MONOTONIC clock — not wall
+    // time. It used to be DateTime.UtcNow, and this library runs in an app with a device-clock gate:
+    // when a clock that was AHEAD gets corrected, every stored timestamp is suddenly in the future,
+    // "now - last" goes negative, and every key that had ever been tapped was rejected — with no
+    // ageing out, because the cleanup compared against the same broken clock. Buttons went dead until
+    // the app restarted. A tick count cannot be set by the user and never runs backwards.
+    private static readonly ConcurrentDictionary<string, long> ThrottleTimestamps = new();
     private static readonly TimeSpan DefaultThrottleInterval = TimeSpan.FromMilliseconds(369);
     private static readonly TimeSpan CleanupThreshold = TimeSpan.FromMinutes(1);
     private static readonly ConcurrentDictionary<string, byte> InFlightOperations = new();
-    private static DateTime _lastCleanupUtc = DateTime.UtcNow;
+    private static long _lastCleanupTick = Environment.TickCount64;
 
     #region RunAsync – with G9OperationTrace
 
@@ -49,11 +56,11 @@ public static class G9SafeCommand
         [CallerMemberName] string callerMember = "",
         [CallerFilePath] string callerFile = "")
     {
-        var isRethrowing = false;
         G9SafeCommandOptions opts;
         string key;
         string source;
         G9OperationTrace? trace = null;
+        ILogger? traceLogger;
         var enteredConcurrentGuard = false;
 
         try
@@ -77,7 +84,8 @@ public static class G9SafeCommand
 
             enteredConcurrentGuard = opts.PreventConcurrentExecution;
 
-            trace = new G9OperationTrace(key, source, ResolveLogger());
+            traceLogger = ResolveLogger();
+            trace = new G9OperationTrace(key, source, traceLogger);
         }
         catch (Exception initEx)
         {
@@ -98,6 +106,14 @@ public static class G9SafeCommand
             }
         }
 
+        // A failure is only RECORDED inside the guarded region below; everything that waits on the
+        // user — OnError, the error popup — happens after the finally has released the busy flag
+        // and the concurrency key. The popup used to be awaited inside the guard, so the key was
+        // held until the user dismissed it. Auto keys are File.Member, shared by every instance of a
+        // view model: a tap on row B was silently dropped while row A's error popup was still open,
+        // and if that popup never completed the button was dead until the app restarted.
+        OperationFailure? failure = null;
+
         try
         {
             SafeInvokeSetBusy(opts.SetBusy, true, source, key);
@@ -113,52 +129,34 @@ public static class G9SafeCommand
                 LogTraceCompleted(source, key, operationStopwatch.ElapsedMilliseconds);
             }
 
-            if (trace.HasFailed && opts.ShowErrorG9Popup)
+            if (trace.HasFailed)
             {
-                await SafeShowErrorG9PopupAsync(
+                // trace.Fail(...) already wrote its own log line; this is the popup / observer half.
+                failure = new OperationFailure(
                     trace.UserErrorMessage!,
-                    opts.ErrorTitle,
                     trace.UserErrorDiagnostics ?? SafeBuildReport(trace),
-                    source);
+                    null);
             }
         }
         catch (OperationCanceledException)
         {
             LogSafe(LogLevel.Debug, null, "Operation cancelled", source, key);
         }
-        catch (ObjectDisposedException)
+        catch (ObjectDisposedException disposedEx)
         {
-            LogSafe(LogLevel.Debug, null, "Object disposed during operation", source, key);
+            // Still swallowed — it is almost always a view torn down under its own operation — but
+            // no longer at Debug and without the exception: a production log (Information and up)
+            // showed nothing at all, which made a real use-after-dispose bug a fully silent failure.
+            LogSafe(LogLevel.Warning, disposedEx, "Object disposed during operation", source, key);
         }
         catch (Exception ex)
         {
-            try
-            {
-                trace.Error("Unhandled exception", ex);
-            }
-            catch
-            {
-                // trace itself failed — nothing we can do
-            }
+            LogUnhandledOnce(trace, traceLogger, ex, "Unhandled exception in action", source, key);
 
-            LogSafe(LogLevel.Error, ex, "Unhandled exception in action", source, key);
-
-            await SafeInvokeOnErrorAsync(opts.OnError, ex, source, key);
-
-            if (opts.ShowErrorG9Popup)
-            {
-                await SafeShowErrorG9PopupAsync(
-                    opts.ErrorMessage ?? SafeGetDefaultErrorMessage(),
-                    opts.ErrorTitle,
-                    SafeBuildReport(trace, ex),
-                    source);
-            }
-
-            if (opts.RethrowException)
-            {
-                isRethrowing = true;
-                throw;
-            }
+            failure = new OperationFailure(
+                opts.ErrorMessage ?? SafeGetDefaultErrorMessage(),
+                SafeBuildReport(trace, ex),
+                ex);
         }
         finally
         {
@@ -170,11 +168,30 @@ public static class G9SafeCommand
             }
         }
 
-        // This intentionally lives outside the try/finally above.
-        // If isRethrowing is true the throw already left; we never reach here.
-        // If some truly unexpected infrastructure exception escaped (shouldn't
-        // happen given the guards above), let the outer caller decide.
-        _ = isRethrowing; // suppress unused warning
+        if (failure is null)
+        {
+            return;
+        }
+
+        // Guard released. From here on nothing is held, so these may take as long as the user does.
+        RaiseOperationFailed(failure, source, key);
+
+        if (failure.Exception is not null)
+        {
+            await SafeInvokeOnErrorAsync(opts.OnError, failure.Exception, source, key);
+        }
+
+        if (opts.ShowErrorG9Popup)
+        {
+            await SafeShowErrorG9PopupAsync(failure.UserMessage, opts.ErrorTitle, failure.Diagnostics, source);
+        }
+
+        if (failure.Exception is not null && opts.RethrowException)
+        {
+            // Was a bare `throw;` inside the catch. Rethrown from out here so the guard is already
+            // released; ExceptionDispatchInfo keeps the original stack trace, as `throw;` did.
+            ExceptionDispatchInfo.Capture(failure.Exception).Throw();
+        }
     }
 
     #endregion
@@ -299,17 +316,30 @@ public static class G9SafeCommand
             throw new ArgumentException(@"Key cannot be empty", nameof(key));
         }
 
-        var interval = minInterval ?? DefaultThrottleInterval;
-        var now = DateTime.UtcNow;
+        var intervalMs = (long)(minInterval ?? DefaultThrottleInterval).TotalMilliseconds;
+        var now = Environment.TickCount64;
 
-        var canExecute = ThrottleTimestamps.AddOrUpdate(
+        // The decision is taken INSIDE the lambdas and carried out through this local. It used to be
+        // inferred afterwards as "stored value == now", which let two calls landing on the same tick
+        // both through: the second one's update returned `last`, and `last` was equal to `now`.
+        // AddOrUpdate may run a factory more than once under contention; the last run is the one
+        // whose value was stored, and each run overwrites the flag, so the flag matches the store.
+        var allowed = false;
+
+        ThrottleTimestamps.AddOrUpdate(
             key,
-            _ => now,
-            (_, last) => now - last >= interval ? now : last);
+            _ =>
+            {
+                allowed = true;
+                return now;
+            },
+            (_, last) =>
+            {
+                allowed = now - last >= intervalMs;
+                return allowed ? now : last;
+            });
 
-        var allowed = canExecute == now;
-
-        if (now - _lastCleanupUtc > CleanupThreshold)
+        if (now - Interlocked.Read(ref _lastCleanupTick) > (long)CleanupThreshold.TotalMilliseconds)
         {
             CleanupThrottleEntries(now);
         }
@@ -463,6 +493,31 @@ public static class G9SafeCommand
     #region Run – synchronous
 
     /// <summary>Synchronous overload with G9OperationTrace.</summary>
+    /// <remarks>
+    ///     <b>This overload blocks its calling thread, by contract</b> — when it returns, the action has
+    ///     run. Two options therefore cost more here than in <c>RunAsync</c> / <c>RunSafe</c>:
+    ///     <list type="bullet">
+    ///         <item>
+    ///             <description>
+    ///                 <see cref="G9SafeCommandOptions.DelayBeforeExecution" /> /
+    ///                 <see cref="G9SafeCommandOptions.BusyDelay" /> are served by a blocking wait. On the
+    ///                 UI thread that freezes the app for the whole delay. Use <c>RunSafe</c> when you
+    ///                 need a delay.
+    ///             </description>
+    ///         </item>
+    ///         <item>
+    ///             <description>
+    ///                 <see cref="G9SafeCommandOptions.RunActionOnMainThread" />, when called from a
+    ///                 background thread, blocks that thread until the UI thread has run the action. If
+    ///                 the UI thread is itself waiting on the caller, that is a deadlock. Called ON the
+    ///                 UI thread (the normal case) the action simply runs inline and nothing waits.
+    ///             </description>
+    ///         </item>
+    ///     </list>
+    ///     Neither wait can be removed without breaking the "has run when it returns" guarantee that
+    ///     synchronous callers rely on (raising an event, flipping a camera off before teardown), so
+    ///     they are documented rather than changed.
+    /// </remarks>
     public static void Run(
         Action<G9OperationTrace> action,
         G9SafeCommandOptions? options = null,
@@ -473,6 +528,7 @@ public static class G9SafeCommand
         string key;
         string source;
         G9OperationTrace? trace = null;
+        ILogger? traceLogger;
         var enteredConcurrentGuard = false;
 
         try
@@ -496,7 +552,8 @@ public static class G9SafeCommand
 
             enteredConcurrentGuard = opts.PreventConcurrentExecution;
 
-            trace = new G9OperationTrace(key, source, ResolveLogger());
+            traceLogger = ResolveLogger();
+            trace = new G9OperationTrace(key, source, traceLogger);
         }
         catch (Exception initEx)
         {
@@ -528,42 +585,50 @@ public static class G9SafeCommand
                 LogTraceCompleted(source, key, operationStopwatch.ElapsedMilliseconds);
             }
 
-            if (trace.HasFailed && opts.ShowErrorG9Popup)
+            if (trace.HasFailed)
             {
-                SafeFireAndForget(SafeShowErrorG9PopupAsync(
+                var failure = new OperationFailure(
                     trace.UserErrorMessage!,
-                    opts.ErrorTitle,
                     trace.UserErrorDiagnostics ?? SafeBuildReport(trace),
-                    source));
+                    null);
+                RaiseOperationFailed(failure, source, key);
+
+                // Fire-and-forget, so — unlike an awaited popup — it never holds the guard below.
+                if (opts.ShowErrorG9Popup)
+                {
+                    SafeFireAndForget(SafeShowErrorG9PopupAsync(
+                        failure.UserMessage,
+                        opts.ErrorTitle,
+                        failure.Diagnostics,
+                        source));
+                }
             }
         }
         catch (OperationCanceledException)
         {
             LogSafe(LogLevel.Debug, null, "Sync operation cancelled", source, key);
         }
-        catch (ObjectDisposedException)
+        catch (ObjectDisposedException disposedEx)
         {
-            LogSafe(LogLevel.Debug, null, "Object disposed during sync operation", source, key);
+            // See RunAsync: swallowed as before, but visible in a production log.
+            LogSafe(LogLevel.Warning, disposedEx, "Object disposed during sync operation", source, key);
         }
         catch (Exception ex)
         {
-            try
-            {
-                trace.Error("Unhandled exception", ex);
-            }
-            catch
-            {
-                // ignored
-            }
+            LogUnhandledOnce(trace, traceLogger, ex, "Unhandled exception in sync action", source, key);
 
-            LogSafe(LogLevel.Error, ex, "Unhandled exception in sync action", source, key);
+            var failure = new OperationFailure(
+                opts.ErrorMessage ?? SafeGetDefaultErrorMessage(),
+                SafeBuildReport(trace, ex),
+                ex);
+            RaiseOperationFailed(failure, source, key);
 
             if (opts.ShowErrorG9Popup)
             {
                 SafeFireAndForget(SafeShowErrorG9PopupAsync(
-                    opts.ErrorMessage ?? SafeGetDefaultErrorMessage(),
+                    failure.UserMessage,
                     opts.ErrorTitle,
-                    SafeBuildReport(trace, ex),
+                    failure.Diagnostics,
                     source));
             }
 
@@ -829,6 +894,96 @@ public static class G9SafeCommand
     }
 
     /// <summary>
+    ///     Raised <b>exactly once for every operation that fails</b> under <c>RunAsync</c>,
+    ///     <c>RunSafe</c> or <c>Run</c> — an unhandled exception, or a <c>trace.Fail(...)</c> — and
+    ///     <b>regardless of <see cref="G9SafeCommandOptions.ShowErrorG9Popup" /></b>. It fires after the
+    ///     busy flag and concurrency key have been released and before <c>OnError</c> / the popup.
+    ///     <para>
+    ///         <b>Why it exists when there is already an <c>ILogger</c>.</b> This helper logs every
+    ///         failure under the category <c>"G9SafeCommand"</c> — and a host is entitled to filter its
+    ///         log by category. One that keeps only its own namespace (a common, sensible setup) drops
+    ///         every line written here, which is exactly how an app came to record "showed the popup and
+    ///         wrote NOTHING to the runtime log", and how <c>ShowErrorG9Popup = false</c> became a fully
+    ///         silent failure. A delegate cannot be filtered away by a category rule: subscribe and
+    ///         write the report to whatever sink you actually read.
+    ///     </para>
+    ///     <para>
+    ///         Not raised for a cancelled operation or for the swallowed
+    ///         <see cref="ObjectDisposedException" /> teardown race — neither is reported to the user
+    ///         either. Keep the handler cheap and non-blocking; it runs on the operation's thread. A
+    ///         handler that throws is swallowed.
+    ///     </para>
+    ///     <example>
+    ///         <code>
+    ///         G9SafeCommand.OperationFailed = report =>
+    ///             logger.LogError(report.Exceptions?.FirstOrDefault(),
+    ///                 "{Source}: {Message} {Trace}", report.Source, report.UserMessage, report.DiagnosticsText);
+    ///         </code>
+    ///     </example>
+    /// </summary>
+    public static Action<G9DiagnosticsReport>? OperationFailed { get; set; }
+
+    /// <summary>What a failed operation leaves behind for the code that runs once its guard is released.</summary>
+    private sealed record OperationFailure(string UserMessage, string Diagnostics, Exception? Exception);
+
+    private static void RaiseOperationFailed(OperationFailure failure, string source, string key)
+    {
+        var handler = OperationFailed;
+        if (handler is null)
+        {
+            return;
+        }
+
+        try
+        {
+            handler(new G9DiagnosticsReport(
+                $"{source}/{key}",
+                failure.UserMessage,
+                failure.Diagnostics,
+                failure.Exception is null ? [] : [failure.Exception]));
+        }
+        catch (Exception ex)
+        {
+            // Same rule as G9Diagnostics: an observer must never break the operation it observes.
+            LogSafe(LogLevel.Warning, ex, "OperationFailed observer threw", source, key);
+        }
+    }
+
+    /// <summary>
+    ///     Records an unhandled exception in the trace and writes it to the log <b>once</b>.
+    ///     <para>
+    ///         <c>trace.Error</c> logs through the trace's own logger, and the caller used to follow it
+    ///         with a second <c>LogSafe(Error, ex)</c> — the same exception, twice, on every failure
+    ///         (two entries in the log, two events in an error reporter). The direct write is now the
+    ///         fallback only: when the trace has no logger, or recording into it threw.
+    ///     </para>
+    /// </summary>
+    private static void LogUnhandledOnce(
+        G9OperationTrace trace,
+        ILogger? traceLogger,
+        Exception exception,
+        string message,
+        string source,
+        string key)
+    {
+        var logged = false;
+        try
+        {
+            trace.Error("Unhandled exception", exception);
+            logged = traceLogger is not null;
+        }
+        catch
+        {
+            // trace itself failed — fall through to the direct write
+        }
+
+        if (!logged)
+        {
+            LogSafe(LogLevel.Error, exception, message, source, key);
+        }
+    }
+
+    /// <summary>
     ///     Observes a fire-and-forget Task so unhandled exceptions don't
     ///     surface as UnobservedTaskException (which can crash on some platforms).
     /// </summary>
@@ -1020,17 +1175,19 @@ public static class G9SafeCommand
         return G9Strings.Get(G9StringKey.UnexpectedError);
     }
 
-    private static void CleanupThrottleEntries(DateTime now)
+    private static void CleanupThrottleEntries(long now)
     {
         try
         {
-            _lastCleanupUtc = now;
-            var threshold = now - CleanupThreshold;
+            Interlocked.Exchange(ref _lastCleanupTick, now);
+            var threshold = now - (long)CleanupThreshold.TotalMilliseconds;
             foreach (var kvp in ThrottleTimestamps)
             {
                 if (kvp.Value < threshold)
                 {
-                    ThrottleTimestamps.TryRemove(kvp.Key, out _);
+                    // The pair overload: remove only if the value is still the stale one we looked
+                    // at, so a tap recorded between the read and the remove is not forgotten.
+                    ThrottleTimestamps.TryRemove(kvp);
                 }
             }
         }

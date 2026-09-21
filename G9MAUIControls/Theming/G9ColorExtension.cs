@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Reflection;
 using Microsoft.Maui.Controls.Xaml;
 
 namespace G9MAUIControls.Theming;
@@ -26,9 +25,9 @@ namespace G9MAUIControls.Theming;
 ///     <para>
 ///         <b>Lifetime</b>. The subscription is held by a weak reference to the
 ///         target so we don't pin the visual element in memory after the page is
-///         disposed. The subscription is implicitly cleaned up when
-///         <see cref="G9Palette.Current" />'s reference list cleans up dead weak
-///         references on each fan-out.
+///         disposed. Dead entries are dropped on each fan-out and — because a fan-out only
+///         happens on a theme switch — also by an amortised sweep as new subscriptions
+///         register (see <see cref="G9PaletteSubscriptions.Register" />).
 ///     </para>
 ///     <para>
 ///         <b>Backwards compatibility</b>. Consumers continue to write
@@ -91,24 +90,125 @@ public sealed class G9ColorExtension : IMarkupExtension
         return color.WithAlpha((float)Math.Clamp(alpha.Value, 0d, 1d));
     }
 
-    private static readonly Dictionary<G9ColorToken, PropertyInfo> _propertyCache = new();
-
     /// <summary>
-    ///     Look up the <see cref="G9Palette" /> property by enum-name match. The
-    ///     reflection cost is paid once per key and cached; subsequent reads are a
-    ///     plain dictionary lookup + property getter.
+    ///     Token → palette property, as a compiled <c>switch</c> over the (dense) enum.
+    ///     <para>
+    ///         This was <c>typeof(G9Palette).GetProperty(key.ToString())</c> behind a static
+    ///         <c>Dictionary</c> cache, then <c>PropertyInfo.GetValue</c> on every read — and a theme
+    ///         switch reads once per live <c>{G9Color}</c> usage, well over a thousand on a dense app. The
+    ///         switch costs a jump table, allocates nothing, needs no cache (so nothing to synchronise
+    ///         when a view is inflated off the main thread), and is visible to the trimmer: the library
+    ///         is <c>IsAotCompatible</c>, and a by-name property lookup is exactly what trimming breaks.
+    ///     </para>
+    ///     Every <see cref="G9ColorToken" /> has an arm; a token added without one falls back to the
+    ///     same loud magenta the reflection path returned for a missing property.
     /// </summary>
     private static Color ReadPaletteColor(G9ColorToken key)
     {
-        if (!_propertyCache.TryGetValue(key, out var prop))
+        var palette = G9Palette.Current;
+
+        Color? color = key switch
         {
-            prop = typeof(G9Palette).GetProperty(key.ToString(), BindingFlags.Public | BindingFlags.Instance);
-            if (prop is not null)
-            {
-                _propertyCache[key] = prop;
-            }
-        }
-        return prop?.GetValue(G9Palette.Current) as Color ?? Colors.Magenta;
+            G9ColorToken.Primary => palette.Primary,
+            G9ColorToken.OnPrimary => palette.OnPrimary,
+            G9ColorToken.PrimaryContainer => palette.PrimaryContainer,
+            G9ColorToken.OnPrimaryContainer => palette.OnPrimaryContainer,
+            G9ColorToken.PrimaryBorder => palette.PrimaryBorder,
+            G9ColorToken.PrimaryHover => palette.PrimaryHover,
+            G9ColorToken.PrimaryPressed => palette.PrimaryPressed,
+            G9ColorToken.Secondary => palette.Secondary,
+            G9ColorToken.OnSecondary => palette.OnSecondary,
+            G9ColorToken.SecondaryContainer => palette.SecondaryContainer,
+            G9ColorToken.OnSecondaryContainer => palette.OnSecondaryContainer,
+            G9ColorToken.SecondaryBorder => palette.SecondaryBorder,
+            G9ColorToken.Tertiary => palette.Tertiary,
+            G9ColorToken.OnTertiary => palette.OnTertiary,
+            G9ColorToken.TertiaryContainer => palette.TertiaryContainer,
+            G9ColorToken.OnTertiaryContainer => palette.OnTertiaryContainer,
+            G9ColorToken.TertiaryBorder => palette.TertiaryBorder,
+            G9ColorToken.Quaternary => palette.Quaternary,
+            G9ColorToken.OnQuaternary => palette.OnQuaternary,
+            G9ColorToken.QuaternaryContainer => palette.QuaternaryContainer,
+            G9ColorToken.OnQuaternaryContainer => palette.OnQuaternaryContainer,
+            G9ColorToken.QuaternaryBorder => palette.QuaternaryBorder,
+            G9ColorToken.Error => palette.Error,
+            G9ColorToken.OnError => palette.OnError,
+            G9ColorToken.ErrorContainer => palette.ErrorContainer,
+            G9ColorToken.OnErrorContainer => palette.OnErrorContainer,
+            G9ColorToken.ErrorBorder => palette.ErrorBorder,
+            G9ColorToken.Warning => palette.Warning,
+            G9ColorToken.OnWarning => palette.OnWarning,
+            G9ColorToken.WarningContainer => palette.WarningContainer,
+            G9ColorToken.OnWarningContainer => palette.OnWarningContainer,
+            G9ColorToken.WarningBorder => palette.WarningBorder,
+            G9ColorToken.Success => palette.Success,
+            G9ColorToken.OnSuccess => palette.OnSuccess,
+            G9ColorToken.SuccessContainer => palette.SuccessContainer,
+            G9ColorToken.OnSuccessContainer => palette.OnSuccessContainer,
+            G9ColorToken.SuccessBorder => palette.SuccessBorder,
+            G9ColorToken.Info => palette.Info,
+            G9ColorToken.OnInfo => palette.OnInfo,
+            G9ColorToken.InfoContainer => palette.InfoContainer,
+            G9ColorToken.OnInfoContainer => palette.OnInfoContainer,
+            G9ColorToken.InfoBorder => palette.InfoBorder,
+            G9ColorToken.Outline => palette.Outline,
+            G9ColorToken.OutlineVariant => palette.OutlineVariant,
+            G9ColorToken.OutlineBorder => palette.OutlineBorder,
+            G9ColorToken.Background => palette.Background,
+            G9ColorToken.OnBackground => palette.OnBackground,
+            G9ColorToken.BackgroundSecondary => palette.BackgroundSecondary,
+            G9ColorToken.Surface => palette.Surface,
+            G9ColorToken.OnSurface => palette.OnSurface,
+            G9ColorToken.SurfaceVariant => palette.SurfaceVariant,
+            G9ColorToken.OnSurfaceVariant => palette.OnSurfaceVariant,
+            G9ColorToken.SurfaceBorder => palette.SurfaceBorder,
+            G9ColorToken.InverseSurface => palette.InverseSurface,
+            G9ColorToken.InverseOnSurface => palette.InverseOnSurface,
+            G9ColorToken.InversePrimary => palette.InversePrimary,
+            G9ColorToken.SurfaceContainerHighest => palette.SurfaceContainerHighest,
+            G9ColorToken.SurfaceContainerHigh => palette.SurfaceContainerHigh,
+            G9ColorToken.SurfaceContainer => palette.SurfaceContainer,
+            G9ColorToken.SurfaceContainerLow => palette.SurfaceContainerLow,
+            G9ColorToken.SurfaceContainerLowest => palette.SurfaceContainerLowest,
+            G9ColorToken.SurfaceBright => palette.SurfaceBright,
+            G9ColorToken.SurfaceDim => palette.SurfaceDim,
+            G9ColorToken.Scrim => palette.Scrim,
+            G9ColorToken.ScrimLight => palette.ScrimLight,
+            G9ColorToken.Overlay => palette.Overlay,
+            G9ColorToken.OverlayLight => palette.OverlayLight,
+            G9ColorToken.TextPrimary => palette.TextPrimary,
+            G9ColorToken.TextSecondary => palette.TextSecondary,
+            G9ColorToken.TextTertiary => palette.TextTertiary,
+            G9ColorToken.TextDisabled => palette.TextDisabled,
+            G9ColorToken.White => palette.White,
+            G9ColorToken.Black => palette.Black,
+            G9ColorToken.Light => palette.Light,
+            G9ColorToken.Dark => palette.Dark,
+            G9ColorToken.Divider => palette.Divider,
+            G9ColorToken.DividerStrong => palette.DividerStrong,
+            G9ColorToken.Focus => palette.Focus,
+            G9ColorToken.FocusVisible => palette.FocusVisible,
+            G9ColorToken.Disabled => palette.Disabled,
+            G9ColorToken.DisabledContainer => palette.DisabledContainer,
+            G9ColorToken.CardBackground => palette.CardBackground,
+            G9ColorToken.CardBorder => palette.CardBorder,
+            G9ColorToken.CardElevated => palette.CardElevated,
+            G9ColorToken.Default => palette.Default,
+            G9ColorToken.OnDefault => palette.OnDefault,
+            G9ColorToken.DefaultContainer => palette.DefaultContainer,
+            G9ColorToken.OnDefaultContainer => palette.OnDefaultContainer,
+            G9ColorToken.DefaultBorder => palette.DefaultBorder,
+            G9ColorToken.DefaultHover => palette.DefaultHover,
+            G9ColorToken.DefaultPressed => palette.DefaultPressed,
+            G9ColorToken.InputBackground => palette.InputBackground,
+            G9ColorToken.InputBorder => palette.InputBorder,
+            G9ColorToken.InputBorderFocused => palette.InputBorderFocused,
+            G9ColorToken.InputPlaceholder => palette.InputPlaceholder,
+            _ => null
+        };
+
+        // Null before the first G9Theme.Init() / Apply() — the palette fields start unset.
+        return color ?? Colors.Magenta;
     }
 }
 
@@ -123,11 +223,28 @@ public static class G9PaletteSubscriptions
     private static readonly List<Subscription> _subs = new();
     private static bool _attachedToPalette;
 
+    // Dead entries are swept when the list reaches this size; see Register.
+    private const int MinimumSweepThreshold = 256;
+    private static int _sweepThreshold = MinimumSweepThreshold;
+
     public static void Register(BindableObject target, BindableProperty property, G9ColorToken key, double? alpha)
     {
         lock (_lock)
         {
             EnsureAttached();
+
+            // Amortised sweep. Dead WeakReferences used to be pruned only while a palette event was being
+            // fanned out — i.e. on a theme switch, which most sessions never perform — while every
+            // {G9Color} on every page, sheet and list row ever inflated appended another entry. The list
+            // grew for the life of the process. Sweeping when it reaches a threshold, and then moving the
+            // threshold to twice what survived, bounds it at ~2x the live count for O(1) amortised cost
+            // per registration.
+            if (_subs.Count >= _sweepThreshold)
+            {
+                _subs.RemoveAll(static s => !s.TargetRef.TryGetTarget(out _));
+                _sweepThreshold = Math.Max(MinimumSweepThreshold, _subs.Count * 2);
+            }
+
             _subs.Add(new Subscription(new WeakReference<BindableObject>(target), property, key, alpha));
         }
     }
@@ -144,6 +261,17 @@ public static class G9PaletteSubscriptions
         // Empty / null name = "all properties changed" (the batch flush emits this).
         // Targeted name fires too if a single G9Palette property changes outside
         // the batch — we still re-push for that key.
+        //
+        // The name is resolved to a token ONCE per event. It used to be compared against
+        // `sub.Key.ToString()` inside the loop — an enum-to-string conversion per entry per event.
+        var allChanged = string.IsNullOrEmpty(e.PropertyName);
+        var changedToken = default(G9ColorToken);
+        if (!allChanged && !Enum.TryParse(e.PropertyName, out changedToken))
+        {
+            // Not a colour token, so no subscription can be affected.
+            return;
+        }
+
         Subscription[] snapshot;
         lock (_lock)
         {
@@ -161,8 +289,7 @@ public static class G9PaletteSubscriptions
 
             // For empty / null property name, push every key. For a targeted change,
             // only push if it matches.
-            if (!string.IsNullOrEmpty(e.PropertyName)
-                && !string.Equals(e.PropertyName, sub.Key.ToString(), StringComparison.Ordinal))
+            if (!allChanged && sub.Key != changedToken)
             {
                 continue;
             }

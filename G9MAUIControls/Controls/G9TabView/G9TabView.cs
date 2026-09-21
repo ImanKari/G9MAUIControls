@@ -334,6 +334,100 @@ public partial class G9TabView : G9ControlBase
         // be reset to 0 for the Underlined default. Call the helper directly so the
         // spacer matches the resolved style on first render.
         ApplyBarToContentSpacer();
+
+        // Items is normally the control's own collection, but a consumer may bind a collection that
+        // outlives the page; the CollectionChanged / VisualChanged subscriptions are therefore held
+        // only while the control is in the live tree, and re-synced on the way back in.
+        Loaded += OnTabViewLoaded;
+        Unloaded += OnTabViewUnloaded;
+    }
+
+    private void OnTabViewLoaded(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(_attachedItems, Items)) return;
+
+        AttachItems();
+
+        // Whatever happened while we were detached was not heard. A full rebuild blanks the realized
+        // tab content, so it is reserved for the case that needs it - the item list itself changed;
+        // otherwise the existing cells are refreshed in place (text / badge / icon edits).
+        var items = Items;
+        var unchanged = items is not null
+                        && items.Count == _cells.Count
+                        && _cells.All(c => c is not null
+                                           && c.LogicalIndex >= 0
+                                           && c.LogicalIndex < items.Count
+                                           && ReferenceEquals(items[c.LogicalIndex], c.Item));
+        if (!unchanged)
+        {
+            RebuildAll();
+            return;
+        }
+
+        foreach (var cell in _cells) UpdateCellContent(cell);
+        ApplyTabStyles();
+    }
+
+    private void OnTabViewUnloaded(object? sender, EventArgs e) => DetachItems();
+
+    /// <inheritdoc />
+    protected override void OnBindingContextChanged()
+    {
+        base.OnBindingContextChanged();
+        PropagateBindingContext(Items);
+    }
+
+    /// <summary>
+    ///     A <see cref="G9TabItem" /> is a <see cref="BindableObject" /> but not an
+    ///     <see cref="Element" />: it is never parented, so it never inherited a BindingContext and
+    ///     <c>BadgeCount="{Binding Unread}"</c> on a tab silently never resolved. Handed down by
+    ///     hand - as an INHERITED context, so an item that sets its own keeps it.
+    /// </summary>
+    private void PropagateBindingContext(System.Collections.IEnumerable? items)
+    {
+        if (items is null) return;
+
+        var context = BindingContext;
+        foreach (var entry in items)
+        {
+            if (entry is G9TabItem item) SetInheritedBindingContext(item, context);
+        }
+    }
+
+    /// <summary>Direction the cells were last laid out for; see <see cref="OnCultureChangedHook" />.</summary>
+    private bool? _builtForRtl;
+
+    /// <summary>True while a collection-driven rebuild is queued on the dispatcher.</summary>
+    private bool _rebuildQueued;
+
+    /// <inheritdoc />
+    protected override void OnCultureChangedHook()
+    {
+        // Cell ORDER is decided inside RebuildAll (reversed under RTL, because the bar itself is
+        // locked to LeftToRight). Nothing re-ran it on a runtime language switch, so the tabs kept
+        // the previous language's order until the page was recreated.
+        if (_builtForRtl.HasValue && _builtForRtl.Value != G9Culture.IsRtl)
+        {
+            RebuildAll();
+        }
+
+        base.OnCultureChangedHook();
+    }
+
+    /// <summary>
+    ///     Coalesces collection-driven rebuilds: filling Items with N <c>Add</c> calls used to run N
+    ///     full rebuilds (O(n^2) cell constructions). One dispatcher tick now serves the whole burst.
+    /// </summary>
+    private void ScheduleRebuild()
+    {
+        if (_rebuildQueued) return;
+        _rebuildQueued = true;
+
+        Dispatcher.Dispatch(() =>
+        {
+            _rebuildQueued = false;
+            RebuildAll();
+        });
     }
 
     private const double TabFadeWidth = 24;
@@ -469,6 +563,12 @@ public partial class G9TabView : G9ControlBase
 
     private void OnItemsChanged()
     {
+        AttachItems();
+        RebuildAll();
+    }
+
+    private void AttachItems()
+    {
         DetachItems();
         _attachedItems = Items;
         if (_attachedItems is not null)
@@ -480,7 +580,7 @@ public partial class G9TabView : G9ControlBase
             }
         }
 
-        RebuildAll();
+        PropagateBindingContext(_attachedItems);
     }
 
     private void DetachItems()
@@ -495,7 +595,8 @@ public partial class G9TabView : G9ControlBase
     {
         if (e.OldItems is not null) foreach (G9TabItem item in e.OldItems) item.VisualChanged -= OnItemVisualChanged;
         if (e.NewItems is not null) foreach (G9TabItem item in e.NewItems) item.VisualChanged += OnItemVisualChanged;
-        RebuildAll();
+        PropagateBindingContext(e.NewItems);
+        ScheduleRebuild();
     }
 
     /// <summary>
@@ -856,6 +957,7 @@ public partial class G9TabView : G9ControlBase
         // directions because they sit between consecutive PHYSICAL columns, which
         // already match the visual order after the reverse.
         var isRtl = G9Culture.IsRtl;
+        _builtForRtl = isRtl;
         var orderedItems = isRtl
             ? items.Select((it, i) => (it, i)).Reverse().ToList()
             : items.Select((it, i) => (it, i)).ToList();
@@ -1547,19 +1649,31 @@ public partial class G9TabView : G9ControlBase
         public bool IsLeading { get; set; }
         public Color BaseColor { get; set; } = Colors.White;
 
+        // The paint depends only on (IsLeading, BaseColor) - the points are relative - so it is
+        // rebuilt when one of those moves, not on every draw (G9Controls.md section 11).
+        private LinearGradientPaint? _paint;
+        private bool _paintIsLeading;
+        private Color? _paintColor;
+
         public void Draw(ICanvas canvas, RectF dirtyRect)
         {
-            var gradient = new LinearGradientPaint
+            if (_paint is null || _paintIsLeading != IsLeading || !Equals(_paintColor, BaseColor))
             {
-                StartPoint = IsLeading ? new Point(0, 0) : new Point(1, 0),
-                EndPoint = IsLeading ? new Point(1, 0) : new Point(0, 0),
-                GradientStops =
-                [
-                    new PaintGradientStop(0f, BaseColor),
-                    new PaintGradientStop(1f, BaseColor.WithAlpha(0))
-                ]
-            };
-            canvas.SetFillPaint(gradient, dirtyRect);
+                _paintIsLeading = IsLeading;
+                _paintColor = BaseColor;
+                _paint = new LinearGradientPaint
+                {
+                    StartPoint = IsLeading ? new Point(0, 0) : new Point(1, 0),
+                    EndPoint = IsLeading ? new Point(1, 0) : new Point(0, 0),
+                    GradientStops =
+                    [
+                        new PaintGradientStop(0f, BaseColor),
+                        new PaintGradientStop(1f, BaseColor.WithAlpha(0))
+                    ]
+                };
+            }
+
+            canvas.SetFillPaint(_paint, dirtyRect);
             canvas.FillRectangle(dirtyRect);
         }
     }

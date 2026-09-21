@@ -58,6 +58,13 @@ public partial class G9NavCard : G9ControlBase
     private readonly ContentView _customTrailingHost;
     private readonly HorizontalStackLayout _trailingRow;
 
+    // Stable paint state (G9Controls.md §12): one stroke brush whose Color is mutated, and icon /
+    // chevron views that are rebuilt only when WHAT they show changes — not on every apply pass,
+    // which re-decoded the row's bitmap icon on each theme flip and property write.
+    private readonly SolidColorBrush _strokeBrush = new(Colors.Transparent);
+    private G9IconSlotSignature _iconSignature;
+    private G9IconSlotSignature _chevronSignature;
+
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _title;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _subtitle;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private Color? _accentColor;
@@ -110,7 +117,7 @@ public partial class G9NavCard : G9ControlBase
     ///     RTL mode, so a value like <c>"99+"</c> renders as <c>"+99"</c>. Set false to keep
     ///     the badge text in its literal left-to-right order regardless of culture.
     /// </summary>
-    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _mirrorBadgeTextInRtl = true;
+    [AutoBindable(DefaultValue = "true", OnChanged = nameof(OnVisualChanged))] private bool _mirrorBadgeTextInRtl = true;
 
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private View? _trailingView;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _isDestructive;
@@ -240,6 +247,7 @@ public partial class G9NavCard : G9ControlBase
             Padding = new Thickness(G9Metrics.NavCardPaddingX, G9Metrics.NavCardPaddingY),
             StrokeThickness = 1,
             StrokeShape = G9Colors.Round(G9Metrics.RadiusLg),
+            Stroke = _strokeBrush,
             Content = _row
         };
 
@@ -290,11 +298,16 @@ public partial class G9NavCard : G9ControlBase
         var palette = G9Palette.Current;
         var accent = AccentColor ?? palette.Primary;
         if (_frame.BackgroundColor != ResolveCardBackground(palette)) _frame.BackgroundColor = ResolveCardBackground(palette);
-        _frame.Stroke = new SolidColorBrush(palette.OutlineVariant);
+        ApplyStroke(palette);
         _iconBadge.BackgroundColor = G9ColorHelper.Mix(accent, palette.Surface, 0.82);
         if (_iconHost.Content is G9IconView icon)
         {
             if (icon.Color != accent) icon.Color = accent;
+        }
+        // The chevron is no longer rebuilt per apply pass, so it has to follow the palette here.
+        if (_chevronHost.Content is G9IconView chevron && chevron.Color != palette.TextTertiary)
+        {
+            chevron.Color = palette.TextTertiary;
         }
         _titleLabel.TextColor = IsDestructive ? palette.Error : palette.TextPrimary;
         _subtitleLabel.TextColor = palette.TextTertiary;
@@ -310,10 +323,11 @@ public partial class G9NavCard : G9ControlBase
 
         Opacity = IsEnabled ? 1 : 0.45;
         _frame.BackgroundColor = ResolveCardBackground(palette);
-        _frame.Stroke = new SolidColorBrush(palette.OutlineVariant);
+        ApplyStroke(palette);
 
         _iconBadge.BackgroundColor = G9ColorHelper.Mix(accent, palette.Surface, 0.82);
-        _iconHost.Content = G9IconFactory.Create(
+        G9IconSlot.Apply(
+            _iconHost, ref _iconSignature,
             IconEmoji, Icon, IconPath, IconSource,
             accent, string.IsNullOrWhiteSpace(IconEmoji) ? 18 : 22);
 
@@ -345,7 +359,6 @@ public partial class G9NavCard : G9ControlBase
             {
                 _valueLabel.Text = string.Empty;
                 _valueLabel.IsVisible = false;
-                _chevronHost.Content = null;
                 _chevronHost.IsVisible = false;
                 _comingSoonBadge.IsVisible = true;
             }
@@ -359,18 +372,48 @@ public partial class G9NavCard : G9ControlBase
 
                 if (ShowChevron)
                 {
+                    // Hidden rather than torn down when not shown; rebuilt only when the glyph
+                    // itself flips (a culture change), otherwise just re-tinted.
                     var icon = G9Visuals.IsRtl ? G9Glyphs.ChevronBack : G9Glyphs.ChevronForward;
-                    _chevronHost.Content = G9IconFactory.Create(
+                    G9IconSlot.Apply(
+                        _chevronHost, ref _chevronSignature,
                         null, icon, null, null, palette.TextTertiary, G9Metrics.NavCardChevronSize);
                     _chevronHost.IsVisible = true;
                 }
                 else
                 {
-                    _chevronHost.Content = null;
                     _chevronHost.IsVisible = false;
                 }
             }
         }
+
+        ApplyAccessibility();
+    }
+
+    private void ApplyStroke(G9Palette palette)
+    {
+        if (!Equals(_strokeBrush.Color, palette.OutlineVariant)) _strokeBrush.Color = palette.OutlineVariant;
+    }
+
+    /// <summary>
+    ///     The row is one tap target, so it is announced as one thing: "title, subtitle" as the
+    ///     name and the trailing value (or the coming-soon badge) as its state. Every part is the
+    ///     card's own already-localized text.
+    /// </summary>
+    private void ApplyAccessibility()
+    {
+        if (TrailingView is not null)
+        {
+            // A custom trailing view is usually interactive in its own right (a switch, a chip).
+            // Naming the whole row would turn it into a single accessibility element on iOS and
+            // hide that inner control from VoiceOver, so such rows keep their default tree.
+            ApplySemantics(null);
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(Subtitle) ? Title : $"{Title}, {Subtitle}";
+        var state = IsComingSoon ? _comingSoonLabel.Text : ValueText;
+        ApplySemantics(name, state);
     }
 
     private void ApplyComingSoonBadge(G9Palette palette)
@@ -400,26 +443,27 @@ public partial class G9NavCard : G9ControlBase
             mirrorTextInRtl: MirrorBadgeTextInRtl);
     }
 
-    private async void OnTapped(object? sender, TappedEventArgs e)
+    private void OnTapped(object? sender, TappedEventArgs e)
     {
         if (!IsEnabled) return;
         if (IsComingSoon) return;
 
-        try
-        {
-            await this.ScaleToAsync(0.985, 70, Easing.CubicIn).ConfigureAwait(true);
-            await this.ScaleToAsync(1, 120, Easing.CubicOut).ConfigureAwait(true);
-        }
-        catch
-        {
-        }
+        // Act first, animate afterwards. This handler used to await the 190 ms press animation
+        // and only then raise Tapped / run the command — from an async void with no guard, so
+        // every navigation felt late, a double tap navigated twice, and a throwing command
+        // crashed the app. G9Press owns all three concerns.
+        G9Press.Invoke(
+            this,
+            () => Tapped?.Invoke(this, EventArgs.Empty),
+            Command,
+            CommandParameter,
+            PlayPressFeedbackAsync);
+    }
 
-        Tapped?.Invoke(this, EventArgs.Empty);
-
-        if (Command?.CanExecute(CommandParameter) == true)
-        {
-            Command.Execute(CommandParameter);
-        }
+    private async Task PlayPressFeedbackAsync()
+    {
+        await this.ScaleToAsync(0.985, 70, Easing.CubicIn).ConfigureAwait(true);
+        await this.ScaleToAsync(1, 120, Easing.CubicOut).ConfigureAwait(true);
     }
 
     private async void OnPointerEntered(object? sender, PointerEventArgs e)
