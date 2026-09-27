@@ -11,11 +11,122 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-09-21**
+Last updated: **2026-09-27**
 
 > **This list is not complete.** It jumps 1.0.3 → 1.0.13; 1.0.4 through 1.0.12 shipped without an entry
 > here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
 > drifted — read it, not this heading list, when you need to know what a version contained.
+
+## 1.2.0 — dictation without a keyboard, neutral filled fields, sheets and toasts that follow their host, a check box (2026-09-27)
+
+> **Compile-verified only; nothing here has been run on a device or published.** Seven app-reported
+> items (Jira ITCS-15661, -15666, -15664, -15525, -15663, -15685, -15686), all fixed in the library
+> rather than around it in the app. Decision records: ADR-0024 … ADR-0028. Lessons: LES-0047 (BS-20),
+> LES-0048, LES-0049, LES-0050.
+>
+> **The 2026-09-27 additions (ITCS-15685, ITCS-15686) have NOT been compiled yet** — they were written
+> while another build held the tree. Build all four TFMs, run the tests and the trimmed Gallery publish
+> before treating them as part of the verified set below.
+
+### What changed
+
+- **The microphone no longer opens the keyboard** (`G9TextEntry`, `G9SearchEntry`, `G9Editor`, and the
+  popup form fields built on them). A mic tap does not focus; starting dictation while typing takes the
+  keyboard down (`G9KeyboardHelper.DismissKeyboardIfFocused`, internal); focusing the field during a
+  session ends it. `G9OutlinedFieldBase.OnBoxTapped` now ignores a tap that lands on an actionable icon
+  slot, so the box's tap-to-focus cannot fire for an icon tap on platforms that deliver it to both.
+- **Filled fields can rest neutral.** New `G9OutlinedFieldSettings` + `G9OutlinedFieldBase.Configure` /
+  `.Settings`, and per field `FilledValueHighlight` (`G9FilledValueHighlight`). Default unchanged.
+  Gallery → Inputs has a new "Filled value: accent vs neutral" section.
+- **Full-screen sheets follow the host page's height** — BS-20 closed. Every element the helper sized
+  at open is re-sized on the host page's `SizeChanged`; `IG9BottomSheetSizedView` bodies are told too.
+- **Resting (collapsed / fit-to-content) sheets are capped to the host** minus the top safe-area inset
+  (`G9SheetView.RestingTopReserve`, `ResolveCollapsedRestingHeight`), so the body shrinks with the keyboard
+  and the header stays on screen.
+- **Live toasts and the progress overlay can be re-anchored**: `G9ToastHelper.RefreshBottomInsetsAsync`,
+  `G9ProgressOverlayHelper.RefreshBottomInsetAsync`.
+- **Found by the trimmed Gallery publish, not by any build: a 1.1.0 IL2091** in `G9PageHostStack<THost>`
+  (the IN-04 host stack). Fixed with the `PublicParameterlessConstructor` annotation — LES-0049.
+- **An editor's microphone / trailing icon sits in the bottom-END corner in every configuration**
+  (ITCS-15685, LES-0050). It was mid-box whenever `MaxEditorHeight` was set: the trailing host's ripple
+  `GraphicsView` grew to the at-most constraint the ceiling introduces, so `VerticalOptions = End` had
+  no slack to act in. `G9Editor` now gives the host an explicit height
+  (`G9Metrics.EditorTrailingSlotHeight` = 36, new `EditorTrailingIconBottomInset` = 8) instead of a
+  bottom margin. Gallery → Inputs → G9Editor has the observation-form and tester-form configurations
+  side by side.
+- **A fit-to-content sheet no longer keeps the keyboard's height after the keyboard closes**
+  (ITCS-15525 reopen, LES-0051). A re-fit that ran with the keyboard up sized the sheet against the
+  shrunken page and stored that as its natural height; fit caps now use a keyboard-proof reference
+  (`ResolveFitReferenceHeight`: tallest host height at the current width). Reproduced and verified on the
+  Pixel 9 Pro XL emulator (attribute form: collapsed to 454 before, returns to 256 after, over three rounds).
+- **Fit-to-content sheets measure their body fresh** (LES-0052). The fit measure read a stale cached size
+  (a label measured as one line before it wrapped), so footer-less fit sheets rested 25-40dp short — their
+  bottom hung below the screen. `MeasureContentHeight` now invalidates the body's subtree first. Verified
+  on the emulator (measure tool 159.7 → 182.3, point reading 418 → 458).
+- **`G9CheckBox.ReserveTouchTarget`** (default `true`): `false` makes the control exactly the 20dp box for
+  a box inside a row that owns the tap (device review: 48dp slots made list-picker rows ~72dp tall).
+- **New control: `G9CheckBox`** (ITCS-15686, ADR-0028) — M3 square, `Primary` fill, a tick that draws
+  itself in (and back out), tri-state (`IsIndeterminate`), press halo, wrapping label, row-sized 48dp
+  hit target, `CheckedChanged` with the platform's `CheckedChangedEventArgs`, `Toggle()`. New
+  `G9Metrics.CheckBox*` tokens (box / radius alias the existing `SelectionCheck*` ones),
+  `G9Colors.CheckBoxHaloAlpha` / `CheckBoxDisabledOutlineAlpha` / `CheckBoxMark(palette)`, and
+  `G9StringKey.Checked` / `NotChecked` / `PartiallyChecked` (appended — existing values unchanged).
+  The pure timeline / tap rule / tick geometry is `G9CheckBoxMath`, file-linked into the unit tests
+  (`G9CheckBoxMathTests`). Gallery → Inputs → G9CheckBox: every state, bare boxes, a working tri-state
+  "select all", RTL with a wrapped label.
+- **Popup `CheckBox` input fields render `G9CheckBox`** rows instead of `G9Switch` form rows. Values,
+  validation, flow direction unchanged; radio fields still `G9Switch`.
+
+### Verification actually run
+
+Core, ProgressOverlay and Barcode built on all four TFMs (Debug + Release for the core), 0 warnings;
+Gallery built for Android; `G9MAUIControls.Tests` (99) and the Sqlite tests (28) pass; trimmed Release
+publish of the Gallery (`AndroidLinkMode=Full`, `PublishTrimmed=true`) succeeds with no IL diagnostics.
+Not run: any device, `dotnet pack`, the app in source mode.
+
+### CONSUMER-VISIBLE without any app change
+
+- Tapping a microphone no longer shows the keyboard; tapping the field while dictating stops dictation.
+- Full-screen sheets and fit sheets change size with the keyboard (AgriPad: forms in sheets).
+- A trailing clear / eye icon tapped on an unfocused field no longer focuses it on iOS.
+- Every `G9Editor` with `MaxEditorHeight` and a microphone / trailing icon: the icon moves from mid-box
+  to the bottom-end corner, and (expected — see the gap list) the box opens at `MinimumEditorHeight`
+  instead of at its ceiling. AgriPad: the observation form's description field.
+- Every popup `CheckBox` field looks different: check-box rows instead of switch rows.
+
+### Needs the app
+
+- `G9OutlinedFieldBase.Configure(G9OutlinedFieldSettings.Default with { HighlightFilledValue = false })`
+  in the app's startup integration, if the design wants neutral filled fields.
+- Call both refresh methods where the tab bar is hidden / shown.
+- Delete `ProfileChangePasswordContentView`'s host-height following (now done by the library).
+- Move the app's platform `CheckBox` usages to `G9CheckBox`; teach the QA bridge / semantic snapshot
+  the new type (`Toggle()` to actuate, `IsIndeterminate` / `IsChecked` to read); add the three
+  `AppControlsChecked` / `AppControlsNotChecked` / `AppControlsPartiallyChecked` strings to the resx.
+
+### The honest gap — look at, on a device
+
+1. Mic tap on an unfocused field: no keyboard; on a focused field: keyboard goes down, dictation runs;
+   tap the field mid-session: keyboard up, mic back to idle, partial text kept. iOS: the box must not
+   focus on a trailing-icon tap.
+2. Full-screen form sheet (toolbar, toolbar-less, edge-to-edge): open keyboard → footer above it, body
+   scrolls to its end; close keyboard → back to full height. Watch for a one-frame jump.
+3. Fit sheet with a scrolling body and a text field: keyboard up → header visible, body shorter, focused
+   field scrolled into view; keyboard down → original height.
+4. Hide / show the tab bar with toasts stacked and the progress overlay up, and with the bubble minimized.
+5. **Editor trailing slot (ITCS-15685).** Gallery → Inputs → G9Editor, both culture directions: the
+   trailing glyph 8dp above the bottom edge, at the END side, empty / multi-line / scrolled past
+   `MaxEditorHeight`; the observation-form field opens at ~110dp, not at its 230dp ceiling. In the app:
+   the observation form and the tester's new-report form must now look the same. Tap the mic: ripple
+   fills the 40 × 36 slot, no keyboard.
+6. **G9CheckBox (ITCS-15686).** Light and dark: the fill pop + tick draw-in feel like one gesture; a
+   double tap turns the tick around mid-way; the halo appears under the finger on Android (pointer
+   press) and flashes on a platform that reports none; press-and-scroll in a list must not leave a halo
+   behind; label taps toggle; row EDGES toggle (§10b); indeterminate → tap → checked (and the bar bends
+   into the tick); disabled rows ignore taps; RTL: box on the right, tick NOT mirrored, wrapped label's
+   first line level with the box; TalkBack reads "<label>, not checked / checked / partially checked".
+   Dark palette: decide whether the deep-green `OnPrimary` tick is wanted or should be white
+   (`G9Colors.CheckBoxMark`).
 
 ## 1.1.0 — the bottom sheet is staged and measured before it opens, plus the remediation pass (2026-09-21)
 

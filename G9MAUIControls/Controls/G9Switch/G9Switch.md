@@ -6,9 +6,10 @@ mid-flight) during the toggle.
 
 ## When to use
 
-- Boolean on/off toggle (a single setting) -> `G9Switch`.
-- Multi-select list of options (former checkboxes) -> a `G9Switch` per option,
-  with `IsInFormRow="True"`.
+- Boolean on/off toggle (a single setting that takes effect immediately) -> `G9Switch`.
+- Multi-select list of options, "I agree", a select-all with a partial state -> **`G9CheckBox`**
+  (1.2.0, see `../G9CheckBox/G9CheckBox.md`). Before 1.2.0 this row said "a `G9Switch` per option";
+  a column of switches reads as a settings page, not as "pick any of these".
 - Single-select group (former radio buttons) -> a `G9Switch` per option sharing one
   `SelectionGroup` key (mutually exclusive via the selection-group registry); or, for a
   picker-style field, `G9Picker` (see `G9Picker.md`).

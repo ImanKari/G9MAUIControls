@@ -82,6 +82,36 @@ await G9ToastHelper.DismissToastAsync();
 
 When multiple toasts target the same `(Parent, Position)`, they stack with `ToastStackGap` (8 dp) between them. `ReflowToastStackAsync` repositions the stack on every show / dismiss / size change so the stack stays visually clean. Bottom-anchored stacks honor any active `SyncProgressToastView` height so a sync toast sitting at the bottom doesn't get covered by a regular toast that spawns later — the regular toast lifts above the sync overlay and the sync overlay stays anchored.
 
+## Following a Bottom-Inset Change — `RefreshBottomInsetsAsync` (1.2.0)
+
+A toast's position is a `Margin` computed ONCE, at show (`ApplyInlineG9ToastPosition` →
+`ResolveBottomInset`): the page's safe-area insets, plus — for a bottom toast, and only while no bottom
+sheet is open — the tab-bar clearance `BottomSafeAreaWithTabBar − BottomSafeAreaInset`. When the app
+changes `BottomSafeAreaWithTabBar` (its tab bar hides or comes back), toasts already on screen do not
+know. Tell them:
+
+```csharp
+page.BottomSafeAreaWithTabBar = …;                      // the tab bar hid / came back
+await G9ToastHelper.RefreshBottomInsetsAsync();         // animate: true by default
+await G9ProgressOverlayHelper.RefreshBottomInsetAsync(); // the ProgressOverlay package, if used
+```
+
+For every live stacked toast, the compact loading toast and the progress toast:
+
+1. the margin is re-applied for the current insets;
+2. the distance that moved its layout slot is added to its `TranslationY`, so nothing jumps;
+3. the stack's offsets are recomputed (a bottom stack sits on an `IG9BottomAnchoredOverlay` whose
+   margin moved with the same inset);
+4. each toast glides from where it is to its resting offset — **220 ms, `CubicOut`**.
+
+It animates the same property the stack reflow does, so a toast that is entering or restacking is
+retargeted rather than raced. `animate: false` snaps every toast to its final visible position.
+Toasts that are already leaving are left alone. Safe from any thread; a no-op with nothing showing.
+
+**Why a call and not a subscription** (ADR-0027): the "is a sheet open" half of the inset rule is not
+an observable property, so a property subscription could never be the whole mechanism. The code that
+shows or hides the tab bar is the one place that knows the answer changed.
+
 ## Loading API
 
 Three loading variants, each with a clear semantic:
@@ -183,6 +213,7 @@ must not change.
 | Loading scrim fade-in           | 200 ms    | `SinOut`   |
 | Loading scrim fade-out          | 180 ms    | `SinIn`    |
 | Toast stack reflow              | 250 ms    | `SinOut`   |
+| Bottom-inset refresh (glide)    | 220 ms    | `CubicOut` |
 | Sync overlay terminal countdown | 2.2 / 6.5 s | linear   |
 
 ## Host Resolution

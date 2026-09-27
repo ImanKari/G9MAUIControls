@@ -90,6 +90,48 @@ public class G9KeyboardHelper
     }
 
     /// <summary>
+    ///     Takes the soft keyboard down and releases focus — but only when <paramref name="element" />
+    ///     actually holds focus, so a caller can run it unconditionally on a gesture.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Written for the dictation microphone (ADR-0024): starting a session while the user is
+    ///         typing must not leave a keyboard open over the field being dictated into.
+    ///     </para>
+    ///     <para>
+    ///         <see cref="HideKeyboardAndClearFocus" /> does the work on Android and Apple platforms,
+    ///         and does nothing on Windows. MAUI's own <see cref="VisualElement.Unfocus" /> is the
+    ///         fallback for wherever the element is still focused afterwards — it is not the first
+    ///         choice because on Android it only clears focus and leaves hiding the IME to a later
+    ///         pass, which is the frame where a keyboard visibly lingers.
+    ///     </para>
+    /// </remarks>
+    internal static void DismissKeyboardIfFocused(VisualElement element)
+    {
+        if (!element.IsFocused)
+        {
+            return;
+        }
+
+        HideKeyboardAndClearFocus(element);
+
+        if (!element.IsFocused)
+        {
+            return;
+        }
+
+        try
+        {
+            element.Unfocus();
+        }
+        catch
+        {
+            // Best effort, like the helper above: a platform that refuses to drop focus mid-teardown
+            // costs a keyboard that stays up, never a crash on a microphone tap.
+        }
+    }
+
+    /// <summary>
     ///     Temporarily switches Android to pan the focused input above the keyboard.
     ///     Returns an idempotent restore action; call it when the owning sheet/page closes.
     ///     On non-Android platforms the returned action is a no-op.

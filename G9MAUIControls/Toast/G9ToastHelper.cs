@@ -43,6 +43,10 @@ public static class G9ToastHelper
     private const double ToastStackGap = 8;
     private const uint EnterAnimDurationMs = 250;
     private const uint ExitAnimDurationMs = 200;
+
+    // A live toast gliding to a new inset (RefreshBottomInsetsAsync). Shorter than the enter: the toast
+    // is already on screen and only changing position, which should not read as a second arrival.
+    private const uint InsetRefreshDurationMs = 220;
     private const string InlineToastFillAnimationName = "G9ToastHelper.InlineToastFill";
     private const double MobileBottomInsetFallback = 0;
     private const double MobileBottomInsetExtraGap = 8;
@@ -1141,16 +1145,13 @@ public static class G9ToastHelper
             return;
         }
 
-        var bottomAnchored =
-            position is G9ToastPosition.BottomLeft or G9ToastPosition.BottomCenter or G9ToastPosition.BottomRight;
-        var runningDistance = bottomAnchored ? ResolveBottomOverlayStackOffset(parent, handles) : 0d;
+        var offsets = ResolveStackOffsets(parent, position, handles);
         var shiftTasks = new List<Task>(handles.Count);
 
-        foreach (var toast in handles)
+        for (var i = 0; i < handles.Count; i++)
         {
-            var targetOffset = bottomAnchored ? -runningDistance : runningDistance;
-            var toastHeight = ResolveToastHeight(toast);
-            runningDistance += toastHeight + ToastStackGap;
+            var toast = handles[i];
+            var targetOffset = offsets[i];
 
             toast.StackOffset = targetOffset;
 
@@ -1174,6 +1175,188 @@ public static class G9ToastHelper
         {
             await Task.WhenAll(shiftTasks);
         }
+    }
+
+    /// <summary>
+    ///     The resting <c>TranslationY</c> of every toast in one (parent, position) stack, oldest first:
+    ///     each one clears the toasts before it by <see cref="ToastStackGap" />, and a bottom stack
+    ///     starts above any <see cref="IG9BottomAnchoredOverlay" /> anchored there. Pure — shared by the
+    ///     reflow and by <see cref="RefreshBottomInsetsAsync" />, which must agree on where a toast rests.
+    /// </summary>
+    private static double[] ResolveStackOffsets(
+        Layout parent,
+        G9ToastPosition position,
+        IReadOnlyList<G9InlineToastHandle> handles)
+    {
+        var bottomAnchored = IsBottomPosition(position);
+        var runningDistance = bottomAnchored ? ResolveBottomOverlayStackOffset(parent, handles) : 0d;
+        var offsets = new double[handles.Count];
+
+        for (var i = 0; i < handles.Count; i++)
+        {
+            offsets[i] = bottomAnchored ? -runningDistance : runningDistance;
+            runningDistance += ResolveToastHeight(handles[i]) + ToastStackGap;
+        }
+
+        return offsets;
+    }
+
+    private static bool IsBottomPosition(G9ToastPosition position) =>
+        position is G9ToastPosition.BottomLeft or G9ToastPosition.BottomCenter or G9ToastPosition.BottomRight;
+
+    /// <summary>
+    ///     Moves every LIVE toast — the stacked typed toasts, the compact loading toast and the progress
+    ///     toast — to the page's CURRENT insets. Call it after changing
+    ///     <c>G9PageBase.BottomSafeAreaWithTabBar</c> (the tab bar hid or came back), or after anything
+    ///     else that changes where a toast that is already on screen should sit.
+    /// </summary>
+    /// <param name="animate">
+    ///     <c>true</c> (default): each toast glides from where it is to its new position (220 ms,
+    ///     <c>CubicOut</c>). <c>false</c>: each takes its new position on the next layout pass.
+    /// </param>
+    /// <returns>A task that completes when every toast has arrived. Completes at once with no toast up.</returns>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Why toasts do not follow the inset on their own (ITCS-15663, ADR-0027).</b> A toast's
+    ///         position is a MARGIN computed once, at show, from the page's insets and from whether a
+    ///         bottom sheet is open — the tab-bar clearance only applies while no sheet covers the tab
+    ///         bar (<c>ResolveBottomInset</c>). The second input is not observable, so no subscription
+    ///         could track both; the code that hides or shows the tab bar is the one place that knows
+    ///         the answer just changed, and it calls this.
+    ///     </para>
+    ///     <para>
+    ///         <b>How it moves.</b> The margin is re-applied, which moves the toast's layout slot; the
+    ///         same distance is added to its <c>TranslationY</c> so nothing jumps; then the translation
+    ///         glides to the toast's resting offset. That is the property the stack reflow already
+    ///         animates (a stacked toast's resting translation is its <c>StackOffset</c>), so an inset
+    ///         change and a restack compose instead of fighting — and the stack offsets are recomputed
+    ///         in the same pass, because a bottom stack is offset from an
+    ///         <see cref="IG9BottomAnchoredOverlay" /> whose margin moves with the same inset.
+    ///     </para>
+    ///     <para>
+    ///         Safe from any thread, and a no-op when nothing is showing. A toast that is on its way
+    ///         out is left to finish leaving.
+    ///     </para>
+    /// </remarks>
+    public static Task RefreshBottomInsetsAsync(bool animate = true)
+    {
+        if (MainThread.IsMainThread)
+        {
+            return RefreshBottomInsetsCoreAsync(animate);
+        }
+
+        return MainThread.InvokeOnMainThreadAsync(() => RefreshBottomInsetsCoreAsync(animate));
+    }
+
+    private static async Task RefreshBottomInsetsCoreAsync(bool animate)
+    {
+        var moves = new List<Task>();
+
+        // 1. Stacked toasts, one (parent, position) stack at a time. Every margin of a stack is updated
+        //    BEFORE its offsets are resolved: a bottom stack's first offset reads the toasts' new margin.
+        var stacks = _activeToasts
+            .Where(x => !x.IsDismissing && x.Layer.Parent is not null)
+            .GroupBy(x => (x.Parent, x.Position))
+            .ToList();
+
+        foreach (var stack in stacks)
+        {
+            var handles = stack.ToList();
+            var page = ResolvePageFor(stack.Key.Parent);
+            var carries = new double[handles.Count];
+
+            for (var i = 0; i < handles.Count; i++)
+            {
+                carries[i] = ReapplyPosition(handles[i].Layer, page, stack.Key.Position);
+            }
+
+            var offsets = ResolveStackOffsets(stack.Key.Parent, stack.Key.Position, handles);
+            for (var i = 0; i < handles.Count; i++)
+            {
+                handles[i].StackOffset = offsets[i];
+                MoveToRestingOffset(handles[i].Layer, carries[i], offsets[i], animate, moves);
+            }
+        }
+
+        // 2. The single-slot toasts. Both rest at TranslationY 0.
+        if (_activeLoadingToast is { IsDismissing: false } loading && loading.Layer.Parent is not null)
+        {
+            var carry = ReapplyPosition(loading.Layer, ResolvePageFor(loading.Parent), loading.Position);
+            MoveToRestingOffset(loading.Layer, carry, 0, animate, moves);
+        }
+
+        if (_activeProgressToast is { Handle: { IsDismissing: false } progress } && progress.Layer.Parent is not null)
+        {
+            var carry = ReapplyPosition(progress.Layer, ResolvePageFor(progress.Parent), progress.Position);
+            MoveToRestingOffset(progress.Layer, carry, 0, animate, moves);
+        }
+
+        if (moves.Count > 0)
+        {
+            await Task.WhenAll(moves);
+        }
+    }
+
+    /// <summary>
+    ///     Re-applies a toast's margin for the current insets and returns how far (dp, positive = down)
+    ///     its <c>TranslationY</c> must move to keep it exactly where it is on screen this frame.
+    /// </summary>
+    private static double ReapplyPosition(View layer, G9PageBase? page, G9ToastPosition position)
+    {
+        var before = layer.Margin;
+        ApplyInlineG9ToastPosition(layer, page, position);
+        var after = layer.Margin;
+
+        return layer.VerticalOptions.Alignment switch
+        {
+            // A larger bottom margin lifts the slot by the difference; hold the view by moving it down.
+            LayoutAlignment.End => after.Bottom - before.Bottom,
+            // A larger top margin lowers the slot; hold the view by moving it up.
+            LayoutAlignment.Start => before.Top - after.Top,
+            // Centred: the slot moves by half the difference of the two margins.
+            _ => ((after.Bottom - before.Bottom) - (after.Top - before.Top)) / 2
+        };
+    }
+
+    private static void MoveToRestingOffset(View layer, double carry, double restingOffset, bool animate, List<Task> moves)
+    {
+        if (!animate)
+        {
+            // Stop an enter / reflow slide that would otherwise carry on to its OLD target, and land in
+            // the visible resting state — the same end state the reflow's non-animated branch produces.
+            layer.CancelAnimations();
+            layer.TranslationY = restingOffset;
+            layer.Opacity = 1;
+            return;
+        }
+
+        layer.TranslationY += carry;
+        if (Math.Abs(layer.TranslationY - restingOffset) < 0.5)
+        {
+            layer.TranslationY = restingOffset;
+            return;
+        }
+
+        // Committed under the same name as every other slide of this toast, so it supersedes an enter
+        // or a reflow that is still running rather than racing it. An enter's fade is untouched.
+        moves.Add(layer.TranslateToAsync(layer.TranslationX, restingOffset, InsetRefreshDurationMs, Easing.CubicOut));
+    }
+
+    /// <summary>
+    ///     The page a toast layer belongs to — found by walking up from the layer, because a toast can
+    ///     outlive the moment its page was the current host. Falls back to the current host.
+    /// </summary>
+    private static G9PageBase? ResolvePageFor(Layout parent)
+    {
+        for (Element? element = parent; element is not null; element = element.Parent)
+        {
+            if (element is G9PageBase page)
+            {
+                return page;
+            }
+        }
+
+        return G9ModalHostRegistry.TryGetCurrentHost(out var host) ? host.Page : null;
     }
 
     /// <summary>

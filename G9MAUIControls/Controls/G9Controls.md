@@ -77,6 +77,7 @@ Common/Components/G9/
 │       └── TapOutsideKeyboardDismisser.cs # Page-scoped tap-outside-to-dismiss-keyboard for inputs
 ├── G9Button/                          # G9Button + .md guide
 ├── G9CascadePanel/                    # G9CascadePanel (nested drill-down stack) + .md guide
+├── G9CheckBox/                        # G9CheckBox + drawable + dependency-free math + .md guide (1.2.0)
 ├── G9ChipGroup/                       # G9ChipGroup + .md guide
 ├── G9ComboBox/                        # G9ComboBox + .md guide
 ├── G9DateTimePicker/                  # G9DateTimePicker + drum picker + .md guide
@@ -172,7 +173,7 @@ rg -n 'new Shadow\s*[{(]|\.Shadow\s*=' --glob '*.cs' G9MAUIControls
 Every control inherits from one of two shared base classes:
 
 - **`G9ControlBase : ContentView`** — the lightweight base used by feedback / display
-  controls (`G9Button`, `G9CascadePanel`, `G9ChipGroup`, `G9Expander`, `G9IntroCarousel`, `G9NavCard`, `G9PinEntry`,
+  controls (`G9Button`, `G9CascadePanel`, `G9CheckBox`, `G9ChipGroup`, `G9Expander`, `G9IntroCarousel`, `G9NavCard`, `G9PinEntry`,
   `G9ProgressBar`, `G9RangeSlider`, `G9Separator`, `G9Switch`, `G9TabView`).
 - **`G9OutlinedFieldBase : G9ControlBase`** — the input-field base used by every control
   that renders an outlined box with a floating label and optional leading/trailing icons
@@ -219,7 +220,7 @@ Responsibilities:
   constructor or a property-changed callback. Current users: the safe buttons
   (`CanExecuteChanged`), `G9Switch` (group registry), `G9ProgressBar` (indeterminate timer),
   `G9TextEntry` / `G9Editor` (stop dictation), `G9SearchEntry` (pending debounce),
-  `G9RangeSlider` (deferred normalization).
+  `G9RangeSlider` (deferred normalization), `G9CheckBox` (abort animations, drop a held halo).
 - **Accessibility helper.** `ApplySemantics(description, hint)` sets
   `SemanticProperties.Description` / `Hint` for custom-drawn controls. It never overwrites a value
   the consumer set, and skips unchanged writes, so it is safe to call from every apply pass.
@@ -266,11 +267,34 @@ The five input controls share a single outline architecture:
    status-colour states regardless of the flag (`showFocusHalo` in `ApplyOutlineChrome`
    ANDs `ShowFocusHalo` with `IsContentFocused && !HasError && !UseStatusColor`).
 
-   **Filled-valid rest state** is resolved in the shared base. If an outlined field has a
-   value (`HasContentValue` for text/editor controls or `IsValueFloated` for picker-like
-   controls), no error, and no explicit status colour, blur keeps the label and outline
-   on `Primary` but uses the resting stroke thickness and no halo. This keeps completed
-   fields visually active while preserving a clear distinction from actual focus.
+   **Filled-valid rest state** is resolved in the shared base, and since 1.2.0 it is a
+   CHOICE (ADR-0025). If an outlined field has a value (`HasContentValue` for text/editor
+   controls or `IsValueFloated` for picker-like controls), is not focused, has no error and
+   no explicit status colour, it rests in one of two styles:
+
+   - **Accent** (the library default, `G9OutlinedFieldSettings.HighlightFilledValue = true`):
+     the label and outline stay on `Primary`, at the resting stroke thickness and with no
+     halo. Completed fields stay visually active, still distinct from actual focus.
+   - **Neutral** (`HighlightFilledValue = false`, or `FilledValueHighlight="Neutral"` on one
+     field): the outline and trailing icon take the RESTING outline colour
+     (`ResolveRestingOutlineColor`) and the floated label the resting CONTENT colour
+     (`ResolveRestingContentColor` — the empty field's label/placeholder grey, not the
+     hairline). The label still floats and bolds. On a form that opens pre-filled this is
+     what keeps the one focused field the only accented one.
+
+   The app-wide rule is set once, before fields are built, with
+   `G9OutlinedFieldBase.Configure(new G9OutlinedFieldSettings { … })` and read back through
+   `G9OutlinedFieldBase.Settings` (public, for hand-rolled field frames that must match). A
+   field overrides it with `FilledValueHighlight` (`Inherit` / `Accent` / `Neutral`).
+   Live fields are NOT repainted by `Configure`. Focus, error and status colours, the
+   emphasis stroke and the halo are identical in both styles.
+
+   **Icon taps never focus the field.** The box's tap-to-focus recognizer ignores a tap
+   that lands on an ACTIONABLE icon host (`IsTapOnActionableIcon`, by position; a
+   short-window fallback when the platform reports none). Apple platforms deliver a tap to
+   a superview's recognizer as well as the child's, so relying on the child "winning" let a
+   microphone / clear / eye tap also raise the keyboard (ADR-0024). A decorative icon still
+   focuses the field.
 
 2. **A row grid with three columns** — leading icon slot (auto-width), inner content
    (star), trailing icon slot (auto-width). All three live in a 3-column `Grid` whose
@@ -278,6 +302,22 @@ The five input controls share a single outline architecture:
    icon hosts every visual pass based on the resolved physical column from
    `G9FieldSlotLayout` (see §4 below) so a culture flip physically swaps the leading
    and trailing icons across the box.
+
+   **Vertical placement of an icon slot is NOT decided by `VerticalOptions` alone.** Each
+   icon host holds a ripple `GraphicsView` (`Fill`, no size of its own), and an Android
+   `View` with no size measures to the FULL height it is offered under an at-most
+   constraint. While the box is measured unconstrained (a field inside a stack, no ceiling)
+   the ripple asks for 0 and the host hugs its glyph; the moment the box has a
+   `MaximumHeightRequest` (`G9Editor.MaxEditorHeight`) MAUI turns it into an at-most spec,
+   the ripple claims all of it, the host becomes as tall as the box, and its glyph — centred
+   in the host — lands in the vertical middle whatever the host's `VerticalOptions` says.
+   That was ITCS-15685 (LES-0050). A subclass that pins a slot to an edge must therefore
+   also give the host an explicit `HeightRequest`: `G9Editor` pins its trailing slot
+   (`VerticalOptions = End`, `HeightRequest = G9Metrics.EditorTrailingSlotHeight` = 36,
+   the glyph centred → 8dp above the bottom edge) so the microphone / trailing icon sits in
+   the bottom-END corner in every configuration. Single-line fields leave their slots
+   centred and unsized — there the full-height host is harmless (the glyph is centred
+   either way) and is what gives the ripple the full field height.
 
 3. **A floating `Label` overlaid on top of the box.** The label is fully transparent
    in both rest and floated states. It animates between the two via `TranslationX`,
@@ -364,6 +404,7 @@ Anything that draws on a `GraphicsView` lives in its own file:
 | G9RangeSlider | `G9RangeSlider/G9RangeSliderDrawable.cs` |
 | G9ProgressBar | `G9ProgressBar/G9ProgressBarDrawable.cs` |
 | G9Switch | `G9Switch/G9SwitchDrawable.cs` |
+| G9CheckBox | `G9CheckBox/G9CheckBoxDrawable.cs` (paint) + `G9CheckBox/G9CheckBoxMath.cs` (timeline, state rules, tick geometry — dependency-free, unit-tested) |
 | G9DateTimePicker drum overlay | `G9DateTimePicker/G9DrumColumnDrawable.cs` |
 
 The drawable holds plain data (state colors, progress, geometry) and a single `Draw`
@@ -499,7 +540,10 @@ The controls respect `G9Culture.IsRtl` and the parent's `FlowDirection`:
   Fixed by pinning the switch's `GraphicsView` to `LeftToRight` so
   `G9SwitchDrawable.IsRtl` is the single source of direction. Rule of thumb: **a canvas
   either mirrors itself or the drawable mirrors — never both**; and a check / tick is a glyph
-  that must never mirror at all.
+  that must never mirror at all. `G9CheckBox` takes the third option: its canvas is pinned
+  LTR and its drawable does NO direction math (the square and halo are symmetric, the tick
+  must not mirror); direction only decides which side of the label the box sits on, and that
+  is ordinary `FlowDirection` inheritance on the row grid.
 - `G9TabView` locks its bar / scroll view / inner cells host to `LeftToRight` so the
   pill's `TranslationX` and cell `X` are always in physical-pixel coordinates. RTL
   ordering is achieved by reversing the items iteration order when populating cells
@@ -568,6 +612,12 @@ in every case. The full checklist is the design-system rule book (`AiGuides/08-U
 - `G9Button` press uses `ScaleToAsync` (no layout invalidation).
 - `G9Switch` thumb morph uses a single `Animation` that writes `Progress` and calls
   `Invalidate` — no layout passes.
+- `G9CheckBox` runs three named `Animation`s (checked timeline, tick ↔ bar morph, press
+  halo), each writing one float into the drawable and invalidating. Every one starts from
+  the value's CURRENT position with a duration scaled to the distance left, so a second tap
+  turns a half-drawn tick around instead of restarting it. Per-frame delegates are built
+  once; fades go through `ICanvas.Alpha`, the tick is two `DrawLine`s — no per-frame
+  allocation.
 - `G9TabView` slides the active pill via a single `Animation` callback that
   interpolates BOTH `TranslationX` and `WidthRequest` together over 240ms (`CubicOut`).
   Adjacent cells of any width transition cleanly with no "stretch then slide"

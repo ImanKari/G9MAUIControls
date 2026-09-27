@@ -65,6 +65,20 @@ G9ProgressOverlayHelper.CancelRequested += (_, _) => uploader.Cancel();
 Handlers are held strongly; unsubscribe on teardown. A static event is still right here — cancellation has
 to reach code that outlives any one page.
 
+**When the bottom inset changes under a live overlay** — your tab bar hides or comes back, i.e. you changed
+`G9PageBase.BottomSafeAreaWithTabBar` — tell it, together with the core's toasts (the two converge in
+either order):
+
+```csharp
+await Task.WhenAll(
+    G9ProgressOverlayHelper.RefreshBottomInsetAsync(),   // animate: true — glides 220 ms, CubicOut
+    G9ToastHelper.RefreshBottomInsetsAsync());
+```
+
+The overlay's position is computed at mount from the page's insets AND from whether a bottom sheet is
+open; the second is not observable, which is why this is a call rather than a subscription. A minimized
+bubble keeps the spot the user dragged it to. No-op when nothing is mounted; safe from any thread.
+
 **There is deliberately no options object.** Configuration is the context text plus the position; retry is
 supplied per failure; the terminal dwell times are fixed (a shared overlay whose dwell changed per caller
 would flicker between concurrent operations); minimize is always available while running. An earlier draft

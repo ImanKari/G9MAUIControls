@@ -1,3 +1,4 @@
+using G9MAUIControls.Helpers;
 using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
 using Maui.BindableProperty.Generator.Core;
@@ -289,12 +290,24 @@ public partial class G9TextEntry : G9OutlinedFieldBase
             return;
         }
 
-        // Focus is handed to the inner Entry on a mic tap so the user can simply keep typing if
-        // they change their mind — no second tap on the field. Mirrors the system search bars,
-        // where one gesture both activates the field and starts listening.
+        // ⛔ A microphone tap does NOT focus the field (ITCS-15661, ADR-0024). It used to call
+        // _entry.Focus() first "so the user can keep typing if they change their mind" — and focusing
+        // an Entry is exactly what raises the soft keyboard, so every dictation began with a keyboard
+        // sliding up over the form the user was about to SPEAK into, covering the text being dictated.
+        // Dictation never needed focus: the session writes through Text (G9VoiceDictation → writeText),
+        // and OnTextChanged mirrors that into the platform Entry whether or not it is focused.
+        //
+        // Starting a session while the keyboard is ALREADY up (the user was typing, then reached for
+        // the mic) takes it down as well — a keyboard left open over a field being dictated into is the
+        // same defect by another route. Stopping leaves focus alone. Changing one's mind is still one
+        // gesture: tapping the field focuses it, which ends the session (OnInnerFocusChanged).
         if (ShouldShowVoiceMic())
         {
-            try { _entry.Focus(); } catch { /* ignore */ }
+            if (!IsListening)
+            {
+                G9KeyboardHelper.DismissKeyboardIfFocused(_entry);
+            }
+
             _ = ToggleVoiceAsync();
             return;
         }
@@ -464,6 +477,17 @@ public partial class G9TextEntry : G9OutlinedFieldBase
         // an externally-set HasError / ErrorText keeps its error across focus changes
         // (the "focus/unfocus wipes the error" bug). Email / URL / Custom fields still
         // validate on blur so the user sees the message as soon as they tab away.
+        //
+        // Focus arriving WHILE a dictation session runs means the user chose to type instead: the
+        // microphone no longer takes focus (ADR-0024), so the only way the field gains it mid-session
+        // is a tap on the field itself. End the session there — its partial transcript is already in
+        // Text, so nothing is lost, and a recognizer still appending under the user's keystrokes would
+        // write over what they type.
+        if (e.IsFocused && IsListening)
+        {
+            StopDictation();
+        }
+
         HandleInnerFocusChanged(e.IsFocused, () => _entry?.IsFocused == true);
     }
 

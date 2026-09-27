@@ -250,6 +250,52 @@ public static class G9ProgressOverlayHelper
         }
     }
 
+    /// <summary>
+    ///     Moves a LIVE overlay to the page's current bottom inset — call it after changing
+    ///     <c>G9PageBase.BottomSafeAreaWithTabBar</c> (the tab bar hid or came back) or after anything
+    ///     else that changes the bottom clearance of an overlay that is already on screen.
+    /// </summary>
+    /// <param name="animate">
+    ///     <c>true</c> (default): the overlay glides from where it is to its new anchor (220 ms,
+    ///     <c>CubicOut</c>). <c>false</c>: it takes the new anchor on the next layout pass.
+    /// </param>
+    /// <returns>
+    ///     A task that completes when the overlay — and the toast stack sitting on it — has arrived.
+    ///     Completes at once when no overlay is mounted.
+    /// </returns>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Why the overlay does not follow the inset by itself (ADR-0027).</b> Its position is
+    ///         computed once, at mount, from the page's insets AND from whether a bottom sheet is open
+    ///         (a sheet covers the tab bar, so the tab-bar clearance is dropped while one is up). The
+    ///         second input is not an observable property at all, so a subscription would only ever be
+    ///         half the rule; the code that changes the tab bar's visibility is the one place that knows
+    ///         the moment the answer changes. That caller already has a matching
+    ///         <c>G9ToastHelper.RefreshBottomInsetsAsync</c> to call beside this one; the two converge in
+    ///         either order.
+    ///     </para>
+    ///     <para>
+    ///         A minimized bubble keeps the spot the user dragged it to. Safe from any thread.
+    ///     </para>
+    /// </remarks>
+    public static Task RefreshBottomInsetAsync(bool animate = true)
+    {
+        G9ProgressOverlaySession? session;
+        lock (SessionGate)
+        {
+            session = _session is { IsActive: true } ? _session : null;
+        }
+
+        if (session is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return MainThread.IsMainThread
+            ? session.RefreshBottomInsetAsync(animate)
+            : MainThread.InvokeOnMainThreadAsync(() => session.RefreshBottomInsetAsync(animate));
+    }
+
     private static async Task<bool> TryUseActiveSessionAsync(Func<G9ProgressOverlaySession, Task> action)
     {
         G9ProgressOverlaySession? session;
@@ -542,6 +588,49 @@ internal sealed class G9ProgressOverlaySession
         _parent.Add(_view);
         await G9ToastHelper.ReflowInlineToastsForHostAsync(_parent).ConfigureAwait(true);
         await _view.AnimateAppearingAsync(_position).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    ///     Re-applies the anchor for the page's CURRENT bottom inset and carries the difference as a
+    ///     translation. See <see cref="G9ProgressOverlayHelper.RefreshBottomInsetAsync" />. Main thread.
+    /// </summary>
+    internal async Task RefreshBottomInsetAsync(bool animate)
+    {
+        lock (_gate)
+        {
+            if (_isTornDown)
+            {
+                return;
+            }
+        }
+
+        // Not mounted yet: MountAsync reads the inset fresh when it mounts, so there is nothing stale.
+        if (!ReferenceEquals(_view.Parent, _parent))
+        {
+            return;
+        }
+
+        var before = _view.Margin;
+        G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _position);
+        var after = _view.Margin;
+
+        // Bottom-anchored: a larger bottom margin moves the slot UP by the difference, so the view is
+        // held in place by translating DOWN by it. Top-anchored: the mirror image on the top margin.
+        var carry = _position == G9ProgressOverlayPosition.Top
+            ? before.Top - after.Top
+            : after.Bottom - before.Bottom;
+
+        if (Math.Abs(carry) < 0.5)
+        {
+            return;
+        }
+
+        // The toast stack above this overlay is offset from its bottom MARGIN (IG9BottomAnchoredOverlay),
+        // which just changed — re-lay the stack out in the same beat, or a toast is left floating at the
+        // old gap until the next unrelated show / dismiss.
+        var reflow = G9ToastHelper.ReflowInlineToastsForHostAsync(_parent, animate);
+        await _view.CarryAnchorShiftAsync(carry, animate).ConfigureAwait(true);
+        await reflow.ConfigureAwait(true);
     }
 
     internal G9ProgressOverlayHandle AddLease(string contextText)

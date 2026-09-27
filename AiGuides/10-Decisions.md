@@ -878,3 +878,291 @@ Pixel 9 Pro XL emulator) then showed why it still did not FEEL native:
   for anyone repeating it: the variable REPLACES the SDK's own `major=marksweep-conc`, so that has to be
   restated; and in a Debug fast-deployed build the file is parsed on the device by a reader that treats
   any line containing `=` as a variable — comments included.
+
+---
+
+## ADR-0024 — Dictation never takes focus; a microphone tap puts the keyboard AWAY
+
+**Date:** 2026-09-23 · **Status:** accepted (1.2.0) — compile-verified; **not yet run on a device** · Jira ITCS-15661
+
+### Context
+
+`G9TextEntry.OnTrailingTap` and `G9Editor.OnTrailingTap` called `Focus()` on the inner `Entry` / `Editor`
+before `ToggleVoiceAsync()`, "so the user can keep typing if they change their mind". Focusing a text
+control is precisely what raises the soft keyboard, so every dictation started with a keyboard sliding up
+over the form the user was about to SPEAK into — on an editor, over most of the text being dictated.
+Dictation never needed focus: `G9VoiceDictation` writes through the control's `Text` delegate, and the
+control mirrors `Text` into the platform view whether or not it is focused.
+
+Reading around it found a second route to the same symptom: the field's box carries a wrapper-level tap
+recognizer (tap anywhere → focus), and the icon hosts sit inside the box. Android delivers a touch to the
+innermost consuming view, but on Apple platforms a superview's `UITapGestureRecognizer` also sees touches
+in its subviews, so a trailing-icon tap could ALSO focus the field.
+
+### Decision
+
+1. **A microphone tap never focuses.** When it STARTS a session and the field is focused (the user was
+   typing), the keyboard is dismissed and focus released (`G9KeyboardHelper.DismissKeyboardIfFocused`:
+   `HideKeyboardAndClearFocus`, then MAUI's `Unfocus` where that is a no-op — Windows). Stopping leaves
+   focus alone.
+2. **Focus arriving during a session ends it.** Since the mic no longer focuses, a focus mid-session can
+   only be the user tapping the field — they chose to type. The partial transcript is already in `Text`,
+   and a recognizer still appending under their keystrokes would write over them.
+3. **The box yields to an ACTIONABLE icon, by position.** `OnBoxTapped` hit-tests the tap against a
+   visible, actionable icon host and ignores it there; when the platform cannot report a position it
+   decides one dispatcher turn later, after the icon's recognizer has had its turn (a 400 ms "icon just
+   tapped" window). A decorative icon still focuses the field, as it always did.
+4. `G9PopupHelper`'s voice-enabled form fields are `G9TextEntry` / `G9Editor`, so they inherit the rule.
+   Its own `Focus()` calls are the form's first-field autofocus and first-invalid-field focus, not mic
+   taps, and are unchanged.
+
+### Consequences
+
+- The keyboard does not appear for dictation; dictating into a field the user was typing in takes the
+  keyboard down. Tapping the field is the one-gesture way back to typing, and it stops the recognizer.
+- A clear button or password eye tapped on an UNFOCUSED field no longer brings the keyboard up as a side
+  effect on platforms where both recognizers fired.
+- Android's `TapOutsideKeyboardDismisser` already hides the IME and clears focus on a tap outside the
+  focused `EditText` — which a trailing-icon tap is — before the view's own handler runs. Decision 1 is
+  idempotent with it, and needed where it does not run (a page that never attached the dismisser, iOS
+  without its window recognizer, Windows).
+
+### Rejected
+
+- **Keep the focus, suppress the keyboard** (`ShowSoftInputOnFocus = false` on Android, an empty
+  `InputView` on iOS, `TextBox.PreventKeyboardDisplayOnProgrammaticFocus` on Windows). Three per-platform
+  handler mutations that would have to be undone exactly when the user taps the field to type — the
+  moment that is hardest to tell apart from our own programmatic focus — and each has a known way of
+  leaving the field with no keyboard at all afterwards. It also keeps the caret blinking in a field the
+  user is not typing in. Focus buys dictation nothing, so the defect was the focus itself.
+- **Focus, then dismiss the keyboard straight after.** The keyboard animates up and back down: the
+  flicker is the bug in a different shape.
+- **Leave the session running when the field is focused.** Two writers into one field — the recognizer's
+  append and the user's keystrokes — is the "value with two writers" failure (LES-0043).
+
+---
+
+## ADR-0025 — Filled-value accent is an app-wide setting with a per-field override; the default does not change
+
+**Date:** 2026-09-23 · **Status:** accepted (1.2.0) — compile-verified · Jira ITCS-15666
+
+### Context
+
+`G9OutlinedFieldBase.ResolveStateColor` returned `Primary` for `IsContentFocused || HasFilledValue()`, so
+any field that merely HAS a value — a pre-selected `G9Picker`, every field of an edit form — draws its
+outline, floated label and trailing icon in the focus colour. `G9Controls.md` §3 described that as the
+"filled-valid rest state" on purpose ("keeps completed fields visually active"). The consuming app's
+design now wants the opposite: filled fields at rest look like empty ones, so the one focused field is
+the only accented one.
+
+### Decision
+
+- `G9OutlinedFieldSettings` (a `sealed record` with `Default`, same shape as `G9BottomSheetSettings`),
+  one setting so far: `HighlightFilledValue` (default `true` — today's behaviour). Applied with
+  `G9OutlinedFieldBase.Configure(settings)` at startup; read back through the public
+  `G9OutlinedFieldBase.Settings` so a hand-rolled field frame elsewhere in an app can follow the same rule.
+- Per field: `FilledValueHighlight` (`G9FilledValueHighlight.Inherit` / `Accent` / `Neutral`), default
+  `Inherit`.
+- Neutral means: a filled, UNFOCUSED, no-error, no-status field uses the resting outline colour, its
+  floated label the resting CONTENT colour (the empty field's label / placeholder grey,
+  `ResolveRestingContentColor`), and its trailing icon the resting colour. The label still floats and
+  turns bold. Focus, error and status colours, emphasis stroke and halo logic are untouched.
+
+### Consequences
+
+- No consumer sees a change until it calls `Configure` or sets the property.
+- `Configure` does not repaint live fields (there is no registry of them, and there should not be one for
+  a once-per-process call); it must run before fields are built. Documented on the method.
+- Subclass overrides of the RESTING colours (`G9SearchEntry`'s `InputPlaceholder`) now also apply to the
+  neutral filled state, which is what makes a neutral search box look like its own empty state.
+
+### Rejected
+
+- **Change the default.** A published package whose every consumer's filled fields change colour on a
+  minor bump — for a design preference, not a defect.
+- **Make `ResolveStateColor` protected virtual and let the app subclass.** The app does not own the
+  controls' types (it would need a subclass of every outlined control), and the label colour is resolved
+  in two other places that would have to be kept in step by hand.
+- **A theme token (a `FilledOutline` colour in `G9Palette`).** A token can make the filled state a
+  different colour, not "the same as empty": neutral must follow each control's own resting colours,
+  which differ between controls by design.
+- **Neutral label in the resting OUTLINE colour** (what reusing `stateColor` would give). The outline
+  colour is a hairline tone, too light for text; the label is text and takes the text grey.
+
+---
+
+## ADR-0026 — A sheet follows its host's size: full-screen heights are re-applied, resting heights are capped
+
+**Date:** 2026-09-23 · **Status:** accepted (1.2.0) — compile-verified; **not yet run on a device** · closes BS-20 · Jira ITCS-15664, ITCS-15525
+
+### Context
+
+The consuming app pads its window by the keyboard height while a `KeyboardInsetScope` is open, so the
+host page SHRINKS when the keyboard opens. Two sheet models ignored that:
+
+- **Full-screen sheets** stamped `HeightRequest` / `MinimumHeightRequest` on their root / sizing host /
+  body ONCE at open (`ApplyFullScreenHeight`). `G9SheetView` resized its body with the host, but the
+  content inside kept the old height, so the footer and the bottom of the content's `ScrollView` hung
+  past the container, under the keyboard (BS-20, recorded as "partly" in RSK-0003). The app worked around
+  it in one view (`ProfileChangePasswordContentView`) and only for edge-to-edge sheets.
+- **Resting (collapsed) sheets** — every fit-to-content sheet, and a peek — rest at a FIXED
+  `CollapsedHeight` (a scroller body is given ~75 % of the page at open). `ResolveRestingHeight` kept it
+  and only translated the body, so the body never got shorter (an inner `ScrollView` saw no
+  `SizeChanged` and the app's "scroll the focused field into view" never ran), and a tall keyboard made
+  the translation negative — the header left the top of the screen.
+
+### Decision
+
+1. **Full-screen: every sized element is registered on the sheet and re-sized on the host page's
+   `SizeChanged`.** `ApplyFullScreenHeight(sheet, element, options, isContentHeight)` records a
+   `FullScreenHeightTarget`; the first registration subscribes the CURRENT host page once per sheet and
+   remembers it, so the handler is removed from the page it was added to (`CleanupSheetVisualsNow`, and
+   whenever a sheet's behaviour state is replaced; the handler also detaches itself if it fires for a
+   behaviour that is no longer current). Re-sizing is a plain property write — the page has already
+   changed size, and `G9SheetView` moves its own body in the same layout pass, so an animation here
+   would be a second motion fighting the motion engine. A body implementing `IG9BottomSheetSizedView`
+   is told each new height. Applies to every full-screen preset, edge-to-edge included.
+2. **Resting: the body rests at `min(CollapsedHeight, hostHeight − RestingTopReserve)`.**
+   `G9SheetView.ResolveCollapsedRestingHeight` is used by every place that turns the collapsed detent into
+   geometry — resting position and height, `SetFitHeight`, drag limits, release snap. The helper sets the
+   reserve to the page's top safe-area inset (the display cutout). `CollapsedHeight` itself is not
+   rewritten, so the body grows back when the keyboard closes with nothing re-measured. The existing
+   rule in `ApplyBodyHeightForState` does the moving: a large host change animates the translation and
+   the body takes its new height when the motion completes; the sticky footer is held at the host edge by
+   the bottom pin meanwhile.
+
+### Consequences
+
+- A full-screen form keeps its footer and its scroll range above the keyboard, with no view-side code.
+  The app's `ProfileChangePasswordContentView` host-height workaround becomes redundant.
+- A fit sheet whose content fits above the keyboard just moves up, as before. One that does not is
+  squeezed: a scrolling body scrolls, and its `ScrollView` gets the `SizeChanged` the app waits for. A
+  NON-scrolling measured body is clipped at the bottom while the keyboard is up — the same thing that
+  happens at the 75 % cap, and the authoring rule already says a body that can outgrow the cap must scroll.
+- Per-step host changes (a keyboard inset animated per frame) write the collapsed body height per step,
+  exactly as ratio detents already did for continuous resizes.
+- Residual: a fit pass that runs WHILE the page is shrunk (a tracker or provider event) still computes its
+  cap from the shrunken page, so a scroller body can come back smaller than it opened until the next fit
+  pass. Recorded in RSK-0003.
+
+### Rejected
+
+- **IME-synchronised translation** (`ViewCompat.SetWindowInsetsAnimationCallback`, `UIKeyboard`
+  notifications). Still deferred (ADR-0022): the app already turns the keyboard into a page-size change,
+  and following the page is one rule for keyboard, split screen and rotation alike.
+- **Subscribe to the sheet view's own `SizeChanged`.** It would work, but the heights are PAGE heights and
+  the page's size is set before its children are arranged; following the source avoids a pass with the
+  old value.
+- **Re-run the fit-to-content engine on a host change** instead of capping. It rewrites the detent from a
+  measurement taken against a temporarily small page, and nothing would restore it when the keyboard
+  closes; and for a scroller body it would re-apply "75 % of a smaller page", which is not a better answer.
+- **Leave it to each view** (the app's per-view workaround). One view had it, only for one preset — the
+  shape of a library defect being paid for in the app (library-source-mode rule).
+
+---
+
+## ADR-0027 — Live toasts and the progress overlay re-anchor on an explicit call, and glide by translation
+
+**Date:** 2026-09-23 · **Status:** accepted (1.2.0) — compile-verified · Jira ITCS-15663
+
+### Context
+
+A toast's position is a margin computed once, at show (`ApplyInlineG9ToastPosition` →
+`ResolveBottomInset`), from the page's insets and — for bottom toasts — a tab-bar clearance
+(`BottomSafeAreaWithTabBar − BottomSafeAreaInset`) that applies only while no bottom sheet is open. The
+progress overlay does the same (`G9ProgressOverlayHelper.ResolveBottomInset`). The app now changes
+`BottomSafeAreaWithTabBar` when its tab bar hides or shows, and toasts already on screen stayed where the
+tab bar used to be.
+
+### Decision
+
+- `Task G9ToastHelper.RefreshBottomInsetsAsync(bool animate = true)` — every live stacked, loading and
+  progress toast gets its margin re-applied; the resulting move of its layout slot is added to its
+  `TranslationY` (so nothing jumps) and the translation then glides to its resting offset (220 ms,
+  `CubicOut`). Stack offsets are recomputed in the same pass (`ResolveStackOffsets`, now shared with
+  `ReflowToastStackAsync`), because a bottom stack sits on an `IG9BottomAnchoredOverlay` whose margin moves
+  with the same inset.
+- `Task G9ProgressOverlayHelper.RefreshBottomInsetAsync(bool animate = true)` — the same for the overlay,
+  followed by a reflow of the toasts stacked on it. A minimized bubble keeps the spot the user dragged
+  it to. The two calls converge in either order.
+
+### Rejected
+
+- **Subscribe each toast to the page's `PropertyChanged`.** `BottomSafeAreaWithTabBar` is observable, but
+  the "is a sheet open" half of the rule is not, so a subscription would be half a mechanism that looks
+  complete. The code that hides the tab bar is the one place that knows the answer changed.
+- **Animate the margin.** A margin tween is a layout pass per frame for the toast host; `TranslationY` is
+  what every toast motion already uses (enter, exit, reflow) and composes with them — a new slide on the
+  same property supersedes an in-flight one instead of racing it.
+- **Dismiss and re-show live toasts.** Loses the remaining lifetime, replays the enter animation and
+  re-runs an action toast's accessibility announcement.
+
+---
+
+## ADR-0028 — A check box is its own drawn control: M3 square, tick drawn in by length, tri-state, row-sized hit target
+
+**Date:** 2026-09-27 · **Status:** accepted (1.2.0) — compile-verified; **not yet run on a device** · Jira ITCS-15686
+
+### Context
+
+QA: "the checkbox design is very ugly; G9MAUIControls has no check box". The suite had none. Consumers
+used the platform `CheckBox` — Android's AppCompat box, UIKit has no check box at all (MAUI draws its
+own), WinUI's square — three looks, none following `G9Palette`, and on Android a hit area the size of
+the glyph. The suite's own guidance filled the gap with a `G9Switch` per option ("former checkboxes"),
+and `G9PopupHelper` rendered a `CheckBox` input field that way: a column of settings toggles where the
+form means "pick any of these".
+
+The design chosen by the product owner: Material 3 — a 20dp square, 6dp corners, 2dp stroke in
+`Outline` when unchecked; checked fills `Primary` and a white tick DRAWS ITSELF IN (~150ms, eased),
+un-checking reverses it; a soft circular `Primary` halo (~40dp) on press; an indeterminate state (a
+white bar on `Primary`); disabled tints; the whole row tappable.
+
+### Decision
+
+1. **`G9CheckBox : G9ControlBase`, painted on a `GraphicsView`** (`G9CheckBoxDrawable`), like
+   `G9Switch` — not a restyled platform `CheckBox`. Bindables `IsChecked` (two-way), `IsIndeterminate`
+   (two-way), `Text`, `Command`, `CommandParameter`; event `CheckedChanged` with the platform's
+   `CheckedChangedEventArgs`; `Toggle()` = the user action.
+2. **One float drives the checked transition, split into overlapping phases** (`G9CheckBoxMath`): the
+   fill pops in over the first 40%, the tick draws over the last 75%. Unchecking plays it backwards,
+   and every animation starts from the value's current position with a duration scaled to the
+   distance left — so a reversal mid-way is continuous by construction.
+3. **The tick is trimmed by LENGTH along a two-segment polyline**, and **the indeterminate bar is the
+   same polyline** with its elbow raised. Checked ↔ indeterminate is a point interpolation; one trim
+   draws either shape in. Drawn as two `DrawLine`s with round caps — no `PathF` per frame.
+4. **Tri-state is visual precedence, not a third value of `IsChecked`.** `IsIndeterminate` wins while
+   true; a TAP clears it and checks the box (the Android / iOS / WinUI convention: "mixed" resolves to
+   "all"); only code or a binding can set it. `CheckedChanged` stays a plain `bool`.
+5. **Hit target = the row.** The square sits centred in a 48dp slot (`G9LayoutMetrics.MinTouchTarget`);
+   with `Text` the whole row is the single gesture owner, without it the control collapses to its slot
+   (`HorizontalOptions = Start` on the inner row) so a bare box does not claim its parent's width.
+6. **Direction is layout, never paint.** The box sits at the START by `FlowDirection` inheritance; the
+   canvas is pinned LTR and the drawable does no direction math — the tick never mirrors (§9).
+7. **Colours are palette tokens read at paint time**, with the tick colour in ONE recipe,
+   `G9Colors.CheckBoxMark` = `OnPrimary` (white in the stock light palette). No colour-override
+   bindables — `G9Switch` has none either; a rebrand retunes the palette.
+8. **Command runs on USER toggles only**, after the state is written, through `G9Press` with a 0 ms
+   guard (never-crash, but no double-tap swallowing — every tap on a check box is a real toggle).
+9. **The popup `CheckBox` field renders `G9CheckBox`.** Radio fields stay `G9Switch` + `SelectionGroup`.
+10. **Geometry reuses the existing `SelectionCheckBoxSize` / `SelectionCheckRadius` tokens** by alias
+    (`CheckBoxSize`, `CheckBoxCornerRadius`) rather than declaring a second 20 / 6.
+
+### Rejected
+
+- **Restyle the platform `CheckBox` through handlers.** Three native widgets to bend, no drawn-in tick
+  on any of them (Android animates its own vector, UIKit has none), and the hit area stays the glyph.
+  It is the thing QA called ugly.
+- **Keep `G9Switch` for multi-select.** A switch says "this setting is on now"; a check box says "this
+  is one of your choices". The popup form was the visible casualty.
+- **Separate fill and tick animations.** Two timelines have to be reconciled when a tap reverses one
+  mid-flight; one timeline with overlapping phases reverses for free.
+- **Morph by cross-fading a tick glyph into a bar glyph.** A cross-fade shows both marks at once for
+  half its duration; interpolating shared points never does.
+- **A white tick in both themes.** Honours the design literally, but hard-codes a colour a rebrand
+  cannot fix (a pale primary would lose the tick). `OnPrimary` is white where the design was drawn;
+  the stock dark palette gives a deep-green tick instead (M3's dark look). Flagged to the product owner;
+  the change, if wanted, is one line in `G9Colors.CheckBoxMark`.
+- **A `bool?` `IsChecked` for tri-state.** Every binding and handler would have to cope with `null`;
+  a separate `IsIndeterminate` keeps the common two-state case exactly as simple as the platform one.
+- **Executing `Command` on every `IsChecked` change** (the platform `CheckBox` behaviour). A
+  view-model command would then also fire on page load and on its own writes back through the binding.

@@ -122,6 +122,9 @@ public partial class G9SheetView : Grid
 
     private double _lastAppliedHostHeight;
 
+    /// <summary>Backing field of <see cref="RestingTopReserve" />.</summary>
+    private double _restingTopReserve;
+
     private View? _bottomPinnedView;
     private double _bottomPinOffset;
     private double _releaseVelocityY;
@@ -493,6 +496,55 @@ public partial class G9SheetView : Grid
     internal int CurrentMotionDurationMs { get; private set; }
 
     /// <summary>
+    ///     Space (dp) kept clear above a body resting at <see cref="G9SheetViewState.Collapsed" /> when
+    ///     the host is too short for its <see cref="CollapsedHeight" />. <c>G9BottomSheetHelper</c> sets
+    ///     it to the page's top safe-area inset (the display cutout), so a header can never end up under
+    ///     the camera.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>What it is for (ITCS-15525).</b> <see cref="CollapsedHeight" /> is a FIXED height — the
+    ///         measured content of a fit-to-content sheet, or 75 % of the page for a body that is a
+    ///         scroller. The host is not fixed: the consuming app pads its window by the keyboard height
+    ///         while a form is being edited, so the page — and this view with it — shrinks under the
+    ///         sheet. Resting heights used to ignore that and only move the body, which had two effects:
+    ///         the body never actually got shorter, so a <c>ScrollView</c> inside it never saw a
+    ///         <c>SizeChanged</c> and the app's "scroll the focused field into view" never ran; and with a
+    ///         tall keyboard the translation went NEGATIVE, pushing the sheet's header off the top of the
+    ///         screen.
+    ///     </para>
+    ///     <para>
+    ///         The resting body is now <c>min(CollapsedHeight, hostHeight − RestingTopReserve)</c>
+    ///         (<see cref="ResolveCollapsedRestingHeight" />). It really shrinks with the host and grows
+    ///         back when the host does, and its top edge can never pass the reserve. The detent itself —
+    ///         <see cref="CollapsedHeight" /> — is not rewritten, which is what lets the sheet return to
+    ///         its full height when the keyboard closes without anyone re-measuring anything.
+    ///     </para>
+    ///     <para>
+    ///         Ratio detents (<see cref="HalfExpandedRatio" />, <see cref="FullExpandedRatio" />) already
+    ///         follow the host and are untouched. A full-screen sheet reaches the very top by design.
+    ///     </para>
+    /// </remarks>
+    internal double RestingTopReserve
+    {
+        get => _restingTopReserve;
+        set
+        {
+            var clamped = double.IsNaN(value) ? 0 : Math.Max(0, value);
+            if (Math.Abs(clamped - _restingTopReserve) < 0.01)
+            {
+                return;
+            }
+
+            _restingTopReserve = clamped;
+            if (State == G9SheetViewState.Collapsed)
+            {
+                ApplyBodyHeightForState(Height);
+            }
+        }
+    }
+
+    /// <summary>
     ///     Android: composite the body from a hardware layer while it moves (default <c>true</c>).
     ///     A kill switch, not a tuning knob — turn it off only if a device shows artefacts with a
     ///     layered sheet (a very large body, or an exotic GPU driver). No effect on other platforms.
@@ -823,13 +875,18 @@ public partial class G9SheetView : Grid
             return;
         }
 
-        var target = hostHeight - contentHeight;
-        var isGrowing = contentHeight > previousHeight;
+        // What the body actually rests at, which is the content height unless the host is currently
+        // too short for it (a keyboard inset) — see RestingTopReserve. Compared as RESTING heights, so
+        // two content heights that both clamp to the same ceiling move nothing.
+        var restingHeight = ClampToRestingCeiling(contentHeight, hostHeight);
+        var previousRestingHeight = ClampToRestingCeiling(previousHeight, hostHeight);
+        var target = hostHeight - restingHeight;
+        var isGrowing = restingHeight > previousRestingHeight;
 
-        if (!animate || Math.Abs(contentHeight - previousHeight) < 1)
+        if (!animate || Math.Abs(restingHeight - previousRestingHeight) < 1)
         {
             AbortMotion();
-            _bottomSheet.HeightRequest = contentHeight;
+            _bottomSheet.HeightRequest = restingHeight;
             _bottomSheet.TranslationY = target + SettleOvershoot;
             UpdateBottomPin();
             RaisePositionChanged();
@@ -840,7 +897,7 @@ public partial class G9SheetView : Grid
         {
             // One layout pass, up front. The new area is below the screen edge until the
             // translation brings it up, so this frame is visually identical to the last one.
-            _bottomSheet.HeightRequest = Math.Max(_bottomSheet.HeightRequest, contentHeight);
+            _bottomSheet.HeightRequest = Math.Max(_bottomSheet.HeightRequest, restingHeight);
         }
 
         // Shrinking: the body keeps its CURRENT height while it slides down, so nothing re-lays
@@ -1328,7 +1385,7 @@ public partial class G9SheetView : Grid
         return target;
     }
 
-    private double GetCollapsedPosition() => Height - CollapsedHeight;
+    private double GetCollapsedPosition() => Height - ResolveCollapsedRestingHeight(Height);
 
     private double GetHalfExpandedPosition()
     {
@@ -1440,18 +1497,47 @@ public partial class G9SheetView : Grid
     {
         return State switch
         {
-            G9SheetViewState.Collapsed => CollapsedHeight,
+            G9SheetViewState.Collapsed => ResolveCollapsedRestingHeight(hostHeight),
             G9SheetViewState.HalfExpanded => hostHeight * HalfExpandedRatio,
             G9SheetViewState.FullExpanded => hostHeight * FullExpandedRatio,
             _ => 0
         };
     }
 
+    /// <summary>
+    ///     The height the body RESTS at in <see cref="G9SheetViewState.Collapsed" /> for a host of the
+    ///     given height: <see cref="CollapsedHeight" />, capped so the body's top edge stays
+    ///     <see cref="RestingTopReserve" /> below the top of the host. Every place that turns the
+    ///     collapsed detent into geometry goes through here — the resting position, the body height,
+    ///     the drag limits and the release snap — so the body, the finger and the settle can never
+    ///     disagree about where the detent is.
+    /// </summary>
+    private double ResolveCollapsedRestingHeight(double hostHeight) =>
+        ClampToRestingCeiling(CollapsedHeight, hostHeight);
+
+    private double ClampToRestingCeiling(double height, double hostHeight)
+    {
+        if (hostHeight <= 0 || double.IsPositiveInfinity(hostHeight))
+        {
+            return height;
+        }
+
+        // A host shorter than the reserve itself (a landscape phone with the keyboard up) keeps the
+        // whole host rather than resolving to a zero-height, invisible body.
+        var ceiling = hostHeight - _restingTopReserve;
+        if (ceiling <= 0)
+        {
+            ceiling = hostHeight;
+        }
+
+        return Math.Min(height, ceiling);
+    }
+
     private double ResolveRestingTranslation(double hostHeight)
     {
         return State switch
         {
-            G9SheetViewState.Collapsed => hostHeight - CollapsedHeight,
+            G9SheetViewState.Collapsed => hostHeight - ResolveCollapsedRestingHeight(hostHeight),
             G9SheetViewState.HalfExpanded => hostHeight * (1 - HalfExpandedRatio),
             G9SheetViewState.FullExpanded => Math.Abs(hostHeight * (1 - FullExpandedRatio)),
             _ => hostHeight
@@ -1471,7 +1557,7 @@ public partial class G9SheetView : Grid
                 _bottomSheet.HeightRequest = Height * HalfExpandedRatio;
                 break;
             case G9SheetViewState.Collapsed:
-                _bottomSheet.HeightRequest = CollapsedHeight;
+                _bottomSheet.HeightRequest = ResolveCollapsedRestingHeight(Height);
                 break;
             case G9SheetViewState.FullExpanded:
                 _bottomSheet.HeightRequest = Height * FullExpandedRatio;
@@ -1799,7 +1885,7 @@ public partial class G9SheetView : Grid
 
         // Overlay alpha follows the VISIBLE height (not the height request, which is pinned during
         // a dismiss drag), so the scrim keeps fading out as the sheet slides away.
-        var shouldShow = IsModal && visibleHeight > CollapsedHeight;
+        var shouldShow = IsModal && visibleHeight > ResolveCollapsedRestingHeight(Height);
         if (shouldShow)
         {
             AddOverlayToView();
@@ -1859,8 +1945,10 @@ public partial class G9SheetView : Grid
 
         // A collapsed height taller than the large detent is not a contradiction — it is exactly
         // how a fit-to-content sheet is expressed (CollapsedHeight = the measured content height) —
-        // so the peek participates in the maximum instead of being overridden by it.
-        return Math.Clamp(Math.Max(maxHeight, CollapsedHeight), 0, Height);
+        // so the peek participates in the maximum instead of being overridden by it. It participates
+        // at its RESTING height, or a fit sheet squeezed by a keyboard could be dragged back up past
+        // the reserve its resting position respects.
+        return Math.Clamp(Math.Max(maxHeight, ResolveCollapsedRestingHeight(Height)), 0, Height);
     }
 
     /// <summary>Height (dp) of the smallest detent this sheet may rest at.</summary>
@@ -1873,14 +1961,14 @@ public partial class G9SheetView : Grid
 
         if (AllowCollapsedState || AllowedState == G9SheetViewAllowedState.All)
         {
-            return Math.Clamp(CollapsedHeight, 0, Height);
+            return Math.Clamp(ResolveCollapsedRestingHeight(Height), 0, Height);
         }
 
         return AllowedState switch
         {
             G9SheetViewAllowedState.HalfExpanded => Math.Clamp(Height * HalfExpandedRatio, 0, Height),
             G9SheetViewAllowedState.FullExpanded => Math.Clamp(Height * FullExpandedRatio, 0, Height),
-            _ => Math.Clamp(CollapsedHeight, 0, Height)
+            _ => Math.Clamp(ResolveCollapsedRestingHeight(Height), 0, Height)
         };
     }
 
@@ -1920,13 +2008,14 @@ public partial class G9SheetView : Grid
     private double ComputeDragOverlayOpacity(double currentHeight)
     {
         const double maxOpacity = DefaultOverlayOpacity;
-        var range = (HalfExpandedRatio * Height) - CollapsedHeight;
+        var collapsedHeight = ResolveCollapsedRestingHeight(Height);
+        var range = (HalfExpandedRatio * Height) - collapsedHeight;
         if (range <= 0)
         {
             return maxOpacity;
         }
 
-        var progress = Math.Clamp((currentHeight - CollapsedHeight) / range, 0, 1);
+        var progress = Math.Clamp((currentHeight - collapsedHeight) / range, 0, 1);
         return progress * maxOpacity;
     }
 
@@ -2129,7 +2218,7 @@ public partial class G9SheetView : Grid
         {
             (State: G9SheetViewState.FullExpanded, Position: Height * (1 - FullExpandedRatio)),
             (State: G9SheetViewState.HalfExpanded, Position: Height * (1 - HalfExpandedRatio)),
-            (State: G9SheetViewState.Collapsed, Position: Height - CollapsedHeight)
+            (State: G9SheetViewState.Collapsed, Position: Height - ResolveCollapsedRestingHeight(Height))
         };
 
         var bestState = State;

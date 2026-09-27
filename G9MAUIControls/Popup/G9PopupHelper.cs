@@ -1613,16 +1613,19 @@ public static class G9PopupHelper
             case G9PopupInputFieldType.CheckBox:
                 {
                     var options = ResolveCheckBoxOptions(field);
-                    var optionsLayout = new VerticalStackLayout { Spacing = 6 };
-                    var checkBoxes = new List<(G9PopupInputOption Option, G9Switch Control)>(options.Count);
+                    // A CheckBox field is drawn as check boxes (G9CheckBox, 1.2.0 / ADR-0028). It used
+                    // to be a column of G9Switch form rows, which read as settings toggles rather than
+                    // "pick any of these". Each G9CheckBox row is already a 48dp tap target, so the rows
+                    // stack with no extra spacing — a list of options, not a list of cards.
+                    var optionsLayout = new VerticalStackLayout { Spacing = 0 };
+                    var checkBoxes = new List<(G9PopupInputOption Option, G9CheckBox Control)>(options.Count);
 
                     foreach (var option in options)
                     {
-                        var checkBox = new G9Switch
+                        var checkBox = new G9CheckBox
                         {
-                            Title = option.Text,
-                            IsOn = option.IsSelected,
-                            IsInFormRow = true
+                            Text = option.Text,
+                            IsChecked = option.IsSelected
                         };
 
                         ApplyInputFlowDirection(checkBox, field);
@@ -1633,7 +1636,7 @@ public static class G9PopupHelper
                     IReadOnlyList<string> ReadSelectedCheckBoxValues()
                     {
                         return checkBoxes
-                            .Where(x => x.Control.IsOn)
+                            .Where(x => x.Control.IsChecked)
                             .Select(x => x.Option.Value)
                             .ToArray();
                     }

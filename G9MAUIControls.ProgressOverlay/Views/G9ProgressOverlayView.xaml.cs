@@ -308,6 +308,58 @@ public partial class G9ProgressOverlayView : ContentView
         });
     }
 
+    /// <summary>
+    ///     Absorbs a move of the view's layout anchor — its margin has just been re-applied for a new
+    ///     bottom inset — so the overlay does not JUMP to the new position.
+    /// </summary>
+    /// <param name="carry">
+    ///     How far (dp, positive = down) the anchor change moves the layout slot's opposite: adding it to
+    ///     <c>TranslationY</c> keeps the view exactly where it is on screen for this frame.
+    /// </param>
+    /// <param name="animate">
+    ///     Glide from there to the new anchor. <c>false</c> accepts the jump (the margin already moved
+    ///     the view) — the right choice while something else on screen is animating the same change.
+    /// </param>
+    /// <remarks>
+    ///     <para>
+    ///         The card's resting <c>TranslationY</c> is 0, so it glides back to 0 — the same property,
+    ///         curve family and length as the appearing slide, and the same "translation carries the
+    ///         difference" rule the toast stack uses, so a toast and this overlay moving together read as
+    ///         one motion (ITCS-15663).
+    ///     </para>
+    ///     <para>
+    ///         ⛔ A MINIMIZED bubble is not re-anchored at all. Its translation is where the USER dragged
+    ///         it, and the anchor it is relative to is an implementation detail: carrying the delta keeps
+    ///         it on the spot the user chose instead of sliding it away when the tab bar hides.
+    ///     </para>
+    /// </remarks>
+    internal Task CarryAnchorShiftAsync(double carry, bool animate)
+    {
+        if (!MainThread.IsMainThread)
+        {
+            return MainThread.InvokeOnMainThreadAsync(() => CarryAnchorShiftAsync(carry, animate));
+        }
+
+        if (_isPreparingForRemoval || Math.Abs(carry) < 0.5)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (_isMinimized)
+        {
+            TranslationY += carry;
+            return Task.CompletedTask;
+        }
+
+        if (!animate)
+        {
+            return Task.CompletedTask;
+        }
+
+        TranslationY += carry;
+        return this.TranslateToAsync(TranslationX, 0, 220, Easing.CubicOut);
+    }
+
     internal void PrepareForRemoval()
     {
         if (!MainThread.IsMainThread)

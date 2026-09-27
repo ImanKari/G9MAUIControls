@@ -42,6 +42,32 @@ public enum G9TextInputDirection
     RightToLeft
 }
 
+/// <summary>
+///     How one outlined field paints itself when it holds a value but is not focused. Set on
+///     <c>G9OutlinedFieldBase.FilledValueHighlight</c>; the app-wide rule is
+///     <see cref="G9OutlinedFieldSettings.HighlightFilledValue" />.
+/// </summary>
+public enum G9FilledValueHighlight
+{
+    /// <summary>
+    ///     Follow the app-wide <see cref="G9OutlinedFieldSettings.HighlightFilledValue" />. The default,
+    ///     and the right value for almost every field.
+    /// </summary>
+    Inherit,
+
+    /// <summary>
+    ///     Accent colour for the outline, floated label and trailing icon, whatever the app-wide
+    ///     setting says — for a field whose value is the point of the screen (a filter that is
+    ///     actively narrowing a list).
+    /// </summary>
+    Accent,
+
+    /// <summary>
+    ///     The resting (empty-field) colours whatever the app-wide setting says. The label still floats.
+    /// </summary>
+    Neutral
+}
+
 public enum G9KeyboardType
 {
     Default,

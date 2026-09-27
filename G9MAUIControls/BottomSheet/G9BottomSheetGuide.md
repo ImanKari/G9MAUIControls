@@ -639,6 +639,10 @@ path there is what opened a six-row picker at the 180 dp loading floor and grew 
 - ⛔ No native tree walk from a `PositionChanged` listener. The backdrop card's Android sweep belongs to
   cleanup only; per frame it is a field compare (`BackdropCardBinding._isTransformed`).
 - ⛔ Every animation `finished` callback checks `cancelled`.
+- ⛔ No host-derived `HeightRequest` stamped once. A height computed from the page is registered with
+  `ApplyFullScreenHeight` (full-screen) or expressed as a detent the sheet view caps
+  (`ResolveCollapsedRestingHeight`) — never written at open and forgotten (BS-20, LES-0047).
+- ⛔ No `CollapsedHeight` read for GEOMETRY in `G9SheetView` — go through `ResolveCollapsedRestingHeight`.
 - ⛔ Do not rename `G9SheetViewBorder` — the consuming app's QA layer finds sheets by that type name.
 - The regression surface is `G9Controls.Gallery` → **Sheet Lab**: one button per rule above, each
   captioned with what must be true when it is pressed.
@@ -686,6 +690,45 @@ short of the screen: it could be dragged to the status bar and was then snapped 
 what reads to a user as "it over-drags and then leaves a gap". Below the smallest detent a
 cancelable sheet keeps its height and SLIDES OFF instead of shrinking — a dismiss is not a resize,
 and shrinking re-lays the body out on every frame.
+
+### A resting body is capped to its host (1.2.0, ADR-0026)
+
+`CollapsedHeight` is a FIXED height — the measured body of a fit-to-content sheet, ~75 % of the page
+for a body that is itself a scroller, or a peek. The host is not fixed: the consuming app shrinks the
+page by the keyboard height. Until 1.2.0 the collapsed body kept its height and was only translated:
+it never got shorter (an inner `ScrollView` saw no `SizeChanged`, so "scroll the focused field into
+view" never ran), and a tall keyboard made the translation negative — the header left the screen.
+
+The body now rests at **`min(CollapsedHeight, hostHeight − RestingTopReserve)`**
+(`G9SheetView.ResolveCollapsedRestingHeight`). The helper sets `RestingTopReserve` to the page's top
+safe-area inset (the display cutout) in `ApplyOptions`. Every path that turns the collapsed detent into
+geometry reads that one function — resting position and body height, `SetFitHeight`, the drag clamp,
+the release snap — so the finger, the settle and the layout agree. `CollapsedHeight` itself is NOT
+rewritten: when the keyboard closes the body grows back with nothing re-measured.
+
+⛔ **A fit measure is always a FRESH measure (LES-0052).** `MeasureContentHeight` invalidates the body's
+subtree before measuring it: `Measure()` answers from a cached desired size, and a body first measured
+before its text took its final shape (a hint measured as one line, wrapped to two at layout) kept that
+stale size forever — footer-less fit sheets rested 25-40dp short. A pinned footer only hides this; do not
+"fix" a short fit sheet by adding one.
+
+⛔ **…and nothing ELSE may write the keyboard into it either (LES-0051).** The fit engine writes
+`CollapsedHeight` too, and a re-fit while the keyboard is up (moving to the next field is enough) used
+to size a scroller body against the SHRUNKEN page — the clamp then had nothing larger to grow back to,
+and the form stayed a third of the screen tall. Fit caps therefore read `ResolveFitReferenceHeight`
+(the tallest host height at the current width: a rotation resets it, a keyboard cannot), never the
+live `ResolveFullScreenHeight`. Full-screen sheets are the opposite case and DO follow the live height.
+
+- Content that fits above the keyboard: the sheet just moves up, as before.
+- Content that does not: the body shrinks; a scrolling body scrolls (and its `ScrollView` gets the
+  size change). A NON-scrolling body is clipped at the bottom while the keyboard is up — same as at
+  the 75 % cap; the authoring rule already says a body that can outgrow the cap must scroll.
+- The move itself is the existing `ApplyBodyHeightForState` rule: a large host change animates the
+  translation and the body takes its smaller height when the motion completes; the sticky footer is
+  held at the host's bottom edge by the bottom pin meanwhile.
+- Ratio detents (`Medium` / `Large`) already follow the host and are unchanged.
+- Known residual (RSK-0003): a fit pass that runs WHILE the page is shrunk computes its cap from the
+  smaller page.
 
 ### Content-sized top detent — `ExpandedFitsContent`
 
@@ -1446,7 +1489,32 @@ public interface IG9BottomSheetSizedView
 }
 ```
 
-The helper calls it during preparation. This is required for virtualized content that must know its viewport height before loading.
+The helper calls it during preparation. This is required for virtualized content that must know its viewport height before loading. For a full-screen sheet it is called AGAIN with every new height when the host page changes size (below) — an implementation must treat it as "your height is now", not "your height, once".
+
+### Full-screen heights follow the host page (1.2.0 — BS-20 closed, ADR-0026)
+
+A full-screen sheet's root (toolbar sheets), sizing host and body (toolbar-less and edge-to-edge sheets)
+and the deferred placeholder get `HeightRequest` + `MinimumHeightRequest` = the page height (or the page
+height below the top safe-area band, for a toolbar-less body). Until 1.2.0 that was stamped ONCE at open.
+The consuming app shrinks the page by the keyboard height while a `KeyboardInsetScope` is open, so the
+content kept its pre-keyboard height and the footer and the bottom of the body's `ScrollView` stayed
+under the keyboard.
+
+Now `ApplyFullScreenHeight(sheet, element, options, isContentHeight)` REGISTERS each element on the
+sheet (`SheetBehaviorState.FullScreenHeightTargets`) and the first registration subscribes the host
+page's `SizeChanged`, once per sheet:
+
+- on a height change every target is re-sized (minimum first — a stale minimum above a smaller height
+  pins the old height back), and an `IG9BottomSheetSizedView` body is told the new content height;
+- it is a plain write, never an animation: `G9SheetView` resizes its own body in the same layout pass,
+  and a second, animated motion would fight the motion engine;
+- lifetime: the handler is removed from the page it was ADDED to in `CleanupSheetVisualsNow` and when a
+  sheet's behaviour state is replaced; a handler that fires for a behaviour that is no longer the
+  sheet's current one detaches itself. A closing sheet is not resized mid-slide.
+
+Every full-screen preset gets it — `FullScreenModalOptions`, `FullScreenWithoutHandleOptions`,
+`FullScreenEdgeToEdgeModalOptions`. **A view that follows the page height itself is now redundant**
+(AgriPad's `ProfileChangePasswordContentView` did, for edge-to-edge only).
 
 Content that needs a close handle can implement `IG9BottomSheetAwareView`; the helper assigns an `IG9BottomSheetHandle`.
 

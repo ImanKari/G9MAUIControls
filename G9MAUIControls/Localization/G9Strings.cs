@@ -118,7 +118,11 @@ public static class G9Strings
         [G9StringKey.Cancelled] = "Cancelled",
         [G9StringKey.CancelFinishingStep] = "Finishing the current step…",
 
-        [G9StringKey.UnexpectedError] = "Something went wrong. Please try again."
+        [G9StringKey.UnexpectedError] = "Something went wrong. Please try again.",
+
+        [G9StringKey.Checked] = "checked",
+        [G9StringKey.NotChecked] = "not checked",
+        [G9StringKey.PartiallyChecked] = "partially checked"
     };
 
     /// <summary>
@@ -423,5 +427,14 @@ public enum G9StringKey
     CancelFinishingStep,
 
     /// <summary>Body of the fallback error popup when no better message is available.</summary>
-    UnexpectedError
+    UnexpectedError,
+
+    /// <summary>Screen-reader state of a ticked <c>G9CheckBox</c>.</summary>
+    Checked,
+
+    /// <summary>Screen-reader state of an empty <c>G9CheckBox</c>.</summary>
+    NotChecked,
+
+    /// <summary>Screen-reader state of an indeterminate ("some of them") <c>G9CheckBox</c>.</summary>
+    PartiallyChecked
 }

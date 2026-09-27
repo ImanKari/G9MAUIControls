@@ -57,8 +57,50 @@ public sealed class InputsPage : G9PageBase
             new G9TextEntry { Label = "Counter", Text = "count me", MaxLength = 20, ShowCharacterCounter = true },
             new G9TextEntry { Label = "Disabled", Text = "Not editable", IsEnabled = false }));
 
+        // FilledValueHighlight (ADR-0025). The same filled, unfocused fields in both styles, side by side.
+        // Accent: outline, floated label and trailing icon in Primary — the library default. Neutral: the
+        // exact greys of the EMPTY field above, with the label still floated and bold. Focus either one:
+        // both must turn Primary; set an error: both must turn red. A picker is included because a
+        // pre-selected picker is the case that reads as "focused" when it is not.
+        stack.Add(ActionsPage.Section("Filled value: accent vs neutral", palette,
+            new G9TextEntry { Label = "Accent (explicit)", Text = "A value", FilledValueHighlight = G9FilledValueHighlight.Accent },
+            new G9TextEntry { Label = "Neutral (explicit)", Text = "A value", FilledValueHighlight = G9FilledValueHighlight.Neutral },
+            NewPicker("Picker, pre-selected — accent", G9FilledValueHighlight.Accent, preselect: true),
+            NewPicker("Picker, pre-selected — neutral", G9FilledValueHighlight.Neutral, preselect: true),
+            new G9TextEntry
+            {
+                Label = "Neutral + error",
+                Text = "bad",
+                HasError = true,
+                ErrorText = "Error still wins",
+                FilledValueHighlight = G9FilledValueHighlight.Neutral
+            }));
+
+        // ITCS-15685: an editor's trailing icon (the dictation mic, or any TrailingIcon) belongs in the
+        // BOTTOM-END corner of the box. The second field is the configuration that used to centre it
+        // vertically — a MaxEditorHeight ceiling turned the box's measure into an AT_MOST constraint the
+        // ripple layer grew into (LES-0050). The gallery registers no speech provider, so a plain trailing
+        // icon stands in for the microphone: same slot, same host. Both must show the glyph 8dp above the
+        // bottom edge, empty AND after typing a few lines, in both directions (switch the culture).
         stack.Add(ActionsPage.Section("G9Editor", palette,
             new G9Editor { Label = "Multi-line", Text = "First line\nSecond line", AutoSize = EditorAutoSizeOption.TextChanges },
+            new G9Editor
+            {
+                Label = "AlwaysFloat + Min 90 / Max 210 + trailing icon (the observation form)",
+                AlwaysFloat = true,
+                MinimumEditorHeight = 90,
+                MaxEditorHeight = 210,
+                MaxLength = 1000,
+                TrailingIcon = G9Glyph.Info
+            },
+            new G9Editor
+            {
+                Label = "Min 110 + counter + trailing icon (the tester form)",
+                MinimumEditorHeight = 110,
+                MaxLength = 4000,
+                ShowCharacterCounter = true,
+                TrailingIcon = G9Glyph.Info
+            },
             new G9Editor { Label = "Disabled", Text = "Locked", IsEnabled = false }));
 
         // The mic is hidden unless a speech provider is registered. The gallery registers none on purpose,
@@ -88,6 +130,52 @@ public sealed class InputsPage : G9PageBase
             new G9Switch { Title = "On", Description = "With a description line", IsOn = true, IsInFormRow = true },
             new G9Switch { Title = "Disabled, on", IsOn = true, IsEnabled = false, IsInFormRow = true }));
 
+        // G9CheckBox (ADR-0028). What to look at: the tick DRAWS ITSELF IN on check and un-draws on
+        // uncheck (tap twice quickly — it must turn around mid-way, not restart); the halo under the
+        // finger; tapping the LABEL toggles too; a tap on an indeterminate box CHECKS it; the disabled
+        // rows ignore taps; in the RTL rows the box is on the right and the tick is NOT mirrored; the
+        // wrapped label keeps the box level with its first line. Press the EDGES of each row (§10b).
+        stack.Add(ActionsPage.Section("G9CheckBox", palette,
+            new VerticalStackLayout
+            {
+                Spacing = 0,
+                Children =
+                {
+                    new G9CheckBox { Text = "Off" },
+                    new G9CheckBox { Text = "On", IsChecked = true },
+                    new G9CheckBox { Text = "Indeterminate — a tap checks it", IsIndeterminate = true },
+                    new G9CheckBox { Text = "Disabled, off", IsEnabled = false },
+                    new G9CheckBox { Text = "Disabled, on", IsChecked = true, IsEnabled = false },
+                    new G9CheckBox { Text = "Disabled, indeterminate", IsIndeterminate = true, IsEnabled = false }
+                }
+            },
+            new HorizontalStackLayout
+            {
+                Spacing = 0,
+                Children =
+                {
+                    new G9CheckBox(),
+                    new G9CheckBox { IsChecked = true },
+                    new G9CheckBox { IsIndeterminate = true },
+                    new G9CheckBox { IsChecked = true, IsEnabled = false }
+                }
+            },
+            NewSelectAllDemo(),
+            new VerticalStackLayout
+            {
+                Spacing = 0,
+                FlowDirection = FlowDirection.RightToLeft,
+                Children =
+                {
+                    new G9CheckBox { Text = "RTL: the box is on the right, the tick is not mirrored", IsChecked = true },
+                    new G9CheckBox
+                    {
+                        Text = "RTL with a long label that wraps onto a second line, so the box has to stay "
+                             + "level with the FIRST line instead of centring on the paragraph"
+                    }
+                }
+            }));
+
         stack.Add(ActionsPage.Section("G9RangeSlider", palette,
             new G9RangeSlider { Minimum = 0, Maximum = 100, Value = 40, Mode = G9RangeSliderMode.Single, ShowLabels = true },
             new G9RangeSlider
@@ -111,11 +199,73 @@ public sealed class InputsPage : G9PageBase
         ItemsSource = BuildItems()
     };
 
-    private static View NewPicker(string label) => new G9Picker
+    private static View NewPicker(
+        string label,
+        G9FilledValueHighlight highlight = G9FilledValueHighlight.Inherit,
+        bool preselect = false)
     {
-        Label = label,
-        ItemsSource = BuildItems()
-    };
+        var items = BuildItems();
+        return new G9Picker
+        {
+            Label = label,
+            ItemsSource = items,
+            SelectedItem = preselect ? items[0] : null,
+            FilledValueHighlight = highlight
+        };
+    }
+
+    /// <summary>
+    ///     The tri-state pattern the indeterminate state exists for: a parent box that is ticked when
+    ///     every child is, empty when none is, and indeterminate in between. Tapping the parent while it
+    ///     is indeterminate CHECKS it (and so every child) — the platform convention.
+    /// </summary>
+    private static View NewSelectAllDemo()
+    {
+        G9CheckBox[] children =
+        [
+            new() { Text = "Soil", IsChecked = true },
+            new() { Text = "Water" },
+            new() { Text = "Weather" }
+        ];
+        var parent = new G9CheckBox { Text = "Select all (tri-state)" };
+        var syncing = false;
+
+        void SyncParentFromChildren()
+        {
+            if (syncing) return;
+            syncing = true;
+            var checkedCount = children.Count(static c => c.IsChecked);
+            parent.IsIndeterminate = checkedCount > 0 && checkedCount < children.Length;
+            parent.IsChecked = checkedCount == children.Length;
+            syncing = false;
+        }
+
+        parent.CheckedChanged += (_, e) =>
+        {
+            if (syncing) return;
+            syncing = true;
+            foreach (var child in children)
+            {
+                child.IsChecked = e.Value;
+            }
+
+            syncing = false;
+        };
+
+        var layout = new VerticalStackLayout { Spacing = 0 };
+        layout.Add(parent);
+        foreach (var child in children)
+        {
+            // Indent the children under the parent's label. Physical-left is fine here: this demo
+            // row is LTR (the RTL rows are the ones after it).
+            child.Margin = new Thickness(28, 0, 0, 0);
+            child.CheckedChanged += (_, _) => SyncParentFromChildren();
+            layout.Add(child);
+        }
+
+        SyncParentFromChildren();
+        return layout;
+    }
 
     private static View NewChips(G9ChipGroupSelectionMode mode) => new G9ChipGroup
     {

@@ -31,6 +31,7 @@
         <Compile Include="..\..\G9MAUIControls\Controls\Shared\G9TimeSpanMath.cs" Link="Linked\G9TimeSpanMath.cs" />
         <Compile Include="..\..\G9MAUIControls\Controls\Shared\G9Calendar.cs" Link="Linked\G9Calendar.cs" />
         <Compile Include="..\..\G9MAUIControls\BottomSheet\G9SheetView\G9SheetMotionModel.cs" Link="Linked\G9SheetMotionModel.cs" />
+        <Compile Include="..\..\G9MAUIControls\Controls\G9CheckBox\G9CheckBoxMath.cs" Link="Linked\G9CheckBoxMath.cs" />
     </ItemGroup>
 
     <ItemGroup>

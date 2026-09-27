@@ -48,6 +48,12 @@ choose** — focused, filled, error and status states still resolve through
 input in the app. Override those hooks if another field ever needs its own resting tone; never reach
 for the private state resolution.
 
+**Filled state (1.2.0).** A search box with a query follows the same filled-value rule as every
+outlined field (`FilledValueHighlight`, app-wide `G9OutlinedFieldBase.Configure`, ADR-0025). In the
+default *accent* style it turns `Primary`; in the *neutral* style it keeps exactly the
+`InputPlaceholder` tone above — the resting hooks ARE the neutral filled colours, so a neutral search
+box with a query looks like its own empty state with the label floated.
+
 ### Specific to `G9SearchEntry`
 
 | Property | Type | Default | Description |
@@ -172,10 +178,11 @@ private async void GlobalSearch_OnVoiceFailed(object? sender, string reason)
   handler attached so only the code-point + tint change. Same trick is in use by
   `G9ChipGroup.CheckmarkIcon` and `G9TabView`'s tab indicator
   (see `G9Controls.md` principle 12 — "destruction-free animations are mandatory").
-- Tapping the mic also focuses the inner `Entry` so the on-screen keyboard appears
-  immediately. The user can keep typing if they decide voice isn't what they want
-  without an extra tap on the field — mirrors Google search and iOS Spotlight,
-  where tapping the mic both activates the field AND starts voice in one gesture.
+- **Tapping the mic does NOT focus the field** (1.2.0, ADR-0024 — it used to, and that raised
+  the keyboard over the text being dictated, ITCS-15661). If the keyboard is up when a
+  session starts it is taken down. Switching to typing is still one gesture: tap the field —
+  it focuses, the keyboard comes up and the running session stops, keeping the partial
+  transcript. Full table: `G9TextEntry.md` → *Voice dictation* → *Focus and the keyboard*.
 - The voice session captures the existing `Text` as a base before listening starts
   and appends the transcript to it. Tap-mic mid-query → continue speaking → final
   transcript is added to whatever you'd already typed.

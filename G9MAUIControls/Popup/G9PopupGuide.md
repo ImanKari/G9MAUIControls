@@ -103,8 +103,14 @@ var result = await G9PopupHelper.ShowInputG9PopupAsync(new G9PopupInputOptions
 });
 
 // Dictation on a text / text-area field. Needs a registered G9Speech.Provider; with none the
-// microphone stays hidden. Never offered on a Password field.
+// microphone stays hidden. Never offered on a Password field. The field is a G9TextEntry / G9Editor,
+// so a mic tap never opens the keyboard (1.2.0, ADR-0024) — the form's first-field autofocus on open
+// still does, as it always has.
 G9PopupInputField.TextArea(key: "notes", label: "Notes", enableVoice: true);
+
+// A CheckBox field renders one G9CheckBox per option (1.2.0, ADR-0028; G9Switch form rows before).
+// Values, required-validation and the field's flowDirection are unchanged.
+G9PopupInputField.CheckBox(key: "layers", label: "Layers", items: layerOptions);
 
 // Confirm: returns bool. Wraps OK/Cancel + tcs in one call.
 // Cancel is the OUTLINE button and only OK carries the accent (design guide §4c) — do not pass

@@ -82,6 +82,7 @@ and use the controls:
 <g9:G9TextEntry Label="Device name" LeadingIcon="Search" />
 <g9:G9ComboBox  Label="Relay channel" ItemsSource="{Binding Channels}" />
 <g9:G9Switch    IsOn="{Binding IsEnabled}" />
+<g9:G9CheckBox  Text="Include archived" IsChecked="{Binding IncludeArchived}" />
 <g9:G9Button    Text="Connect" Variant="Primary" LeadingIcon="{x:Static my:MyIcons.Bluetooth}" />
 ```
 
@@ -107,7 +108,7 @@ G9BottomSheetHelper.ShowG9BottomSheet(content, G9BottomSheetOptions.DefaultOptio
 
 | Area | Contents |
 |---|---|
-| **Inputs** | `G9TextEntry` `G9Editor` `G9SearchEntry` `G9PinEntry` `G9Picker` `G9ComboBox` `G9DateTimePicker` `G9TimeSpanPicker` `G9RangeSlider` `G9Switch` `G9ChipGroup` |
+| **Inputs** | `G9TextEntry` `G9Editor` `G9SearchEntry` `G9PinEntry` `G9Picker` `G9ComboBox` `G9DateTimePicker` `G9TimeSpanPicker` `G9RangeSlider` `G9Switch` `G9CheckBox` `G9ChipGroup` |
 | **Actions** | `G9Button` `G9IconButton` `G9SafeButton` `G9SafeIconButton` `G9PlusButton` `G9NavCard` `G9SwipeView` |
 | **Structure** | `G9TabView` `G9Expander` `G9CascadePanel` `G9Separator` `G9TitleWithLine` |
 | **Feedback** | `G9ProgressBar` `G9Shimmer` `G9ActivityIndicator` |
@@ -133,7 +134,9 @@ Nothing below is required; each one lights up a feature that a library genuinely
 | `G9Strings.UseResources` / `UseProvider` | translating the controls' own strings |
 | `G9IconFonts.Register<T>` / `G9Glyphs.*` | your icon font throughout the suite |
 | `G9ImageFactory.Factory` | routing bitmap icons through a caching image control |
-| `G9Speech.Provider` | the search entry's microphone |
+| `G9Speech.Provider` | the dictation microphone on `G9SearchEntry`, `G9TextEntry` and `G9Editor` (a tap never opens the keyboard) |
+| `G9OutlinedFieldBase.Configure(G9OutlinedFieldSettings)` | app-wide outlined-field rules — `HighlightFilledValue = false` rests filled fields in the empty field's greys; per field: `FilledValueHighlight`. Read back via `G9OutlinedFieldBase.Settings`. Call before fields are built |
+| `G9ToastHelper.RefreshBottomInsetsAsync(animate)` | live toasts gliding to a changed bottom inset (e.g. after `BottomSafeAreaWithTabBar` changed because the tab bar hid) |
 | `G9AndroidHost.*` | tap-outside-to-dismiss-keyboard, safe-area re-measure on rotation |
 | `G9Preferences.Store` | redirecting persisted theme + learned sheet heights to your own store |
 | `G9SafeCommand.DiagnosticsHandler` | a "More details" button on error popups |

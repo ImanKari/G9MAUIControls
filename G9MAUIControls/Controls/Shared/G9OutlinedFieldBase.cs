@@ -73,6 +73,15 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     private double _lastFloatedX = double.NaN;
     private bool _lastIsRtl;
 
+    /// <summary>
+    ///     <see cref="Environment.TickCount64" /> of the last tap an ACTIONABLE icon slot handled, or
+    ///     <c>-1</c>. Read by <see cref="WasIconJustTapped" />.
+    /// </summary>
+    private long _lastIconTapTick = -1;
+
+    /// <summary>The app-wide field defaults. See <see cref="Configure" />.</summary>
+    private static G9OutlinedFieldSettings _settings = G9OutlinedFieldSettings.Default;
+
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _label;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _placeholder;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _helperText;
@@ -99,6 +108,21 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     ///     </para>
     /// </summary>
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _showFocusHalo;
+
+    /// <summary>
+    ///     How THIS field paints itself when it holds a value but is not focused — accent, or the
+    ///     same neutral grey as an empty field. Default <see cref="G9FilledValueHighlight.Inherit" />:
+    ///     follow the app-wide <see cref="G9OutlinedFieldSettings.HighlightFilledValue" /> set through
+    ///     <see cref="Configure" />.
+    ///     <para>
+    ///         Only the COLOURS of the resting filled state change. The label still floats and turns
+    ///         bold exactly as before, and focus, error and status colours are unaffected — a focused
+    ///         field is always the accent, an invalid one always the error colour. See
+    ///         <see cref="G9FilledValueHighlight" /> for when a single field should differ from the
+    ///         app.
+    ///     </para>
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9FilledValueHighlight _filledValueHighlight;
 
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _leadingEmoji;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9IconSource? _leadingIcon;
@@ -304,8 +328,9 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         // the topmost child in a Grid. Adding a tap recognizer on the box itself
         // guarantees a focus call no matter where inside the box the user taps. Subclasses
         // expose their focusable inner element through <see cref="FocusTarget"/>.
-        // The icon hosts have their own gestures attached, so this wrapper recognizer
-        // does not interfere with the leading / trailing icon taps.
+        // The icon hosts carry their own recognizers, and OnBoxTapped explicitly ignores a tap
+        // that lands on an ACTIONABLE icon slot — see IsTapOnActionableIcon for why "the child's
+        // recognizer wins" was not enough to rely on.
         var boxTap = new TapGestureRecognizer();
         boxTap.Tapped += OnBoxTapped;
         _box.GestureRecognizers.Add(boxTap);
@@ -353,6 +378,41 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     protected Label HelperLabel => _helperLabel;
     protected Label CounterLabel => _counterLabel;
     protected Label FloatingLabel => _floatingLabel;
+
+    /// <summary>
+    ///     The app-wide defaults every outlined field resolves against — what
+    ///     <see cref="Configure" /> was last given, or <see cref="G9OutlinedFieldSettings.Default" />.
+    /// </summary>
+    /// <remarks>
+    ///     Public so that code drawing its OWN field-like frame beside the suite (a hand-rolled
+    ///     outlined row, a read-only value tile) can follow the same rule instead of hard-coding the
+    ///     one the app happens to use today.
+    /// </remarks>
+    public static G9OutlinedFieldSettings Settings => Volatile.Read(ref _settings);
+
+    /// <summary>
+    ///     Applies app-wide outlined-field defaults. Call once during app startup, BEFORE any field is
+    ///     constructed — typically beside the other <c>G9…Configure</c> calls in <c>MauiProgram</c>.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A field reads the settings each time it repaints, but nothing repaints a field because
+    ///         the settings changed: fields that are already on screen keep their current colours until
+    ///         their next state change (focus, value, theme). That is deliberate — this is a design-system
+    ///         decision taken once, not a runtime toggle, and a broadcast to every live field would cost
+    ///         a registry of them for a call that happens once per process.
+    ///     </para>
+    ///     <para>
+    ///         A single field can still differ from the app through
+    ///         <see cref="FilledValueHighlight" />.
+    ///     </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="settings" /> is <c>null</c>.</exception>
+    public static void Configure(G9OutlinedFieldSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        Volatile.Write(ref _settings, settings);
+    }
 
     /// <summary>
     ///     The platform-focusable inner element. Subclasses with a focusable inner control
@@ -408,6 +468,7 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         // exist.
         if (!HasLeadingActionable()) return;
 
+        _lastIconTapTick = Environment.TickCount64;
         var origin = ResolveTapOrigin(_leadingHost, e);
         PlayIconPress(_leadingHost, _leadingRipple, _leadingRippleDrawable, origin);
         ExecuteCommand(LeadingCommand, CommandParameter);
@@ -417,6 +478,7 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     {
         if (!HasTrailingActionable()) return;
 
+        _lastIconTapTick = Environment.TickCount64;
         var origin = ResolveTapOrigin(_trailingHost, e);
         PlayIconPress(_trailingHost, _trailingRipple, _trailingRippleDrawable, origin);
         OnTrailingTap();
@@ -471,8 +533,98 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         if (!IsEnabled || IsReadOnly) return;
         if (target.IsFocused) return;
 
+        switch (IsTapOnActionableIcon(e))
+        {
+            case true:
+                return;
+
+            case null:
+                // The platform could not say where the tap landed. Decide one dispatcher turn later,
+                // after the icon's own recognizer has had its chance to claim the tap — whichever of
+                // the two the platform happened to deliver first.
+                Dispatcher.Dispatch(() =>
+                {
+                    if (WasIconJustTapped() || target.IsFocused) return;
+                    FocusBoxTarget(target);
+                });
+                return;
+        }
+
+        FocusBoxTarget(target);
+    }
+
+    private static void FocusBoxTarget(VisualElement target)
+    {
         try { target.Focus(); }
         catch { /* platform may not be ready (e.g. during first layout) */ }
+    }
+
+    /// <summary>
+    ///     Whether a tap delivered to the BOX actually landed on an icon slot that does something of
+    ///     its own. <c>true</c> / <c>false</c> when the platform reports the tap position, <c>null</c>
+    ///     when it does not (some emulator paths, programmatic taps).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         The icon hosts sit INSIDE the box, and both carry a <see cref="TapGestureRecognizer" />.
+    ///         Whether one tap reaches both is platform behaviour, not ours: Android dispatches the
+    ///         touch to the innermost view whose listener consumes it, but on Apple platforms a
+    ///         <c>UITapGestureRecognizer</c> on a superview also sees touches in its subviews, and MAUI
+    ///         lets its recognizers fire together. When both fired, a trailing-icon tap ALSO focused
+    ///         the field.
+    ///     </para>
+    ///     <para>
+    ///         That was tolerable while the microphone focused the field anyway. Since ADR-0024 it is a
+    ///         defect with two faces: the keyboard comes up under a dictation that was meant to have
+    ///         none, and — because focus during a session means "the user chose to type" — the session
+    ///         the tap just started is stopped by its own tap. A clear button or password eye tapped on
+    ///         an unfocused field had the same side effect (keyboard for nothing). So the box yields to
+    ///         an actionable icon explicitly, by position, instead of trusting delivery order. A
+    ///         DECORATIVE icon (no command, no built-in affordance) still focuses the field, as it
+    ///         always did — tapping it is tapping the box.
+    ///     </para>
+    /// </remarks>
+    private bool? IsTapOnActionableIcon(TappedEventArgs e)
+    {
+        var checkTrailing = _trailingHost.IsVisible && HasTrailingActionable();
+        var checkLeading = _leadingHost.IsVisible && HasLeadingActionable();
+        var unknown = false;
+
+        if (checkTrailing)
+        {
+            var hit = HitTestIconHost(_trailingHost, e);
+            if (hit == true) return true;
+            unknown |= hit is null;
+        }
+
+        if (checkLeading)
+        {
+            var hit = HitTestIconHost(_leadingHost, e);
+            if (hit == true) return true;
+            unknown |= hit is null;
+        }
+
+        return unknown ? null : false;
+    }
+
+    private static bool? HitTestIconHost(Grid host, TappedEventArgs e)
+    {
+        // Never laid out means never on screen, so it cannot have been tapped.
+        if (host.Width <= 0 || host.Height <= 0) return false;
+
+        if (e.GetPosition(host) is not { } point) return null;
+
+        return point.X >= 0 && point.Y >= 0 && point.X <= host.Width && point.Y <= host.Height;
+    }
+
+    /// <summary>
+    ///     True for a short window after an actionable icon handled a tap — the fallback that
+    ///     <see cref="OnBoxTapped" /> uses when the tap position is unknown. 400 ms comfortably covers
+    ///     two recognizers of one gesture while staying well below a deliberate second tap.
+    /// </summary>
+    private bool WasIconJustTapped()
+    {
+        return _lastIconTapTick >= 0 && Environment.TickCount64 - _lastIconTapTick < 400;
     }
 
     protected static void ExecuteCommand(ICommand? command, object? param)
@@ -569,7 +721,7 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         var stateColor = ResolveStateColor(palette);
         var restingContentColor = ResolveRestingContentColor(palette);
         var floated = AlwaysFloat || IsValueFloated || IsContentFocused || HasContentValue;
-        var targetLabelColor = floated ? stateColor : restingContentColor;
+        var targetLabelColor = ResolveFloatingLabelColor(floated, stateColor, restingContentColor);
         // Mirror the disabled-state dim from Refresh so a palette swap mid-disabled-state
         // (e.g. light↔dark theme toggle while a form is in its loading state) keeps the
         // floating label dimmed instead of snapping back to full opacity.
@@ -580,9 +732,9 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
                 .WithAlpha((float)(targetLabelColor.Alpha * DisabledDimAlpha));
         }
 
-        // Floating label colour follows the state colour when floated, the muted
-        // tertiary text colour at rest. FontAttributes / position aren't touched —
-        // theme doesn't change them.
+        // Floating label colour follows the state colour when floated (unless the field rests
+        // filled in the neutral style — see ResolveFloatingLabelColor), the muted resting content
+        // colour otherwise. FontAttributes / position aren't touched — theme doesn't change them.
         if (_floatingLabel.TextColor != targetLabelColor)
         {
             _floatingLabel.TextColor = targetLabelColor;
@@ -757,7 +909,7 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
         // the Bold→None width jump during the unfocus slide. We compute the targets here
         // and pass them to AnimateFloatingLabel.
         var targetFontAttrs = floated ? FontAttributes.Bold : FontAttributes.None;
-        var targetLabelColor = floated ? stateColor : restingContentColor;
+        var targetLabelColor = ResolveFloatingLabelColor(floated, stateColor, restingContentColor);
         // Disabled-state dim for the floating label: the parent's Opacity is intentionally
         // pinned at 1.0 (see the per-child dim block above) so the label's alpha must be
         // dimmed at the COLOR level, not by setting the parent's Opacity. This keeps the
@@ -1053,19 +1205,66 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     {
         if (HasError) return palette.Error;
         if (UseStatusColor) return StatusColor ?? palette.Primary;
-        return IsContentFocused || HasFilledValue() ? palette.Primary : ResolveRestingOutlineColor(palette);
+        if (IsContentFocused) return palette.Primary;
+
+        // A value on its own is not a state that needs the accent in every design system: a form that
+        // opens pre-filled (an edit screen, a picker with a default) otherwise reads as ten focused
+        // fields at once. Whether it does is the app's call — ITCS-15666, ADR-0025.
+        return HasFilledValue() && ShouldAccentFilledValue()
+            ? palette.Primary
+            : ResolveRestingOutlineColor(palette);
     }
 
     /// <summary>
-    ///     The field's chrome colour AT REST — not focused, no value, no error. Drives the outline and
+    ///     The floating label's colour. At rest (not floated) it is always the resting content colour;
+    ///     floated, it follows the state colour — EXCEPT for a filled field resting in the neutral style,
+    ///     whose floated label takes the resting CONTENT colour rather than the resting outline colour:
+    ///     the label is text, and it must read as the same grey the empty field's label had, not as the
+    ///     hairline the outline is drawn in.
+    /// </summary>
+    private Color ResolveFloatingLabelColor(bool floated, Color stateColor, Color restingContentColor)
+    {
+        return floated && !IsNeutralFilledRest() ? stateColor : restingContentColor;
+    }
+
+    /// <summary>
+    ///     The effective filled-value rule for this field: its own <see cref="FilledValueHighlight" />,
+    ///     or the app-wide <see cref="G9OutlinedFieldSettings.HighlightFilledValue" /> when it inherits.
+    /// </summary>
+    private bool ShouldAccentFilledValue()
+    {
+        return FilledValueHighlight switch
+        {
+            G9FilledValueHighlight.Accent => true,
+            G9FilledValueHighlight.Neutral => false,
+            _ => Settings.HighlightFilledValue
+        };
+    }
+
+    /// <summary>
+    ///     A field holding a value, unfocused, with no error and no status colour, that is to be
+    ///     painted neutral. Focus, error and status always outrank the filled-value rule.
+    /// </summary>
+    private bool IsNeutralFilledRest()
+    {
+        return HasFilledValue() &&
+               !IsContentFocused &&
+               !HasError &&
+               !UseStatusColor &&
+               !ShouldAccentFilledValue();
+    }
+
+    /// <summary>
+    ///     The field's chrome colour AT REST — not focused, no error, and either empty or filled under
+    ///     the neutral filled-value style (<see cref="FilledValueHighlight" />). Drives the outline and
     ///     the trailing icon. The leading icon and un-floated label are resolved separately by
     ///     <see cref="ResolveRestingContentColor" />.
     ///     <para>
     ///         Overridable so a field can make its resting chrome match its own placeholder instead of
     ///         the generic <see cref="G9Palette.Outline" /> hairline — see
-    ///         <c>G9SearchEntry</c>. Only the RESTING colour is a subclass's to choose: focused,
-    ///         filled, error and status states stay on the shared palette so every input in the app
-    ///         still signals those the same way.
+    ///         <c>G9SearchEntry</c>. Only the RESTING colour is a subclass's to choose: focused, error
+    ///         and status states — and the accented filled state, where the app keeps it — stay on the
+    ///         shared palette so every input in the app still signals those the same way.
     ///     </para>
     /// </summary>
     protected virtual Color ResolveRestingOutlineColor(G9Palette palette) => palette.Outline;
@@ -1718,8 +1917,8 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
 
     /// <summary>
     ///     The colour used to paint the trailing icon glyph. Defaults to the field's resolved
-    ///     state colour (neutral outline when resting, Primary when focused/filled, status/error
-    ///     when applicable). Subclasses whose trailing icon is a call-to-action — e.g. the barcode
+    ///     state colour (neutral outline when resting, Primary when focused, Primary or neutral when
+    ///     filled depending on <see cref="FilledValueHighlight" />, status/error when applicable). Subclasses whose trailing icon is a call-to-action — e.g. the barcode
     ///     scan glyph — can override this to keep the icon tinted even while the field's outline is
     ///     in its neutral resting state, so the action does not read as disabled. The busy spinner
     ///     and status/error states are unaffected (they paint with the state colour directly).

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
 namespace G9MAUIControls.Hosting;
@@ -32,7 +33,16 @@ namespace G9MAUIControls.Hosting;
 ///     <c>CurrentChanged</c> exactly when a subscriber would have to re-parent, and not on the routine
 ///     re-assertions that <c>Loaded</c> / <c>Appearing</c> produce.
 /// </summary>
-internal sealed class G9PageHostStack<THost> where THost : class
+/// <remarks>
+///     ⛔ <typeparamref name="THost" /> carries the <c>PublicParameterlessConstructor</c> annotation because
+///     <see cref="ConditionalWeakTable{TKey,TValue}" /> declares it on its <c>TValue</c> (for
+///     <c>GetOrCreateValue</c>). Without it the class compiles cleanly on every TFM and then FAILS a trimmed
+///     publish with IL2091 — which is how it shipped in 1.1.0 and was found in 1.2.0's trimmed Gallery
+///     publish. Both host types are concrete classes, so the annotation costs nothing.
+/// </remarks>
+internal sealed class G9PageHostStack<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] THost>
+    where THost : class
 {
     private readonly Lock _sync = new();
 

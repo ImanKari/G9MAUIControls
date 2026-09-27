@@ -1687,6 +1687,185 @@ through `ApplyLeadingIcon`'s emoji / image branch.
 
 ---
 
+## LES-0047 — A size stamped once is a size that is wrong the first time the host moves (BS-20)
+
+**Symptom.** With the keyboard up, a full-screen sheet's footer (Save) and the bottom of its scrolling
+body stayed under the keyboard. A fit-to-content sheet with a form did not scroll the focused field into
+view, and with a tall keyboard its header slid off the top of the screen. Reported three times from the
+app (ITCS-15664, ITCS-15525) and worked around once, in one view, for one preset.
+
+**Cause — the same shape twice.** The consuming app turns the keyboard into a page-size change (it pads
+its window while a `KeyboardInsetScope` is open). `G9SheetView` follows its host's size — but two things
+around it were computed ONCE and never again:
+
+- `ApplyFullScreenHeight` wrote `HeightRequest` / `MinimumHeightRequest` on the sheet's root, sizing host
+  and body at open. The sheet view shrank its body; the content inside kept the pre-keyboard height and
+  hung out of it.
+- A resting collapsed body kept its fixed `CollapsedHeight` and was only translated. It never got
+  shorter, so nothing inside it ever saw a size change — and the translation happily went negative.
+
+RSK-0003 had BS-20 as "partly": the host change *animated* now. Animating the wrong height is still the
+wrong height; the part that was fixed was the part nobody reported.
+
+**Fix.** Register what was stamped and re-apply it on the host page's `SizeChanged` (subscription owned
+by the sheet, removed in the one cleanup path every close goes through); cap the resting height at the
+host minus the top inset, in the one function every geometry path now shares. ADR-0026.
+
+**Carry forward.**
+
+- **Every `HeightRequest` computed from the host is a subscription you forgot to make.** When writing
+  one, write down what re-applies it — or it is a snapshot of the screen as it was at open.
+- **"Follows the host" has to be true for the CONTENT, not just the container.** A container that resizes
+  around a child with a fixed request only moves the overflow somewhere less visible.
+- **A static-handler subscription to a long-lived object needs its owner recorded beside it.** The page
+  outlives the sheet; the handler is removed from the page it was ADDED to, not from whatever the current
+  host is by then — the registry will have moved on.
+- **One function for "where does this detent rest".** The cap only works because the resting position,
+  the body height, the drag clamp and the release snap all read the same `ResolveCollapsedRestingHeight`.
+  Five call sites each reading `CollapsedHeight` is how a finger, a settle and a layout end up disagreeing.
+
+---
+
+## LES-0048 — A convenience focus on a secondary affordance is a keyboard the user did not ask for
+
+**Symptom.** Tapping the microphone of a search box, a text field or an editor raised the soft keyboard,
+which covered what was being dictated (ITCS-15661).
+
+**Cause.** `OnTrailingTap` focused the inner field before toggling dictation — written deliberately, with a
+reason in the comment ("so the user can keep typing if they change their mind"). Focus on a text control
+IS the keyboard on a touch platform; the comment described the intent and not the effect. Behind it, a
+second route: the field box's own tap-to-focus recognizer could fire for the same tap on Apple platforms,
+because a superview's recognizer also sees its subviews' touches.
+
+**Fix.** The microphone never focuses; starting dictation while typing puts the keyboard away; focusing
+the field mid-session ends the session; the box ignores taps on actionable icons by position. ADR-0024.
+
+**Carry forward.**
+
+- **On a touch device, `Focus()` on a text input is "show the keyboard".** Treat every programmatic focus
+  as a keyboard decision and justify it as one.
+- **Nested tap recognizers are not exclusive on every platform.** Where a parent's tap must not also fire
+  for a child's, decide it explicitly (hit-test the child) instead of relying on dispatch order.
+
+---
+
+## LES-0049 — 1.1.0 shipped a trim break that only a trimmed publish could see
+
+**Symptom.** The 1.2.0 trimmed Gallery publish failed with `IL2091` in `G9PageHostStack<THost>` — a file
+1.2.0 did not touch. Four TFMs × two configurations had built with zero warnings.
+
+**Cause.** The IN-04 fix (1.1.0) introduced a generic host stack holding a
+`ConditionalWeakTable<G9PageBase, THost>`. `ConditionalWeakTable` annotates its `TValue` with
+`[DynamicallyAccessedMembers(PublicParameterlessConstructor)]` (for `GetOrCreateValue`); an
+un-annotated generic parameter flowing into it is a trim-analysis error that the library build does not
+report — the analyzer only runs whole-program, in the consumer's publish.
+
+**Fix.** Annotate `THost` identically. Both instantiations are concrete classes, so nothing is kept that
+was not kept already.
+
+**Carry forward.** This is rule 2 of `01-AIGuide` biting again: *a green build says nothing about the
+trimmed artifact*. Any new generic type that forwards its parameter into a BCL generic (a
+`ConditionalWeakTable`, an `Activator` path) needs the matching annotation, and the trimmed Gallery
+publish is the gate that finds it — run it for every release, not only for "risky" ones; 1.1.0 was
+released without it.
+
+---
+
+## LES-0050 — `VerticalOptions` cannot place a child that is as tall as its row (ITCS-15685)
+
+**Symptom.** A `G9Editor`'s dictation microphone sat in the vertical MIDDLE of the box in the app's
+observation form (`AlwaysFloat`, `MinimumEditorHeight="90"`, `MaxEditorHeight="210"`) but correctly in
+the bottom corner of the tester's "new report" form (`MinimumEditorHeight="110"`, character counter, no
+ceiling). The editor's own code already said `TrailingHost.VerticalOptions = End`.
+
+**Cause.** `End` moves a view only inside the slack of its row; a view as tall as the row has none. The
+trailing host holds the icon ripple — a `GraphicsView`, `Fill`, with no size of its own — and an Android
+`View` with no size of its own measures to whatever it is OFFERED under an `AT_MOST` spec (and to 0 under
+`UNSPECIFIED`). Without a ceiling the field's box is measured unconstrained inside its stack, the ripple
+asks for 0, the host hugs the 20dp glyph and `End` works. `MaxEditorHeight` sets the box's
+`MaximumHeightRequest`, which MAUI turns into an `AT_MOST` measure spec; that constraint reaches the
+ripple, the host becomes the box's height, and the glyph — `Center` inside its host — lands mid-box.
+The three differences between the two forms that LOOKED relevant (`AlwaysFloat`, the minimum height, the
+counter) had nothing to do with it. The host's WIDTH never had the problem only because it has always
+carried an explicit `WidthRequest`.
+
+**Fix.** `G9Editor` gives the trailing host an explicit `HeightRequest`
+(`G9Metrics.EditorTrailingSlotHeight` = glyph + 8 + 8) and drops the bottom margin; the glyph, centred in
+the slot, keeps the old 8dp inset from the bottom edge. Single-line fields are unchanged (centred
+either way).
+
+**Carry forward.**
+
+- **An alignment is only as good as the child's MEASURE.** Before trusting `Start` / `End` on a
+  container, know every child's measure under both a finite and an infinite constraint. A `Fill` view
+  with no intrinsic size (a `GraphicsView`, a `BoxView`, an empty `Grid`) takes all of a finite one.
+- **A `MaximumHeightRequest` changes how the whole subtree is measured**, not just the cap: an
+  unconstrained measure becomes an at-most measure all the way down. "It works until you set a
+  ceiling" is this lesson.
+- **When two usages of one control disagree, diff their CONFIGURATIONS against the measure path**, not
+  against the feature list. Only a property that changes a constraint can change where a pinned child
+  lands.
+- **A glyph-sized overlay layer inside a host must not decide the host's size.** Size the host
+  explicitly (both axes) whenever its position depends on its size.
+
+---
+
+## LES-0051 — A temporary constraint must not be written into a permanent value (ITCS-15525 reopen)
+
+**Symptom.** QA (2026-09-27, 1.2.0 source build): the dynamic-attribute form (a fit-to-content sheet whose
+body is a scroller) was fine at open and while typing, but after focusing a few fields it came back from
+the keyboard at a third of the screen and could no longer scroll to the other fields. Reproduced on the
+Pixel 9 Pro XL emulator, sheet top in a 899-high screenshot: open 333 → keyboard 50 → switch to the next
+field with the keyboard up 151 (the focused field half behind the footer) → keyboard closed **454**.
+
+**Cause.** 1.2.0 (ADR-0026) made the RESTING body `min(CollapsedHeight, host − reserve)` precisely so that
+the keyboard's shrink would be temporary: the detent (`CollapsedHeight`) is never rewritten by the clamp.
+But the fit engine writes the detent too. A scroller body is sized to `MaxFitToContentHeightRatio` × the
+page height, read LIVE (`ResolveFullScreenHeight`); moving between fields changes the body's measure
+(helper and error lines), the MeasureInvalidated tracker re-fits, and with the keyboard up that pass took
+75 % of the SHRUNKEN page and stored it as the natural height. When the keyboard closed nothing re-fitted,
+so the clamp had nothing larger to grow back to. RSK-0003 had already named this as a residual and left
+it because "the library cannot tell a keyboard from a genuine resize".
+
+**Fix.** It can, well enough: a keyboard changes only the HEIGHT. Fit caps (both
+`ApplyFitToContentHeight` and the `ExpandedFitsContent` pass) now use `ResolveFitReferenceHeight`, the
+tallest host height seen at the current host WIDTH — reset when the width changes (rotation, split screen,
+window resize), otherwise only ever growing. The natural height stays keyboard-free; fitting to the
+smaller page stays the resting clamp's job alone. Full-screen sheets keep following the LIVE height (BS-20
+needs exactly that). Verified on the emulator: keyboard up 50, field switch 50 (no shrink), keyboard closed
+256 — three rounds, identical.
+
+**Lesson.** When one value is both a *preference* (the detent) and an *input* to a temporary constraint
+(the clamp), every writer of the preference must be keyboard-, rotation-, whatever-proof — not just the
+constraint. The 1.2.0 clamp was correct and still lost, because a second writer fed the constraint's
+output back into its input.
+
+## LES-0052 — A measure cache is only as fresh as the last thing that invalidated it
+
+**Symptom.** Fit-to-content sheets WITHOUT a footer rested ~25-40dp short: the map's «اندازه‌گیری فاصله و
+مساحت» buttons and the last card of «مختصات و ارتفاع» hung below the screen edge (Iman, device review
+2026-09-27; «رفتن به مختصات» had the same defect and was "fixed" earlier only by moving its button into the
+footer — the footer is pinned to the screen edge, so a short body was merely hidden).
+
+**Investigation.** A temporary trace on the emulator (removed). For the measure sheet the fit engine measured
+the root at 159.7 and the layout agreed with it — no chrome was miscounted. One level down the body stack
+measured **81.7** although it holds `Padding.Bottom = 13`, `Spacing = 10` and children of 37.3 + 44: MAUI's
+own `CrossPlatformMeasure` of the same stack returned **104.3**, and so did a hand sum, while
+`view.Measure(w, ∞)` kept returning 81.7 — also when called again 900 ms later. 81.7 − 13 − 10 − 44 = 14.7:
+exactly ONE line of the hint label.
+
+**Cause.** `Measure()` answers from a cached desired size. The body was first measured while its hint was
+one line (before the cultural typeface / final width applied); at layout the label wrapped to two, and that
+growth never invalidated the parents' cached measure. Every later fit pass re-read the stale number.
+
+**Fix.** `MeasureContentHeight` calls `InvalidateMeasureTree(measureTarget)` first — `IView.InvalidateMeasure()`
+over the body's subtree (bounded, `MeasureInvalidationNodeBudget` = 600) — so the measure is a real one.
+Verified on the emulator: measure sheet 159.7 → 182.3 (stack 81.7 → 104.3), point-reading sheet 418 → 458;
+«رفتن به مختصات» unchanged at 284.
+
+**Lesson.** A number read from a cache is a claim about the past. When a pass exists precisely to find out
+how big something is NOW, it must not ask a cache — and a hidden symptom (the pinned footer) is not a fix.
+
 ## RSK-0003 — Known open defects in 1.1.0, carried over from the remediation pass
 
 The 1.1.0 remediation pass (2026-09-21) read the whole library and fixed most of what it found. This is
@@ -1709,7 +1888,8 @@ visible on a low-end device is not in this list, because nobody has looked yet.
 | **The shell is rebuilt on every open** (BS-18, partly). `_contentBorder` is gone — one native container and clip per sheet — but a new `G9SheetView`, header, footer, overlay host and scrim are still constructed per open. Pooling is not done. | A large refactor with no user-visible effect on its own. The device trace since then has put numbers behind it: request → motion start is *content* cost (attach 39 / first layout 43 ms median, 450–660 ms for a heavy form), so keeping heavy bodies alive is now the next real lever, not a nice-to-have. |
 | **Dead options stay public** (BS-13, not done). `AndroidTheme`, `AndroidMaxWidth`, `AndroidMaxHeight`, `AndroidMargin`, `AndroidShouldRemoveExpandedCorners`, `WindowsMaxHeight`, `WindowsMinWidth`, `WindowsMinHeight`, `AnimateOverlayToColorOnIos` — nine of 84 options that nothing reads. | `[Obsolete]` is a build break for a consumer with `TreatWarningsAsErrors`, which is this subtree's own posture (ADR-0008). Remove in 2.0. |
 | **`GetFullExpandedPosition` / `GetHalfExpandedPosition` are getters that set `State` and `HeightRequest`** (BS-19, not done). | Not worth the regression risk without a device to see what depends on the side effect. |
-| **Full-screen height is stamped once at open and never re-applied** (BS-20, partly). A large host-height change now animates instead of jumping, but a keyboard still leaves a full-screen sheet hanging past its container. | It interacts with the app-side `KeyboardInsetScope`, which is still the safety net. Proper IME-synchronised translation (`ViewCompat.SetWindowInsetsAnimationCallback`, API 30+) is deferred with it. |
+| ~~**Full-screen height is stamped once at open and never re-applied** (BS-20, partly).~~ **CLOSED in 1.2.0** — every full-screen element is re-sized on the host page's `SizeChanged` (ADR-0026, LES-0047). IME-synchronised translation stays deferred; following the page covers the keyboard as the app delivers it (a page-size change). | — |
+| ~~**A fit pass that runs while the page is shrunk caps against the shrunken page** (new in 1.2.0, residual of ITCS-15525).~~ **CLOSED in 1.2.0 (2026-09-27)** — seen on a device the day it was logged: the tester's attribute form collapsed to a third of the screen after a few field switches. Fit caps now size against a keyboard-proof reference height (`ResolveFitReferenceHeight`: the tallest host height at the current WIDTH — a rotation / split-screen resets it, a keyboard cannot). LES-0051. | — |
 | **The managed ticker stays** (BS-05, partly). Per-frame allocation is gone and a hardware layer is taken for the duration of a motion. | Twice diagnosed, twice wrong about the cure: a native animator runs on the same UI thread and stalls with it (ADR-0022), and what the motion actually needed was the platform's *timing* on the display's frame clock (ADR-0023). |
 | **The 6,000-line helper is still one static class with eleven `ConditionalWeakTable`s** (BS-12, not done), and the sheet's detent / release / resize maths is therefore still untestable — it lives inside `G9SheetView` and would have to be extracted into a dependency-free type first (XC-05). | ADR-0022 → *Rejected*. A refactor of that size, shipped blind, would have put the part that fixes the actual complaints at risk. |
 | Also not done and named in ADR-0022: the structural `G9Redacted` skeleton, a predictive-back callback, the optional iOS 16+ native presenter, and deleting the AgriPad-side compensations (10 height seeds, 6 hand-written height providers, 2 memo keys, `OperationsMenuContentViewBase`, `CompactListSheetHelper`). | The app-side compensations are harmless with the new engine and they are the safety net until it has been seen on a real device. |

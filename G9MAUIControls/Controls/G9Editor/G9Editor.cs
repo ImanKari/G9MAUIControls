@@ -1,3 +1,4 @@
+using G9MAUIControls.Helpers;
 using G9MAUIControls.Icons;
 using G9MAUIControls.Localization;
 using G9MAUIControls.Theming;
@@ -13,7 +14,8 @@ namespace G9MAUIControls.Controls;
 ///     scales with <see cref="MinimumEditorHeight" /> / <see cref="AutoSize" />.
 ///     <para>
 ///         <b>Dictation.</b> Set <see cref="VoiceEnabled" /> and the editor grows a microphone in
-///         its trailing slot, pinned to the BOTTOM of the box rather than centred: a text area is
+///         its trailing slot, pinned to the BOTTOM-END corner of the box rather than centred (in every
+///         configuration — see the constructor and ITCS-15685): a text area is
 ///         tall, and an affordance floating in the middle of a paragraph reads as part of the text.
 ///         Unlike <see cref="G9TextEntry" />, the microphone stays visible whether or not the field
 ///         has a value — an editor has no clear button competing for the slot, and a long
@@ -152,11 +154,28 @@ public partial class G9Editor : G9OutlinedFieldBase
 
         // The trailing slot defaults to vertically centred, which is right for a one-line entry and
         // wrong for a text area: a microphone floating beside the middle of a paragraph reads as
-        // part of the text. Pin it to the bottom, level with the last line, where a "finish this
-        // thought out loud" affordance belongs. Costs nothing when no trailing icon is shown — the
-        // host stays collapsed.
+        // part of the text. Pin it to the BOTTOM-END corner of the box, where a "finish this thought
+        // out loud" affordance belongs. Costs nothing when no trailing icon is shown — the host stays
+        // collapsed.
+        //
+        // ⛔ The explicit HeightRequest is what makes the pin real (ITCS-15685, LES-0050). `End` only
+        // moves a view that is SHORTER than its row, and this host was not always shorter: it holds
+        // the ripple GraphicsView (Fill, no size of its own), and an Android View with no size
+        // measures to the whole height it is offered under an AT_MOST spec. With no ceiling the box
+        // measures its children unconstrained, the ripple asks for 0, the host hugs the 20dp glyph
+        // and `End` works — the tester form. Set MaxEditorHeight and MAUI turns the box's
+        // MaximumHeightRequest into an AT_MOST constraint that flows down to the ripple; the host
+        // then measures as tall as the box and the glyph, centred inside it, sits in the vertical
+        // MIDDLE — the observation form. A fixed slot height takes the ripple's measure out of the
+        // equation in every configuration: AlwaysFloat, Min/MaxEditorHeight, counter, LTR and RTL
+        // (the column swap is horizontal; End is vertical, so the corner follows direction for free).
+        //
+        // Height = glyph + 8dp above and below, so the glyph's bottom sits 8dp above the box's
+        // bottom edge — the same inset the old `Margin (0,0,0,8)` produced wherever it did work, now
+        // produced by centring inside the slot. No margin: a margin plus a fixed height would move
+        // the glyph up by the margin again. The taller slot is also a taller press/ripple target.
         TrailingHost.VerticalOptions = LayoutOptions.End;
-        TrailingHost.Margin = new Thickness(0, 0, 0, 8);
+        TrailingHost.HeightRequest = G9Metrics.EditorTrailingSlotHeight;
     }
 
     public Editor InnerEditor => _editor;
@@ -243,8 +262,16 @@ public partial class G9Editor : G9OutlinedFieldBase
     {
         if (ShouldShowVoiceMic())
         {
-            // Focus first so the user can simply carry on typing if they change their mind.
-            try { _editor.Focus(); } catch { /* ignore */ }
+            // ⛔ No focus on a microphone tap (ITCS-15661, ADR-0024) — same rule, same reason as
+            // G9TextEntry.OnTrailingTap: focusing the Editor raises the soft keyboard, and on a text
+            // AREA that keyboard covers most of what is being dictated. The session writes through
+            // Text, so it never needed focus. Starting while the keyboard is up takes it down; tapping
+            // the editor itself is how the user switches back to typing (OnInnerFocusChanged).
+            if (!IsListening)
+            {
+                G9KeyboardHelper.DismissKeyboardIfFocused(_editor);
+            }
+
             _ = ToggleVoiceAsync();
             return;
         }
@@ -377,6 +404,14 @@ public partial class G9Editor : G9OutlinedFieldBase
         // Blur-validation + deferred visual refresh are handled by the shared base flow
         // (G9OutlinedFieldBase.HandleInnerFocusChanged), guarded by ShouldAutoValidate
         // so an externally-set error survives focus/blur.
+        //
+        // Focus arriving mid-session is the user choosing to type (the microphone no longer focuses —
+        // ADR-0024): end the session. The partial transcript is already in Text.
+        if (e.IsFocused && IsListening)
+        {
+            StopDictation();
+        }
+
         HandleInnerFocusChanged(e.IsFocused, () => _editor?.IsFocused == true);
     }
 

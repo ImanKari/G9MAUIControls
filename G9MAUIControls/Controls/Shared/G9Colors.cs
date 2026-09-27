@@ -75,6 +75,34 @@ public static class G9Colors
             : palette.OnPrimary;
     }
 
+    // ── Check box (G9CheckBox) ──
+    /// <summary>
+    ///     Peak alpha of the press halo, painted in <see cref="G9Palette.Primary" /> behind the box.
+    ///     Low on purpose: it is a "your finger is here" cue, and at M3's 12–16 % it reads on both the
+    ///     light and the dark surface without competing with the filled box it surrounds.
+    /// </summary>
+    public const float CheckBoxHaloAlpha = 0.14f;
+
+    /// <summary>
+    ///     Alpha applied to the unchecked outline of a DISABLED check box. The light palette's
+    ///     <see cref="G9Palette.Outline" /> and <see cref="G9Palette.TextDisabled" /> are the same grey,
+    ///     so the disabled cue has to come from alpha, not from a different token.
+    /// </summary>
+    public const float CheckBoxDisabledOutlineAlpha = 0.55f;
+
+    /// <summary>
+    ///     The check mark / indeterminate bar on a filled (enabled) box: the palette's
+    ///     <see cref="G9Palette.OnPrimary" />. White in the stock light palette — the design's "white
+    ///     tick" — and whatever contrasts with <see cref="G9Palette.Primary" /> after a rebrand. NOTE:
+    ///     the stock DARK palette's OnPrimary is a deep green (#062814); that is the M3 dark-theme
+    ///     look. If the product wants a white tick in dark mode too, return <c>Colors.White</c> here —
+    ///     it is the one place the mark colour is decided (ADR-0028).
+    /// </summary>
+    public static Color CheckBoxMark(G9Palette palette)
+    {
+        return palette.OnPrimary;
+    }
+
     private static bool IsDark()
     {
         var app = Application.Current;

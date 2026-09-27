@@ -68,6 +68,11 @@ public static class G9BottomSheetHelper
     // Debounce window for fit-to-content remeasures driven by content MeasureInvalidated bursts.
     private const int FitContentRemeasureDebounceMs = 48;
 
+    // Upper bound on the views InvalidateMeasureTree visits before a fit measure. A fit-to-content body is
+    // a form or a short list (tens of views); the bound only stops a pathological tree from turning one
+    // measure into a long walk — past it the remaining caches are simply left as they are.
+    private const int MeasureInvalidationNodeBudget = 600;
+
     // Absolute lower bound for a fit-to-content sheet. Applied INSTEAD of the loading floor
     // (G9LayoutMetrics.FitContentLoadingMinHeight) when the resolved height is authoritative —
     // a caller-supplied placeholder, a height-memo hit, or a real measure of loaded content. Those
@@ -249,6 +254,7 @@ public static class G9BottomSheetHelper
             IsFitContentSettled = true,
             FitHeightMemoKey = BuildFitHeightMemoKey(request.Content, sheet, morphOptions)
         };
+        DetachFullScreenHeightTracking(previousBehavior);
         SheetBehaviorStates.AddOrUpdate(sheet, behavior);
 
         ApplyOptions(sheet, morphOptions);
@@ -1694,35 +1700,168 @@ public static class G9BottomSheetHelper
         return Math.Max(0, padding - grabberAreaHeight);
     }
 
+    /// <summary>
+    ///     Gives <paramref name="element" /> the full-screen height of its sheet — the page height, or
+    ///     the page height below the top safe-area band when <paramref name="isContentHeight" /> — and
+    ///     keeps giving it that height for as long as the sheet lives.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         ⛔ "Keeps giving" is the fix for BS-20 (ITCS-15664). This used to STAMP the height once, at
+    ///         open. The consuming app pads its window by the keyboard height while a form is being
+    ///         edited, so the page shrinks under an open full-screen sheet — and a root frozen at the
+    ///         pre-keyboard height hangs past the bottom of its container, carrying its footer and the
+    ///         bottom of its <c>ScrollView</c> under the keyboard. The sheet view itself followed the host
+    ///         (its full-expanded ratio is relative), the content inside it did not. Every element sized
+    ///         here is now registered on the sheet and re-sized whenever the host page changes size (see
+    ///         <see cref="AttachFullScreenHeightTracking" />), for every full-screen preset — toolbar,
+    ///         toolbar-less and edge-to-edge alike.
+    ///     </para>
+    ///     <para>
+    ///         Re-sizing is a plain property write, never an animation: the page has already changed
+    ///         size by the time this runs, and the sheet view moves its own body in the same layout pass
+    ///         (<c>G9SheetView.ApplyBodyHeightForState</c>). An animated height here would be a second
+    ///         motion fighting that one — and a relayout per frame, which the motion engine exists to
+    ///         avoid.
+    ///     </para>
+    /// </remarks>
     private static void ApplyFullScreenHeight(
+        CustomizedSfG9BottomSheet sheet,
         VisualElement element,
         G9BottomSheetOptions options,
-        double? heightOverride = null)
+        bool isContentHeight = false)
     {
         if (!IsFullScreenPresentation(options))
         {
             return;
         }
 
-        var height = heightOverride ?? ResolveFullScreenHeight();
-        if (height <= 0)
+        var behavior = SheetBehaviorStates.GetValue(
+            sheet,
+            static _ => new SheetBehaviorState(G9BottomSheetOptions.DefaultOptions()));
+
+        var target = behavior.FullScreenHeightTargets.Find(x => ReferenceEquals(x.Element, element));
+        if (target is null)
+        {
+            target = new FullScreenHeightTarget(element, isContentHeight);
+            behavior.FullScreenHeightTargets.Add(target);
+        }
+
+        AttachFullScreenHeightTracking(sheet, behavior);
+
+        var fullHeight = ResolveFullScreenHeight();
+        target.Apply(fullHeight, ResolveFullScreenContentHeight(options, fullHeight));
+    }
+
+    private static double ResolveFullScreenContentHeight(G9BottomSheetOptions options) =>
+        ResolveFullScreenContentHeight(options, ResolveFullScreenHeight());
+
+    private static double ResolveFullScreenContentHeight(G9BottomSheetOptions options, double fullHeight)
+    {
+        if (fullHeight <= 0 || options.ShowToolbar)
+        {
+            return fullHeight;
+        }
+
+        return Math.Max(1, fullHeight - ResolveFullScreenTopPadding(options));
+    }
+
+    /// <summary>
+    ///     Subscribes a full-screen sheet to its host page's <c>SizeChanged</c>, once per sheet. The
+    ///     page is resolved NOW — the sheet is being built for the current host — and remembered, so the
+    ///     subscription can be removed from the same page it was added to however the current host has
+    ///     moved on by the time the sheet goes away.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         Lifetime: removed by <see cref="DetachFullScreenHeightTracking" /> from
+    ///         <c>CleanupSheetVisualsNow</c> (every close path ends there) and whenever a sheet's
+    ///         behaviour state is replaced. The handler holds the sheet, and the page holds the handler,
+    ///         so a detach that never ran would keep a closed sheet reachable for as long as its page
+    ///         lives — which in a single-page app is the process. The handler also detaches itself if it
+    ///         ever fires for a behaviour that is no longer the sheet's current one, as a second line.
+    ///     </para>
+    ///     <para>
+    ///         Why the PAGE and not the sheet view's own <c>SizeChanged</c>: the heights are page heights
+    ///         (<see cref="ResolveFullScreenHeight" />), so the page is the source of truth, and its size
+    ///         is set before its children are arranged — the new height is in place before the sheet
+    ///         view lays its body out for the same change.
+    ///     </para>
+    /// </remarks>
+    private static void AttachFullScreenHeightTracking(CustomizedSfG9BottomSheet sheet, SheetBehaviorState behavior)
+    {
+        if (behavior.HostSizeHandler is not null)
         {
             return;
         }
 
-        element.MinimumHeightRequest = height;
-        element.HeightRequest = height;
-    }
-
-    private static double ResolveFullScreenContentHeight(G9BottomSheetOptions options)
-    {
-        var height = ResolveFullScreenHeight();
-        if (height <= 0 || options.ShowToolbar)
+        if (!G9ModalHostRegistry.TryGetCurrentHost(out var host))
         {
-            return height;
+            return;
         }
 
-        return Math.Max(1, height - ResolveFullScreenTopPadding(options));
+        var page = host.Page;
+        EventHandler handler = (_, _) => ReapplyFullScreenHeights(sheet, behavior);
+        page.SizeChanged += handler;
+        behavior.HostSizeSource = page;
+        behavior.HostSizeHandler = handler;
+        behavior.LastFullScreenHeight = page.Height;
+    }
+
+    private static void DetachFullScreenHeightTracking(SheetBehaviorState? behavior)
+    {
+        if (behavior?.HostSizeSource is { } page && behavior.HostSizeHandler is { } handler)
+        {
+            page.SizeChanged -= handler;
+        }
+
+        if (behavior is null)
+        {
+            return;
+        }
+
+        behavior.HostSizeSource = null;
+        behavior.HostSizeHandler = null;
+    }
+
+    private static void ReapplyFullScreenHeights(CustomizedSfG9BottomSheet sheet, SheetBehaviorState behavior)
+    {
+        // Second line of the lifetime contract: a behaviour that is no longer the sheet's CURRENT one
+        // belongs to a sheet that was cleaned up or re-configured without passing through a detach.
+        // (Not IsSheetAlive: a sheet that is configured but not yet attached is legitimately "not
+        // alive" for a moment, and must not lose its subscription for it.)
+        if (!SheetBehaviorStates.TryGetValue(sheet, out var current) || !ReferenceEquals(current, behavior))
+        {
+            DetachFullScreenHeightTracking(behavior);
+            return;
+        }
+
+        // A closing sheet slides out at the height it has; resizing it mid-slide would re-lay its body
+        // out for nothing, in full view.
+        if (behavior.IsClosing || behavior.HostSizeSource is not { } page)
+        {
+            return;
+        }
+
+        var fullHeight = page.Height;
+        if (fullHeight <= 0 ||
+            double.IsPositiveInfinity(fullHeight) ||
+            Math.Abs(fullHeight - behavior.LastFullScreenHeight) < 0.5)
+        {
+            return;
+        }
+
+        behavior.LastFullScreenHeight = fullHeight;
+
+        var contentHeight = ResolveFullScreenContentHeight(behavior.Options, fullHeight);
+        foreach (var target in behavior.FullScreenHeightTargets)
+        {
+            target.Apply(fullHeight, contentHeight);
+        }
+
+        // A body that sizes its own viewport from the sheet height (a virtualized list) is told the new
+        // height too — the same call it got at open, so it needs no second code path.
+        behavior.SizedView?.ApplyG9BottomSheetHeight(contentHeight);
     }
 
     private static double ResolveFullScreenHeight()
@@ -1736,6 +1875,104 @@ public static class G9BottomSheetHelper
         return display.Density > 0 ? display.Height / display.Density : 0;
     }
 
+
+    /// <summary>
+    ///     Drops every cached measurement under <paramref name="root" /> so the next <c>Measure</c> is a
+    ///     real one. See the comment where it is called (MeasureContentHeight, LES-0052).
+    /// </summary>
+    private static void InvalidateMeasureTree(View root)
+    {
+        var budget = MeasureInvalidationNodeBudget;
+        var pending = new Stack<IView>();
+        pending.Push(root);
+        while (pending.Count > 0 && budget-- > 0)
+        {
+            var view = pending.Pop();
+            view.InvalidateMeasure();
+            switch (view)
+            {
+                case Layout layout:
+                    foreach (var child in layout.Children)
+                    {
+                        pending.Push(child);
+                    }
+
+                    break;
+                case ContentView { Content: { } content }:
+                    pending.Push(content);
+                    break;
+                case Border { Content: { } borderContent }:
+                    pending.Push(borderContent);
+                    break;
+                case ScrollView { Content: { } scrollContent }:
+                    pending.Push(scrollContent);
+                    break;
+            }
+        }
+    }
+
+    private static double ResolveFullScreenWidth()
+    {
+        if (G9ModalHostRegistry.TryGetCurrentHost(out var host) && host.Page.Width > 0)
+        {
+            return host.Page.Width;
+        }
+
+        var display = DeviceDisplay.MainDisplayInfo;
+        return display.Density > 0 ? display.Width / display.Density : 0;
+    }
+
+    /// <summary>
+    ///     The page height a FIT-TO-CONTENT sheet sizes itself against: the tallest the host page has
+    ///     been at its current width — i.e. the page WITHOUT the soft keyboard.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Why not <see cref="ResolveFullScreenHeight" /> (ITCS-15525 reopen, 2026-09-27).</b> A
+    ///         consumer that reserves the IME inset (AgriPad's KeyboardInsetScope) SHRINKS the host page
+    ///         while the keyboard is up. A fit sheet whose body is a scroller sizes itself to
+    ///         <c>MaxFitToContentHeightRatio</c> × the page height, and any re-fit that ran with the
+    ///         keyboard open — moving from one field to the next is enough, the helper/error lines change
+    ///         the body's measure — computed that cap from the SHRUNKEN page and wrote it into
+    ///         <c>CollapsedHeight</c>. 1.2.0's resting clamp (<c>min(CollapsedHeight, host − reserve)</c>)
+    ///         was meant to make keyboard shrinking temporary, but here the shrink had become the sheet's
+    ///         NATURAL height: the keyboard closed, nothing re-fitted, and the form stayed a third of the
+    ///         screen tall with a scroll range too short to reach the other fields. Reproduced on the
+    ///         emulator: open 333 → keyboard, switch field → close keyboard → sheet top at 454 of 899.
+    ///     </para>
+    ///     <para>
+    ///         The keyboard only ever changes the HEIGHT. So the reference is reset whenever the WIDTH
+    ///         changes (rotation, split-screen, window resize) and otherwise only ever grows. The natural
+    ///         height stays keyboard-free; the temporary fit to the shrunken page is the resting clamp's
+    ///         job alone (<c>G9SheetView.ResolveRestingHeight</c>), which is exactly what lets the sheet
+    ///         come back to full size when the keyboard closes. Full-screen sheets deliberately keep
+    ///         following the LIVE height (BS-20) — this reference is for fit-to-content caps only.
+    ///     </para>
+    /// </remarks>
+    private static double ResolveFitReferenceHeight(SheetBehaviorState behavior)
+    {
+        var current = ResolveFullScreenHeight();
+        if (current <= 0)
+        {
+            return behavior.FitReferenceHostHeight;
+        }
+
+        var width = ResolveFullScreenWidth();
+        if (behavior.FitReferenceHostHeight <= 0 || Math.Abs(width - behavior.FitReferenceHostWidth) > 1)
+        {
+            behavior.FitReferenceHostWidth = width;
+            behavior.FitReferenceHostHeight = current;
+            return current;
+        }
+
+        if (current > behavior.FitReferenceHostHeight)
+        {
+            behavior.FitReferenceHostHeight = current;
+        }
+
+        return behavior.FitReferenceHostHeight;
+    }
+
     private static void ConfigureSheetContent(
         CustomizedSfG9BottomSheet sheet,
         SheetContentRequest contentRequest,
@@ -1744,6 +1981,14 @@ public static class G9BottomSheetHelper
     {
         var behaviorState = new SheetBehaviorState(options);
         InitializeFitPlaceholder(sheet, behaviorState, contentRequest, options);
+
+        // A behaviour being REPLACED takes its host-size subscription with it; left behind, it would
+        // keep re-sizing the previous content's elements for the life of the page.
+        if (SheetBehaviorStates.TryGetValue(sheet, out var replacedBehavior))
+        {
+            DetachFullScreenHeightTracking(replacedBehavior);
+        }
+
         SheetBehaviorStates.AddOrUpdate(sheet, behaviorState);
 
         // non-deferred content). A large buildMs here is a tap→open delay the user feels.
@@ -2381,7 +2626,7 @@ public static class G9BottomSheetHelper
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
 
-        ApplyFullScreenHeight(root, options);
+        ApplyFullScreenHeight(sheet, root, options);
 
         var contentRow = 0;
         if (showStateAwareTopPadding)
@@ -2489,7 +2734,7 @@ public static class G9BottomSheetHelper
             }
         };
 
-        ApplyFullScreenHeight(root, options);
+        ApplyFullScreenHeight(sheet, root, options);
 
         root.Children.Add(bodyOnlyRoot);
         Grid.SetRow(bodyOnlyRoot, 0);
@@ -2514,7 +2759,7 @@ public static class G9BottomSheetHelper
         bool useFullScreenSizing)
     {
         var content = contentRequest.Content ?? throw new InvalidOperationException("Bottom sheet content is missing.");
-        PrepareSheetContent(content, handle, options);
+        PrepareSheetContent(sheet, content, handle, options);
 
         // "Open then fill" content paints its own loading/preview state and loads after the sheet
         // is visible (see IDeferredSheetLoad). It must NOT be wrapped in a DeferredContentView —
@@ -2590,7 +2835,7 @@ public static class G9BottomSheetHelper
         {
             var content = contentRequest.ContentFactory?.Invoke()
                           ?? throw new InvalidOperationException("Bottom sheet content factory returned null.");
-            PrepareSheetContent(content, handle, options);
+            PrepareSheetContent(sheet, content, handle, options);
             contentRequest.OnContentCreated?.Invoke(content);
 
             RegisterDeferredLoad(sheet, content);
@@ -2624,7 +2869,7 @@ public static class G9BottomSheetHelper
             {
                 var content = contentRequest.ContentFactory?.Invoke()
                               ?? throw new InvalidOperationException("Bottom sheet content factory returned null.");
-                PrepareSheetContent(content, handle, options);
+                PrepareSheetContent(sheet, content, handle, options);
                 return content;
             },
             AutoLoad = !loadsOnOpenSignal,
@@ -2706,7 +2951,7 @@ public static class G9BottomSheetHelper
         {
             if (!options.ShowToolbar)
             {
-                ApplyFullScreenHeight(deferred, options, ResolveFullScreenContentHeight(options));
+                ApplyFullScreenHeight(sheet, deferred, options, isContentHeight: true);
             }
 
             return;
@@ -2800,7 +3045,8 @@ public static class G9BottomSheetHelper
                 return;
             }
 
-            var fullHeight = ResolveFullScreenHeight();
+            // Keyboard-proof: see ResolveFitReferenceHeight (ITCS-15525 reopen).
+            var fullHeight = ResolveFitReferenceHeight(behavior);
             if (fullHeight <= 0)
             {
                 return;
@@ -2960,7 +3206,9 @@ public static class G9BottomSheetHelper
             behavior.IsApplyingFitContent = true;
             try
             {
-                var fullHeight = ResolveFullScreenHeight();
+                // Keyboard-proof: a re-fit while the keyboard shrinks the page must not make the
+                // shrunken cap the sheet's natural height. See ResolveFitReferenceHeight (ITCS-15525).
+                var fullHeight = ResolveFitReferenceHeight(behavior);
                 if (fullHeight <= 0)
                 {
                     fullHeight = G9LayoutMetrics.FitContentLoadingMinHeight;
@@ -3499,6 +3747,16 @@ public static class G9BottomSheetHelper
     {
         var width = ResolveMeasureWidth(sheet, options);
         var measureTarget = ResolveFitToContentMeasureTarget(content, options);
+        // ⛔ Invalidate BEFORE measuring (LES-0052, 2026-09-27). Measure() answers from a cache, and the
+        // cache can be stale in exactly the case this engine exists for: the body was first measured before
+        // its text had its final shape (the cultural typeface / final width not applied yet, so a hint
+        // measured as ONE line), the label then wrapped to two at layout, and that growth never invalidated
+        // the parents' cached measure. Every later fit pass re-read the stale number and the sheet rested
+        // too short — the measure tool's buttons and the point-reading sheet's last card hung ~25-40dp below
+        // the screen edge (on device: stale 159.7 vs fresh 182.3; 418 vs 458). A sheet with a footer only
+        // hid it, because the footer is pinned to the edge. Dropping the subtree's caches makes this a real
+        // measure; a fit body is tens of views, and the walk is bounded.
+        InvalidateMeasureTree(measureTarget);
         var measuredHeight = measureTarget.Measure(width, double.PositiveInfinity).Height;
         usedFallback = false;
 
@@ -4606,7 +4864,7 @@ public static class G9BottomSheetHelper
         host.Children.Add(content);
 
         RegisterTopPaddingTarget(sheet, host, value => host.Padding = new Thickness(0, value, 0, 0));
-        ApplyFullScreenHeight(host, options);
+        ApplyFullScreenHeight(sheet, host, options);
         return host;
     }
 
@@ -4688,6 +4946,7 @@ public static class G9BottomSheetHelper
     }
 
     private static void PrepareSheetContent(
+        CustomizedSfG9BottomSheet sheet,
         View content,
         IG9BottomSheetHandle handle,
         G9BottomSheetOptions options)
@@ -4699,7 +4958,7 @@ public static class G9BottomSheetHelper
             content.VerticalOptions = LayoutOptions.Fill;
             if (!options.ShowToolbar)
             {
-                ApplyFullScreenHeight(content, options, ResolveFullScreenContentHeight(options));
+                ApplyFullScreenHeight(sheet, content, options, isContentHeight: true);
             }
         }
 
@@ -4717,6 +4976,15 @@ public static class G9BottomSheetHelper
 
             sizedHeight = height;
             sizedView.ApplyG9BottomSheetHeight(height);
+
+            // A full-screen body's height follows the host from here on (BS-20); a body that sizes its
+            // own viewport from it is told each new height through the same call.
+            if (IsFullScreenPresentation(options))
+            {
+                SheetBehaviorStates
+                    .GetValue(sheet, static _ => new SheetBehaviorState(G9BottomSheetOptions.DefaultOptions()))
+                    .SizedView = sizedView;
+            }
         }
 
     }
@@ -5501,6 +5769,7 @@ public static class G9BottomSheetHelper
 
         DetachPositionTracking(sheet);
         DetachFitToContentSizeTracking(sheet);
+        DetachFullScreenHeightTracking(SheetBehaviorStates.TryGetValue(sheet, out var closingBehavior) ? closingBehavior : null);
         DetachModalOverlay(sheet, parentGrid);
 
         if (parentGrid is not null && ReferenceEquals(sheet.Parent, parentGrid))
@@ -5628,6 +5897,14 @@ public static class G9BottomSheetHelper
         // drag on it read as a dismissal rather than as a step to a smaller state that isn't there.
         sheet.AllowCollapsedState = HasPeekDetent(options);
         sheet.ScrollingExpandsSheet = options.ScrollingExpandsSheet;
+
+        // How close to the top a RESTING collapsed body (every fit-to-content sheet, and a peek) may
+        // come when the page shrinks under it — a keyboard inset, a split screen. Only the display
+        // cutout is reserved: it is the one strip where a sheet header stops being readable. Without a
+        // ceiling at all, the fixed CollapsedHeight was kept and the body merely translated, so a tall
+        // keyboard pushed the header off the screen and the body never got shorter (ITCS-15525,
+        // G9SheetView.RestingTopReserve).
+        sheet.RestingTopReserve = ResolveTopSafeAreaInset();
 
         if (options.SizeMode == G9BottomSheetSizeMode.FitToContent)
         {
@@ -6807,6 +7084,29 @@ public static class G9BottomSheetHelper
 
         public List<SheetTopPaddingTarget> TopPaddingTargets { get; } = [];
 
+        // Every element ApplyFullScreenHeight sized, re-sized when the host page changes size (BS-20).
+        public List<FullScreenHeightTarget> FullScreenHeightTargets { get; } = [];
+
+        // The page whose SizeChanged drives FullScreenHeightTargets, and the handler subscribed to it —
+        // both kept so the handler is removed from the page it was ADDED to (see
+        // AttachFullScreenHeightTracking / DetachFullScreenHeightTracking).
+        public Page? HostSizeSource { get; set; }
+
+        public EventHandler? HostSizeHandler { get; set; }
+
+        // Last page height the targets were sized for; a SizeChanged that did not change the HEIGHT (a
+        // width-only change) is not a reason to re-lay a full-screen body out.
+        public double LastFullScreenHeight { get; set; }
+
+        // A full-screen body implementing IG9BottomSheetSizedView, told every new content height.
+        public IG9BottomSheetSizedView? SizedView { get; set; }
+
+        // The keyboard-proof page height a FIT sheet sizes against (ITCS-15525 reopen) — the tallest
+        // page height seen at FitReferenceHostWidth. See ResolveFitReferenceHeight.
+        public double FitReferenceHostHeight { get; set; }
+
+        public double FitReferenceHostWidth { get; set; }
+
         public bool IsClosingCommandInvoked { get; set; }
 
         public bool IsClosedCommandInvoked { get; set; }
@@ -6909,6 +7209,39 @@ public static class G9BottomSheetHelper
         public View Target { get; } = target;
 
         public EventHandler Handler { get; } = handler;
+    }
+
+    /// <summary>
+    ///     One element sized to the full-screen height: either the page height (a sheet root, a sizing
+    ///     host) or the CONTENT height below the top safe-area band (a toolbar-less body and its
+    ///     loading placeholder), which is what <see cref="IsContentHeight" /> selects.
+    /// </summary>
+    private sealed class FullScreenHeightTarget(VisualElement element, bool isContentHeight)
+    {
+        public VisualElement Element { get; } = element;
+
+        public bool IsContentHeight { get; } = isContentHeight;
+
+        public void Apply(double fullHeight, double contentHeight)
+        {
+            var height = IsContentHeight ? contentHeight : fullHeight;
+            if (height <= 0 || double.IsPositiveInfinity(height))
+            {
+                return;
+            }
+
+            // Both, always, and the minimum first: a stale MinimumHeightRequest left above a new, smaller
+            // HeightRequest pins the old height right back — which is how a shrink silently does nothing.
+            if (Math.Abs(Element.MinimumHeightRequest - height) > 0.5)
+            {
+                Element.MinimumHeightRequest = height;
+            }
+
+            if (Math.Abs(Element.HeightRequest - height) > 0.5)
+            {
+                Element.HeightRequest = height;
+            }
+        }
     }
 
     private sealed class SheetTopPaddingTarget(VisualElement owner, Action<double> applyPadding)

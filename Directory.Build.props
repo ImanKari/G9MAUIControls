@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.1.0</G9FamilyVersion>
+    <G9FamilyVersion>1.2.0</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,80 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+
+        1.2.0
+        - Voice dictation no longer opens the keyboard (ADR-0024). G9TextEntry, G9SearchEntry and G9Editor
+        used to focus their inner field on a microphone tap, and focusing is what raises the soft
+        keyboard - so every dictation began with a keyboard covering the text being dictated. A mic tap
+        now leaves focus alone; starting a session while the keyboard is up takes it down; tapping the
+        field during a session (the user chose to type) ends it, keeping the partial transcript. A tap on
+        an actionable trailing or leading icon no longer also focuses the field through the box-level
+        tap recognizer. CONSUMER VISIBLE: tapping the microphone no longer brings the keyboard up.
+
+        - Outlined fields: filled-value highlight is configurable (ADR-0025). New
+        G9OutlinedFieldSettings { HighlightFilledValue } applied once at startup with
+        G9OutlinedFieldBase.Configure(...), read back through G9OutlinedFieldBase.Settings, plus a
+        per-field FilledValueHighlight (Inherit / Accent / Neutral). With HighlightFilledValue = false a
+        field that merely holds a value rests in the empty field's greys (outline, floated label, trailing
+        icon) instead of Primary; the label still floats; focus, error and status colours are unchanged.
+        The library default is unchanged (true).
+
+        - Bottom sheet: a full-screen sheet follows its host page's height (BS-20 closed, ADR-0026). The
+        root / host / body heights were stamped once at open, so when the page shrank for the keyboard the
+        footer and the bottom of the body's ScrollView stayed under it. They are now re-applied on every
+        host page size change, for every full-screen preset including edge-to-edge; an
+        IG9BottomSheetSizedView body is told each new height.
+
+        - Bottom sheet: a resting collapsed body (every fit-to-content sheet, and a peek) is capped at the
+        host height minus the top safe-area inset (ADR-0026). It used to keep its fixed height and only
+        move, so with the keyboard up the body never shrank (an inner ScrollView never saw a size change)
+        and a tall keyboard pushed the header off the top of the screen. It now shrinks with the host and
+        grows back when the host does; the detent itself is not rewritten.
+
+        - Bottom sheet: fit-to-content sheets measure their body fresh (LES-0052). The fit measure read a
+        stale cached size - a label measured as one line before it wrapped - so a fit sheet without a
+        footer rested 25-40dp short and its bottom hung below the screen. The body's subtree is now
+        invalidated before it is measured.
+
+        - G9CheckBox.ReserveTouchTarget (default true): set false for a box inside a row that owns the
+        tap - the control is then exactly the 20dp box, instead of a 48dp slot that inflated every row.
+
+        - Bottom sheet: a fit-to-content sheet no longer keeps the keyboard's height after the keyboard
+        closes (ITCS-15525 reopen, LES-0051). A fit pass that ran with the keyboard up sized the sheet
+        against the shrunken page and stored it as the natural height; fit caps now use the tallest host
+        height seen at the current width, so only the resting clamp follows the keyboard.
+
+        - Toast / ProgressOverlay: live overlays can follow a bottom-inset change (ADR-0027). New
+        G9ToastHelper.RefreshBottomInsetsAsync(bool animate = true) and
+        G9ProgressOverlayHelper.RefreshBottomInsetAsync(bool animate = true) re-anchor everything already
+        on screen - e.g. after G9PageBase.BottomSafeAreaWithTabBar changed because the tab bar hid - and
+        glide it there (220 ms, CubicOut) by carrying the difference in TranslationY. A minimized progress
+        bubble keeps the spot the user dragged it to.
+
+        - Trimming: 1.1.0's host registry (G9PageHostStack) failed a trimmed publish with IL2091 (its
+        ConditionalWeakTable value type lacked the PublicParameterlessConstructor annotation). Fixed; a
+        trimmed Release publish of the gallery completes with no IL diagnostics again.
+
+        - G9Editor: the microphone (and any trailing icon) sits in the bottom-END corner of the box in every
+        configuration (ITCS-15685, LES-0050). With MaxEditorHeight set it sat in the vertical middle: the
+        trailing slot's ripple GraphicsView grew to the at-most constraint the ceiling creates, so
+        VerticalOptions = End had nothing to move. The slot now has an explicit height
+        (G9Metrics.EditorTrailingSlotHeight = 36; new G9Metrics.EditorTrailingIconBottomInset = 8) and
+        no bottom margin; the glyph keeps its 8dp inset. CONSUMER VISIBLE: editors with a ceiling and a
+        mic / trailing icon show it bottom-right (LTR) / bottom-left (RTL), and should open at
+        MinimumEditorHeight rather than at the ceiling.
+
+        - New control: G9CheckBox (ITCS-15686, ADR-0028). Material-3 rounded square (20dp, 6dp corners,
+        2dp Outline stroke) that fills Primary while its tick draws itself in by length, and reverses
+        smoothly; optional indeterminate state (IsIndeterminate; a tap checks it); circular press halo;
+        optional wrapping Text beside the box on the start side; 48dp minimum hit target, the whole row
+        tappable; IsChecked two-way; Command / CommandParameter on user toggles; CheckedChanged with
+        CheckedChangedEventArgs; Toggle(). Palette-driven, redraws on theme change, no shadow. New
+        G9Metrics.CheckBox* tokens, G9Colors.CheckBoxHaloAlpha / CheckBoxDisabledOutlineAlpha /
+        CheckBoxMark, and G9StringKey.Checked / NotChecked / PartiallyChecked (appended).
+
+        - Popup input forms: a CheckBox field renders G9CheckBox rows instead of G9Switch form rows.
+        Values, validation and flow direction are unchanged. CONSUMER VISIBLE.
 
         1.1.0
         - Bottom sheet: a sheet is STAGED off-screen and measured for real before it opens (ADR-0022).

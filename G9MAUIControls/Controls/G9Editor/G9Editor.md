@@ -85,10 +85,10 @@ all three input controls drive.
    clear button as soon as there is a value; an editor has no clear button to hand it to, and a long
    description is exactly the thing a user wants to keep dictating into. So it stays visible whether
    or not the field has content, and every transcript APPENDS.
-2. **It is pinned to the BOTTOM of the box, not centred.** `TrailingHost.VerticalOptions` is set to
-   `End` in the constructor. The base defaults to centred, which is right for a one-line entry and
-   wrong for a text area: an affordance floating beside the middle of a paragraph reads as part of
-   the text. Level with the last line is where "finish this thought out loud" belongs.
+2. **It is pinned to the BOTTOM-END corner of the box, not centred.** The base defaults to centred,
+   which is right for a one-line entry and wrong for a text area: an affordance floating beside the
+   middle of a paragraph reads as part of the text. Bottom-right in LTR, bottom-left in RTL — see
+   *Where the microphone sits* below for how, and why it once did not.
 
 ```xml
 <newControls:G9Editor
@@ -99,6 +99,43 @@ all three input controls drive.
 
 > A microphone needs a registered `G9Speech.Provider`. With none, it stays hidden — the control never
 > offers an affordance that can only fail.
+
+**The microphone does not focus the editor** (1.2.0, ADR-0024) — the same rule as `G9TextEntry`
+(*Focus and the keyboard* in its guide). On a text area it matters more: the keyboard used to cover
+most of the text being dictated. Starting dictation while typing takes the keyboard down; tapping the
+editor during a session focuses it and stops the session, keeping what was already transcribed.
+
+**Filled-value colours** follow `FilledValueHighlight` / `G9OutlinedFieldBase.Configure` like every
+outlined field (ADR-0025, `G9Controls.md` §3). The editor's own microphone keeps its brand tint
+(`Primary` idle, `Error` listening) in both styles — it is a call-to-action, not state chrome.
+
+### Where the microphone sits (and any trailing icon)
+
+The trailing slot — the microphone, or a `TrailingIcon` / busy spinner — is pinned to the
+**bottom-END corner of the box** in every configuration: `AlwaysFloat` on or off, any
+`MinimumEditorHeight`, `MaxEditorHeight` set or not, with or without `ShowCharacterCounter`, empty,
+filled or scrolled, LTR (bottom-right) and RTL (bottom-left). The glyph's bottom edge sits
+`G9Metrics.EditorTrailingIconBottomInset` (8dp) above the box's bottom edge. The leading slot, if you
+use one, stays vertically centred.
+
+How: `TrailingHost.VerticalOptions = End` **and** `TrailingHost.HeightRequest =
+G9Metrics.EditorTrailingSlotHeight` (glyph 20 + 8 above + 8 below = 36; the glyph is centred inside).
+The corner follows direction for free — the base swaps the slot's COLUMN for RTL, and `End` is a
+vertical rule.
+
+> **Why the explicit height (1.2.0, Jira ITCS-15685, LES-0050).** Before it, the pin only worked in
+> some forms. The slot also hosts the icon ripple — a `GraphicsView` with no size of its own — and an
+> Android view with no size measures to the whole height it is OFFERED under an at-most constraint.
+> Without `MaxEditorHeight` the box measures its children unconstrained, the ripple asks for 0, the
+> slot hugs the glyph and `End` puts it at the bottom (the tester's "new report" form). With
+> `MaxEditorHeight` the box's `MaximumHeightRequest` becomes an at-most constraint that reaches the
+> ripple, the slot grows to the box's full height, and the glyph — centred in its slot — sat in the
+> vertical MIDDLE of the box (the observation form: `AlwaysFloat`, `MinimumEditorHeight="90"`,
+> `MaxEditorHeight="210"`). `AlwaysFloat`, the counter and the minimum height were red herrings; the
+> ceiling was the trigger. The same greedy measure should also have made an editor with a ceiling AND
+> a visible trailing icon measure at its ceiling even when empty; with the fixed slot it is expected to
+> open at `MinimumEditorHeight` and grow to the ceiling as intended. That half is reasoned from the
+> measure path, not yet seen on a device — look at it (09-Progress, 1.2.0 → the honest gap).
 
 ## Usage
 
@@ -163,7 +200,9 @@ all three input controls drive.
 - When `AutoSize == EditorAutoSizeOption.Disabled`, the inner `Editor.HeightRequest`
   is pinned to `MinimumEditorHeight` so the box never shrinks below the configured size.
 - `FieldHeight` (inherited) sets a fixed box height that overrides the auto-grow
-  behaviour. Use it only for compact fixed-height comment boxes.
+  behaviour. Use it only for compact fixed-height comment boxes. Keep it at or above
+  `G9Metrics.EditorTrailingSlotHeight` (36) plus a line of text if the field shows a microphone or
+  trailing icon — the trailing slot has a fixed height.
 
 ### Native chrome
 

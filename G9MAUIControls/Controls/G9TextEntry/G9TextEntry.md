@@ -28,6 +28,7 @@ outline + notched-label + icon-padding architecture from `G9OutlinedFieldBase`.
 | `ShowCharacterCounter` | `bool` | `false` | Shows `n / max` in the footer. Requires `MaxLength > 0`. |
 | `StatusColor` | `Color?` | `null` | Override outline color when `UseStatusColor = true`. |
 | `UseStatusColor` | `bool` | `false` | Forces the outline to draw with `StatusColor` (useful for "busy" states). |
+| `FilledValueHighlight` | `G9FilledValueHighlight` | `Inherit` | How a filled, unfocused field is coloured: `Inherit` follows `G9OutlinedFieldBase.Settings.HighlightFilledValue` (app-wide, set with `G9OutlinedFieldBase.Configure`); `Accent` = `Primary`; `Neutral` = the empty field's greys. Label floats either way. (1.2.0) |
 | `FieldHeight` | `double` | `0` (= use default) | Optional override for the box height. `0` means use `G9Metrics.ControlHeight` (52). Useful for compact / dense forms or to prove the layout scales. |
 | `ReserveFloatingLabelClearance` | `bool` | `false` | Reserves the floated-label overhang (`G9Metrics.FloatingLabelClearance` = 6) as top padding INSIDE the field, so the floated label renders within the field's own bounds instead of spilling above it and being covered/clipped by whatever sits directly on top (a bottom-sheet header, a card edge). Turn ON when the field's top butts a hard edge. `G9SearchEntry` defaults it ON; height-matched search+sort/filter lanes turn it OFF to keep the shared centre line. See `08-UI-UX-Design-System.md` §4. |
 | `LeadingEmoji` / `LeadingMaterialIcon` / `LeadingImagePath` / `LeadingImageSource` | — | `null` | Leading icon. |
@@ -169,7 +170,8 @@ They all run before any `TrailingCommand` you set:
    glyph. Tapping it toggles `_passwordVisible` so the user sees the actual characters while the
    bindable `IsPassword` stays `true`.
 2. **`VoiceEnabled`** (see [Voice dictation](#voice-dictation)) → a microphone, while the field is
-   empty **or** a session is running. Tapping it focuses the field and starts or stops dictation.
+   empty **or** a session is running. Tapping it starts or stops dictation **without focusing the
+   field** — see [Voice dictation](#voice-dictation) → *Focus and the keyboard*.
 3. **`ClearButton`** (with a value) → the trailing icon becomes a `Close` glyph. Tapping it clears
    `Text`.
 
@@ -255,6 +257,24 @@ When the user taps the mic:
    before tapping the mic — voice ADDS to the query, doesn't clobber it.
 6. `RecognitionResultCompleted` writes the final transcript and fires the normal
    debounced search pipeline.
+
+### Focus and the keyboard (1.2.0, ADR-0024)
+
+**The microphone never focuses the field.** It used to (`_entry.Focus()` before the toggle, "so the
+user can keep typing"), and focusing a text input is what raises the soft keyboard — every dictation
+began with a keyboard covering the text being dictated (ITCS-15661). The session writes through `Text`,
+so it never needed focus.
+
+| Situation | What happens |
+|---|---|
+| Mic tapped, field not focused | Dictation starts. No keyboard. |
+| Mic tapped while TYPING (field focused, keyboard up) | Keyboard goes down and focus is released, then dictation starts. |
+| Mic tapped during a session | The session stops. Focus is left as it is. |
+| Field tapped during a session | The user chose to type: the field focuses, the keyboard comes up, **the session stops**. The partial transcript is already in `Text`. |
+
+The box's own tap-to-focus recognizer ignores a tap on an actionable trailing / leading icon (see
+`G9Controls.md` §3), so the microphone tap cannot focus the field through the back door on platforms that
+deliver one tap to both recognizers.
 
 ### Platform reality
 
@@ -430,11 +450,21 @@ NameEntry.ValidateOnTextChanged = true;
   `ShowFocusHalo` bindable (default `false` on every outlined field via the shared base).
   Set `ShowFocusHalo="True"` on a field to bring the glow back; focus without it is shown
   by the thicker emphasis stroke alone.
-- **Filled-valid blur keeps the active colour.** After a field with a valid value loses
-  focus, the floating label and outline stay `Primary`, but the outline returns to the
-  resting 1.5 dp thickness and the halo is removed. Empty untouched fields still return
-  to the neutral outline colour; errors and explicit status colours keep their own state
-  colours.
+- **Filled-valid blur: accent by default, neutral on request** (1.2.0, ADR-0025). After a
+  field with a valid value loses focus the outline returns to the resting 1.5 dp thickness
+  and the halo is removed; its COLOUR depends on the filled-value style:
+  - *Accent* (default — `G9OutlinedFieldSettings.HighlightFilledValue = true`): the
+    floating label and outline stay `Primary`.
+  - *Neutral* (`HighlightFilledValue = false` app-wide via `G9OutlinedFieldBase.Configure`,
+    or `FilledValueHighlight="Neutral"` on the field): outline and trailing icon in the
+    resting outline colour, floated label in the resting content grey — the same colours as
+    the empty field. The label still floats and bolds. Call-to-action glyphs keep their own
+    tint in both styles (the microphone's `Primary` / `Error`, the barcode scan icon).
+
+  `FilledValueHighlight` (`Inherit` default / `Accent` / `Neutral`) overrides the app-wide
+  rule per field. Empty untouched fields return to the neutral outline colour either way;
+  errors and explicit status colours keep their own state colours; focus is always
+  `Primary`.
 - **Floating-label animation** smoothly interpolates `TranslationX`, `TranslationY`,
   and `Scale` together. The slide between rest-over-icon and floated-at-corner is one
   composited animation, no jump.
@@ -474,9 +504,11 @@ NameEntry.ValidateOnTextChanged = true;
 
 - A wrapper-level tap recognizer on the box calls `Entry.Focus()` so taps on the
   floating label, the outline edges, the empty padding, and the inner text area all
-  reliably bring up the keyboard. The icon hosts have their own gesture recognizers
-  that consume the tap first, so taps on the leading / trailing icons still trigger
-  their respective commands without focusing the field.
+  reliably bring up the keyboard. Taps on an ACTIONABLE leading / trailing icon trigger
+  their own command and do NOT focus the field: the box recognizer hit-tests the icon
+  hosts and yields (1.2.0). Relying on the icon's recognizer "consuming the tap first"
+  was true on Android only — on iOS both recognizers fired, so a microphone tap also
+  brought the keyboard up. A decorative icon (no command) still focuses the field.
 
 ### Native chrome
 

@@ -78,6 +78,31 @@ public static class G9Metrics
     /// <summary>Total column width occupied by the trailing icon slot.</summary>
     public const double TrailingIconSlotWidth = TrailingIconOuterMargin + InputIconSize + TrailingIconInnerMargin;
 
+    // ── Multi-line trailing slot (G9Editor) ──
+    /// <summary>
+    ///     Gap (logical px) between the bottom edge of a <c>G9Editor</c>'s box and the bottom of the
+    ///     glyph in its trailing slot (the dictation microphone, or any trailing icon). The same inset
+    ///     the editor has always had where its slot measured correctly — it is kept, not retuned
+    ///     (ITCS-15685).
+    /// </summary>
+    public const double EditorTrailingIconBottomInset = 8;
+
+    /// <summary>
+    ///     Explicit height of a <c>G9Editor</c>'s trailing slot: the glyph centred with
+    ///     <see cref="EditorTrailingIconBottomInset" /> above and below it, so a slot pinned to the
+    ///     bottom of the box puts the glyph exactly that far above the bottom edge.
+    ///     <para>
+    ///         <b>Why the slot needs an explicit height at all.</b> The slot hosts a ripple
+    ///         <c>GraphicsView</c>, and an Android <c>View</c> with no size of its own measures to
+    ///         WHATEVER HEIGHT IT IS OFFERED under an at-most constraint. Once the editor's box has a
+    ///         ceiling (<c>MaxEditorHeight</c>) that constraint is finite, the ripple claims all of
+    ///         it, the slot becomes as tall as the box and the glyph — centred in its slot — lands in
+    ///         the vertical middle. A fixed height makes "pinned to the bottom" true by construction.
+    ///         See <c>G9Editor.md</c> → "Where the microphone sits" and LES-0050.
+    ///     </para>
+    /// </summary>
+    public const double EditorTrailingSlotHeight = InputIconSize + (2 * EditorTrailingIconBottomInset);
+
     /// <summary>
     ///     Horizontal offset (in logical pixels) the floating label is pushed away from
     ///     the corner when a leading icon is present, so the rest-state label sits over
@@ -341,6 +366,40 @@ public static class G9Metrics
     public const double SelectionIconSize = 18;
     public const double SelectionCheckBoxSize = 20;
     public const double SelectionCheckRadius = 6;
+
+    // ── Check box (G9CheckBox) ──
+    // The box geometry is the SAME box the selection-sheet tokens above already described (20dp,
+    // 6dp corners) — aliased rather than re-declared, so a retune of either keeps the suite's two
+    // check boxes identical. ADR-0028.
+    /// <summary>Visual size of the <c>G9CheckBox</c> square. The touch target is larger — see <c>G9LayoutMetrics.MinTouchTarget</c>.</summary>
+    public const double CheckBoxSize = SelectionCheckBoxSize;
+    /// <summary>Corner radius of the <c>G9CheckBox</c> square.</summary>
+    public const double CheckBoxCornerRadius = SelectionCheckRadius;
+    /// <summary>Outline thickness of an unchecked <c>G9CheckBox</c>.</summary>
+    public const double CheckBoxStrokeThickness = 2;
+    /// <summary>Stroke thickness of the check mark / indeterminate bar.</summary>
+    public const double CheckBoxMarkStrokeThickness = 2;
+    /// <summary>Diameter of the circular press halo drawn behind the box (fits inside the 48dp target).</summary>
+    public const double CheckBoxHaloDiameter = 40;
+    /// <summary>
+    ///     Gap between the 48dp box slot and the label. The box is centred in its slot, so the VISIBLE
+    ///     gap between the square and the text is this plus half the slot's slop (14dp) — 16dp.
+    /// </summary>
+    public const double CheckBoxLabelSpacing = 2;
+    /// <summary>
+    ///     Vertical padding on the label. A single line then measures ~44dp and centres on the box; a
+    ///     wrapped label keeps its FIRST line level with the box, which stays at the top of the row.
+    /// </summary>
+    public const double CheckBoxLabelVerticalPadding = 12;
+    /// <summary>Label font size.</summary>
+    public const double CheckBoxLabelFontSize = 14;
+    /// <summary>
+    ///     Full unchecked ↔ checked transition. The fill arrives in the first 40% and the mark draws
+    ///     itself over the last 75% (overlapping), i.e. ~150ms of stroke — see <c>G9CheckBoxMath</c>.
+    /// </summary>
+    public const uint CheckBoxToggleDurationMs = 200;
+    /// <summary>Check ↔ indeterminate-bar morph while the box stays filled.</summary>
+    public const uint CheckBoxMorphDurationMs = 150;
 
     // ── Nav card ──
     public const double NavCardIconBadgeSize = 38;
