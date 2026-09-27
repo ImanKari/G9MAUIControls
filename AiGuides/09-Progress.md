@@ -19,14 +19,17 @@ Last updated: **2026-09-27**
 
 ## 1.2.0 — dictation without a keyboard, neutral filled fields, sheets and toasts that follow their host, a check box (2026-09-27)
 
-> **Compile-verified only; nothing here has been run on a device or published.** Seven app-reported
-> items (Jira ITCS-15661, -15666, -15664, -15525, -15663, -15685, -15686), all fixed in the library
-> rather than around it in the app. Decision records: ADR-0024 … ADR-0028. Lessons: LES-0047 (BS-20),
-> LES-0048, LES-0049, LES-0050.
+> **Published 2026-09-27** (commit `5bd1822`, pipeline run 497; the five packages carry the GitHub
+> mirror at that commit). Nine app-reported items (Jira ITCS-15661, -15666, -15664, -15525, -15663,
+> -15685, -15686, -15687 and the measuring-tool sheets), all fixed in the library rather than around it
+> in the app. Decision records: ADR-0024 … ADR-0028. Lessons: LES-0047 … LES-0052.
 >
-> **The 2026-09-27 additions (ITCS-15685, ITCS-15686) have NOT been compiled yet** — they were written
-> while another build held the tree. Build all four TFMs, run the tests and the trimmed Gallery publish
-> before treating them as part of the verified set below.
+> **Verified:** unit tests 118/118; core / ProgressOverlay / Barcode on all four TFMs; the Gallery; the
+> consuming app (AgriPad) on Android and Windows in both source and package mode, and an Android Release
+> publish. On the Pixel 9 Pro XL emulator: the ITCS-15525 sheet shrink (LES-0051) and the fit-sheet
+> stale measure (LES-0052) were reproduced by trace and verified fixed; the rest was exercised by the
+> app's owner on the emulator. **Not verified:** iOS / Mac Catalyst (no Mac available), and anything on a
+> low-end physical device.
 
 ### What changed
 
