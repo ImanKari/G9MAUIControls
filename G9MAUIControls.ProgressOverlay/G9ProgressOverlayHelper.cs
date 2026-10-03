@@ -41,9 +41,80 @@ public static class G9ProgressOverlayHelper
     private static readonly object CancelSubscriberLock = new();
     private static EventHandler<G9ProgressCancelRequested>? _cancelSubscribers;
 
+    /// <summary>
+    ///     Decides where the overlay sits on the screen the host is currently showing. Read when an
+    ///     overlay mounts, and again on <see cref="RefreshPlacementAsync" />. Return <c>null</c> for the
+    ///     default (<see cref="G9ProgressOverlayPlacement.Default" />).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Why the HOST decides (1.3.0).</b> The right spot depends on what is on screen, not on who
+    ///         started the sync: over a full-screen map the bottom belongs to the map's own controls and
+    ///         toasts, so the overlay reads better under the map's top bar; over a list it belongs at the
+    ///         bottom. A per-call <c>position</c> cannot express that, because the same sync runs from several
+    ///         screens and the user can change screens while it runs.
+    ///     </para>
+    ///     <para>
+    ///         The argument is the page that hosts the overlay, so a provider written for one page can answer
+    ///         <c>null</c> for any other (a login page, a page left behind by a root swap). Called on the main
+    ///         thread; keep it cheap and side-effect free. An explicit <c>position</c> passed to
+    ///         <see cref="ShowAsync" /> wins over the provider and is never moved by a refresh.
+    ///     </para>
+    /// </remarks>
+    public static Func<G9PageBase?, G9ProgressOverlayPlacement?>? PlacementProvider { get; set; }
+
+    /// <summary>
+    ///     Re-reads <see cref="PlacementProvider" /> and moves a LIVE overlay to the answer — call it when the
+    ///     screen under the overlay changes (a tab switch, a full-screen sheet opening or closing).
+    /// </summary>
+    /// <param name="animate">
+    ///     <c>true</c> (default): an edge change fades the overlay out and back in at the new edge; an offset
+    ///     change glides. <c>false</c>: it takes the new spot on the next layout pass.
+    /// </param>
+    /// <remarks>
+    ///     Completes at once when no overlay is mounted, when the overlay was shown with an explicit position,
+    ///     and when it is MINIMIZED: a bubble stays where the user dragged it. Safe from any thread.
+    /// </remarks>
+    public static Task RefreshPlacementAsync(bool animate = true)
+    {
+        G9ProgressOverlaySession? session;
+        lock (SessionGate)
+        {
+            session = _session is { IsActive: true } ? _session : null;
+        }
+
+        if (session is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return MainThread.IsMainThread
+            ? session.RefreshPlacementAsync(animate)
+            : MainThread.InvokeOnMainThreadAsync(() => session.RefreshPlacementAsync(animate));
+    }
+
+    /// <summary>The provider's answer for <paramref name="page" />, or the default. Main thread.</summary>
+    internal static G9ProgressOverlayPlacement ResolveProvidedPlacement(G9PageBase? page)
+    {
+        try
+        {
+            return PlacementProvider?.Invoke(page) ?? G9ProgressOverlayPlacement.Default;
+        }
+        catch
+        {
+            // A host callback must never stop a sync's progress from showing.
+            return G9ProgressOverlayPlacement.Default;
+        }
+    }
+
+    /// <param name="contextText">What is being synced, shown on the overlay.</param>
+    /// <param name="position">
+    ///     An explicit edge. <c>null</c> (default) lets <see cref="PlacementProvider" /> decide, and lets
+    ///     <see cref="RefreshPlacementAsync" /> move the overlay later.
+    /// </param>
     public static async Task<G9ProgressOverlayHandle> ShowAsync(
         string contextText,
-        G9ProgressOverlayPosition position = G9ProgressOverlayPosition.Bottom)
+        G9ProgressOverlayPosition? position = null)
     {
         // The visual tree is sometimes not yet attached when callers fire sync from a
         // page's appearing path or a bottom sheet's content factory: in those frames
@@ -83,7 +154,7 @@ public static class G9ProgressOverlayHelper
         string reason,
         string retryText,
         Func<Task>? retryAction,
-        G9ProgressOverlayPosition position = G9ProgressOverlayPosition.Bottom)
+        G9ProgressOverlayPosition? position = null)
     {
         var host = await ResolveHostContextWithRetryAsync().ConfigureAwait(true);
         if (host is null)
@@ -313,9 +384,14 @@ public static class G9ProgressOverlayHelper
         return true;
     }
 
+    /// <remarks>
+    ///     A null <paramref name="position" /> asks the provider and keeps following it; an explicit one is
+    ///     fixed for the session's life. Only a NEW session takes either: a live overlay keeps the placement
+    ///     it has (moving it is <see cref="RefreshPlacementAsync" />'s job).
+    /// </remarks>
     private static (G9ProgressOverlaySession Session, bool IsNew) AcquireSession(
         OverlayHostContext host,
-        G9ProgressOverlayPosition position)
+        G9ProgressOverlayPosition? position)
     {
         lock (SessionGate)
         {
@@ -324,7 +400,15 @@ public static class G9ProgressOverlayHelper
                 return (_session, false);
             }
 
-            var session = new G9ProgressOverlaySession(host.Parent, host.Page, position);
+            var placement = position is { } explicitPosition
+                ? new G9ProgressOverlayPlacement(explicitPosition)
+                : ResolveProvidedPlacement(host.Page);
+
+            var session = new G9ProgressOverlaySession(
+                host.Parent,
+                host.Page,
+                placement,
+                followsProvider: position is null);
             _session = session;
             return (session, true);
         }
@@ -346,8 +430,10 @@ public static class G9ProgressOverlayHelper
     internal static void ApplyOverlayPosition(
         View overlay,
         G9PageBase? page,
-        G9ProgressOverlayPosition position)
+        G9ProgressOverlayPlacement placement)
     {
+        var position = placement.Position;
+        var offset = Math.Max(0, placement.Offset);
         var topInset = ResolveTopInset(page);
         var bottomInset = ResolveBottomInset(page, position);
 
@@ -357,8 +443,8 @@ public static class G9ProgressOverlayHelper
             : LayoutOptions.End;
 
         overlay.Margin = position == G9ProgressOverlayPosition.Top
-            ? new Thickness(HorizontalGap, topInset + VerticalGap, HorizontalGap, bottomInset)
-            : new Thickness(HorizontalGap, topInset, HorizontalGap, bottomInset + VerticalGap);
+            ? new Thickness(HorizontalGap, topInset + VerticalGap + offset, HorizontalGap, bottomInset)
+            : new Thickness(HorizontalGap, topInset, HorizontalGap, bottomInset + VerticalGap + offset);
     }
 
     internal static void PrepareOverlayPlacement(Layout parent, View overlay)
@@ -521,7 +607,11 @@ internal sealed class G9ProgressOverlaySession
     // Not readonly: the overlay follows the current page (OnCurrentHostChanged). Main-thread only.
     private Layout _parent;
     private G9PageBase? _page;
-    private readonly G9ProgressOverlayPosition _position;
+
+    // Not readonly either: a session that follows the host's PlacementProvider moves when the screen under
+    // it changes (RefreshPlacementAsync). Main-thread only.
+    private G9ProgressOverlayPlacement _placement;
+    private readonly bool _followsProvider;
     private readonly G9ProgressOverlayView _view;
     private readonly List<G9ProgressOverlayHandle> _leases = new();
     private readonly object _gate = new();
@@ -547,11 +637,13 @@ internal sealed class G9ProgressOverlaySession
     internal G9ProgressOverlaySession(
         Layout parent,
         G9PageBase? page,
-        G9ProgressOverlayPosition position)
+        G9ProgressOverlayPlacement placement,
+        bool followsProvider)
     {
         _parent = parent;
         _page = page;
-        _position = position;
+        _placement = placement;
+        _followsProvider = followsProvider;
 
         // Created on the main thread (callers wrap AcquireSession in InvokeOnMainThreadAsync).
         _view = new G9ProgressOverlayView();
@@ -584,10 +676,99 @@ internal sealed class G9ProgressOverlaySession
     internal async Task MountAsync()
     {
         G9ProgressOverlayHelper.PrepareOverlayPlacement(_parent, _view);
-        G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _position);
+        G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _placement);
         _parent.Add(_view);
         await G9ToastHelper.ReflowInlineToastsForHostAsync(_parent).ConfigureAwait(true);
-        await _view.AnimateAppearingAsync(_position).ConfigureAwait(true);
+        await _view.AnimateAppearingAsync(_placement.Position).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    ///     Moves a mounted overlay to the provider's CURRENT answer. See
+    ///     <see cref="G9ProgressOverlayHelper.RefreshPlacementAsync" />. Main thread.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         An EDGE change cannot glide: the view's anchor flips between the top and bottom of the layer,
+    ///         and a translation across the whole screen would sweep the card over everything between. It
+    ///         fades out at the old edge and in at the new one, with the same motions mount and teardown use.
+    ///         An OFFSET change on the same edge is the inset case and reuses its carry-the-difference glide.
+    ///     </para>
+    ///     <para>
+    ///         The toast stack is re-laid out either way: it rests ON a bottom-anchored overlay and ignores a
+    ///         top-anchored one, so an edge change moves every inline toast too.
+    ///     </para>
+    /// </remarks>
+    internal async Task RefreshPlacementAsync(bool animate)
+    {
+        lock (_gate)
+        {
+            if (_isTornDown)
+            {
+                return;
+            }
+        }
+
+        if (!_followsProvider || _view.IsMinimized)
+        {
+            return;
+        }
+
+        var target = G9ProgressOverlayHelper.ResolveProvidedPlacement(_page);
+        if (target == _placement)
+        {
+            return;
+        }
+
+        var previous = _placement;
+        _placement = target;
+
+        // Not mounted yet: MountAsync reads the placement fresh when it mounts.
+        if (!ReferenceEquals(_view.Parent, _parent))
+        {
+            return;
+        }
+
+        if (previous.Position == target.Position)
+        {
+            var before = _view.Margin;
+            G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, target);
+            var after = _view.Margin;
+            var carry = target.Position == G9ProgressOverlayPosition.Top
+                ? before.Top - after.Top
+                : after.Bottom - before.Bottom;
+
+            var reflow = G9ToastHelper.ReflowInlineToastsForHostAsync(_parent, animate);
+            await _view.CarryAnchorShiftAsync(carry, animate).ConfigureAwait(true);
+            await reflow.ConfigureAwait(true);
+            return;
+        }
+
+        if (animate)
+        {
+            await _view.AnimateDisappearingAsync(previous.Position).ConfigureAwait(true);
+        }
+
+        // The fade-out is awaited, so a teardown or a newer refresh may have run meanwhile.
+        lock (_gate)
+        {
+            if (_isTornDown)
+            {
+                return;
+            }
+        }
+
+        if (_placement != target)
+        {
+            return;
+        }
+
+        G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, target);
+        await G9ToastHelper.ReflowInlineToastsForHostAsync(_parent, animate).ConfigureAwait(true);
+
+        if (animate)
+        {
+            await _view.AnimateAppearingAsync(target.Position).ConfigureAwait(true);
+        }
     }
 
     /// <summary>
@@ -611,12 +792,12 @@ internal sealed class G9ProgressOverlaySession
         }
 
         var before = _view.Margin;
-        G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _position);
+        G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _placement);
         var after = _view.Margin;
 
         // Bottom-anchored: a larger bottom margin moves the slot UP by the difference, so the view is
         // held in place by translating DOWN by it. Top-anchored: the mirror image on the top margin.
-        var carry = _position == G9ProgressOverlayPosition.Top
+        var carry = _placement.Position == G9ProgressOverlayPosition.Top
             ? before.Top - after.Top
             : after.Bottom - before.Bottom;
 
@@ -868,6 +1049,12 @@ internal sealed class G9ProgressOverlaySession
             _parent = host.ToastLayer;
             _page = host.Page;
 
+            // A different page may want the overlay elsewhere. A minimized bubble keeps the user's spot.
+            if (_followsProvider && !_view.IsMinimized)
+            {
+                _placement = G9ProgressOverlayHelper.ResolveProvidedPlacement(_page);
+            }
+
             // Not mounted yet: MountAsync will use the new target. Mounted: carry the view across.
             if (!wasMounted)
             {
@@ -876,7 +1063,7 @@ internal sealed class G9ProgressOverlaySession
 
             previousParent.Remove(_view);
             G9ProgressOverlayHelper.PrepareOverlayPlacement(_parent, _view);
-            G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _position);
+            G9ProgressOverlayHelper.ApplyOverlayPosition(_view, _page, _placement);
             _parent.Add(_view);
 
             _ = G9ToastHelper.ReflowInlineToastsForHostAsync(previousParent, animate: false);
@@ -1038,7 +1225,7 @@ internal sealed class G9ProgressOverlaySession
 
             try
             {
-                await _view.AnimateDisappearingAsync(_position).ConfigureAwait(true);
+                await _view.AnimateDisappearingAsync(_placement.Position).ConfigureAwait(true);
             }
             catch
             {

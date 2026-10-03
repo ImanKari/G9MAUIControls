@@ -44,6 +44,12 @@ public partial class G9ProgressOverlayView : ContentView
     private G9ProgressOverlayState _state = G9ProgressOverlayState.Running;
 
     /// <summary>
+    ///     True while the overlay is collapsed to its draggable bubble. The session leaves a minimized overlay
+    ///     where the user put it instead of re-placing it (see <c>RefreshPlacementAsync</c>).
+    /// </summary>
+    internal bool IsMinimized => _isMinimized;
+
+    /// <summary>
     ///     Where the overlay is in its lifecycle. Surfaced so a consumer can tell "still working" from
     ///     "already finished" without tracking it in parallel — the overlay reaches a terminal state on its
     ///     own (a cancel tap, a linger expiring), so caller-side bookkeeping drifts.

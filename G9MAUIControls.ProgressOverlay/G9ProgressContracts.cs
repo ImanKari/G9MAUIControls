@@ -79,6 +79,23 @@ public enum G9ProgressOverlayPosition
     Top
 }
 
+/// <summary>
+///     Where the overlay sits: the edge it anchors to, plus how far in from that edge's safe-area inset.
+///     Returned by <see cref="G9ProgressOverlayHelper.PlacementProvider" />.
+/// </summary>
+/// <param name="Position">The edge.</param>
+/// <param name="Offset">
+///     Extra distance (dp) from the anchored edge, on top of the safe-area inset and the overlay's own gap:
+///     BELOW the top inset for <see cref="G9ProgressOverlayPosition.Top" />, ABOVE the bottom inset for
+///     <see cref="G9ProgressOverlayPosition.Bottom" />. Use it to clear the host's own top chrome, e.g. a
+///     search or site-selector bar the overlay must not cover. Negative values are treated as zero.
+/// </param>
+public readonly record struct G9ProgressOverlayPlacement(G9ProgressOverlayPosition Position, double Offset = 0)
+{
+    /// <summary>The default placement: bottom edge, no extra offset.</summary>
+    public static G9ProgressOverlayPlacement Default => new(G9ProgressOverlayPosition.Bottom);
+}
+
 // DELIBERATELY ABSENT: a `G9ProgressOverlayOptions` configuration object, and a `G9ProgressOutcome`
 // closing report.
 //
@@ -89,6 +106,9 @@ public enum G9ProgressOverlayPosition
 //
 // What the implementation actually offers:
 //   * context text + position ...... `G9ProgressOverlayHelper.ShowAsync(contextText, position)`
+//   * host-driven placement ........ `G9ProgressOverlayHelper.PlacementProvider` + `RefreshPlacementAsync()`
+//                                     (1.3.0): the host says where the overlay sits on the screen it is
+//                                     showing, and moves a live one when that screen changes
 //   * progress in ................... `G9ProgressOverlayHelper.Report(...)` / `ReportQueued(...)`
 //   * cancel out ................... `G9ProgressOverlayHelper.CancelRequested`, because a shared overlay
 //                                     cannot route cancellation to one owner — see that event's remarks

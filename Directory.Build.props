@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.2.0</G9FamilyVersion>
+    <G9FamilyVersion>1.3.0</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,19 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+
+        1.3.0
+        - Progress overlay: the HOST decides where it sits, and a live overlay can move (ADR-0029). New
+        G9ProgressOverlayPlacement (edge plus an extra offset from that edge's inset), the static
+        G9ProgressOverlayHelper.PlacementProvider (receives the host page, returns a placement or null for
+        the default) and RefreshPlacementAsync(animate), which moves a mounted overlay to the provider's
+        current answer: an offset change glides, an edge change fades out and back in, and the toast stack
+        is reflowed. ShowAsync and ShowStandaloneFailureAsync now take G9ProgressOverlayPosition? position =
+        null: an explicit position still wins and is fixed for the session; null follows the provider. A
+        minimized bubble is never moved. Source compatible; BINARY breaking for callers compiled against
+        1.2.0 that pass a position (the parameter type changed), so rebuild consumers.
+        CONSUMER VISIBLE only when the app sets PlacementProvider; without it every overlay stays at the
+        bottom exactly as in 1.2.0.
 
         1.2.0
         - Voice dictation no longer opens the keyboard (ADR-0024). G9TextEntry, G9SearchEntry and G9Editor

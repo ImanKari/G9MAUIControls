@@ -11,11 +11,45 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-09-27**
+Last updated: **2026-10-03**
 
 > **This list is not complete.** It jumps 1.0.3 → 1.0.13; 1.0.4 through 1.0.12 shipped without an entry
 > here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
 > drifted — read it, not this heading list, when you need to know what a version contained.
+
+## 1.3.0 — the progress overlay's placement belongs to the host (2026-10-03)
+
+> **NOT YET PUBLISHED** as of writing: built and verified from source, waiting for the owner's go to push
+> `main`. One app-reported item (AgriPad: "separate the sync progress from the toasts; on the map show it
+> under the top bar"). Decision record: ADR-0029.
+>
+> **Verified (source mode, AgriPad consuming the projects):** ProgressOverlay builds with 0 warnings; the
+> app builds on all four TFMs. On the Pixel 9 Pro XL emulator, by screen recording: a farm sync on the Map
+> tab mounted the overlay one gap under the app's site selector (provider → Top + 55 dp); the Tasks tab's
+> sync mounted at the bottom (provider → null); switching Tasks → Map mid-sync faded it out at the bottom
+> and in at the top within ~300 ms, mid-countdown (`RefreshPlacementAsync` edge change). **Not verified:**
+> the same-edge offset glide on a device, a minimized bubble during a refresh, iOS / Mac Catalyst at runtime.
+
+### What changed
+
+- `G9ProgressOverlayPlacement(Position, Offset)` beside `G9ProgressOverlayPosition` (`G9ProgressContracts.cs`).
+- `G9ProgressOverlayHelper.PlacementProvider : Func<G9PageBase?, G9ProgressOverlayPlacement?>` and
+  `Task RefreshPlacementAsync(bool animate = true)`.
+- `ShowAsync` / `ShowStandaloneFailureAsync` take `G9ProgressOverlayPosition? position = null`. An explicit
+  position is fixed for the session; `null` follows the provider. Source compatible, **binary breaking** for
+  a consumer compiled against 1.2.0 that passed a position.
+- The session's placement is mutable (`_placement`, `_followsProvider`); `ApplyOverlayPosition` adds the
+  offset; a host change re-resolves it; `G9ProgressOverlayView.IsMinimized` (internal) lets a refresh leave a
+  dragged bubble alone.
+
+### CONSUMER-VISIBLE without any app change
+
+Nothing: with no `PlacementProvider` every overlay resolves to `Default` (bottom, no offset), exactly 1.2.0.
+
+### Needs the app
+
+Set the provider once, and call `RefreshPlacementAsync()` when the screen under the overlay changes. AgriPad:
+`Common/Sync/SyncProgressOverlayPlacement.cs`.
 
 ## 1.2.0 — dictation without a keyboard, neutral filled fields, sheets and toasts that follow their host, a check box (2026-09-27)
 

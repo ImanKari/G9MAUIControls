@@ -1166,3 +1166,50 @@ white bar on `Primary`); disabled tints; the whole row tappable.
   a separate `IsIndeterminate` keeps the common two-state case exactly as simple as the platform one.
 - **Executing `Command` on every `IsChecked` change** (the platform `CheckBox` behaviour). A
   view-model command would then also fire on page load and on its own writes back through the binding.
+
+---
+
+## ADR-0029 — The progress overlay's placement belongs to the HOST, and a live overlay can move
+
+**Date:** 2026-10-03 · **Status:** accepted (1.3.0) — see `09-Progress.md` for what was verified
+
+### Context
+
+The overlay took one `G9ProgressOverlayPosition` per `ShowAsync` call, fixed for the session's life, at the
+top or bottom safe-area inset plus a 14 dp gap. AgriPad asked for it to sit under the map's top bar while the
+map tab is on screen, right under the status bar over its full-screen sampling map, and at the bottom
+everywhere else. That keeps it apart from the toasts and from the map's own bottom controls. Three things
+made that impossible:
+
+1. the right spot depends on the SCREEN, not on the caller. One sync is started from several screens, and the
+   user switches screens while it runs;
+2. "under the map's top bar" needs a distance the library cannot know;
+3. a live overlay could only follow a bottom-inset change (`RefreshBottomInsetAsync`, ADR-0027), never a
+   change of edge.
+
+### Decision
+
+- `G9ProgressOverlayPlacement(Position, Offset)`: an edge plus extra distance from that edge's inset.
+- `G9ProgressOverlayHelper.PlacementProvider : Func<G9PageBase?, G9ProgressOverlayPlacement?>`. It receives
+  the HOST page, so a provider written for one page answers `null` (the default, bottom) for any other: a
+  login page, or a page left behind by a root swap.
+- `ShowAsync(contextText, G9ProgressOverlayPosition? position = null)`: an explicit position wins and is fixed
+  for the session, exactly as before. `null` asks the provider and keeps following it.
+  `ShowStandaloneFailureAsync` likewise.
+- `Task G9ProgressOverlayHelper.RefreshPlacementAsync(bool animate = true)` re-reads the provider and moves a
+  live overlay. Same edge with a new offset: ADR-0027's carry-and-glide. A change of edge: fade out at the old
+  edge, re-anchor, fade in at the new one, using the motions mount and teardown already use. The toast stack is
+  reflowed either way (it rests on a bottom-anchored overlay and ignores a top one).
+- A minimized bubble is never moved (it stays where the user dragged it). A host change re-resolves the
+  placement for the new page.
+
+### Rejected
+
+- **A per-call position from every caller.** Every sync site would need to know which screen is showing, and
+  none can follow a tab switch made while it runs.
+- **Gliding across an edge change.** The anchor flips between the layer's top and bottom; a translation
+  across the whole screen sweeps the card over everything between.
+- **Subscribing to the host's state.** Same reason as ADR-0027: what decides the placement (which tab, whether
+  a full-screen sheet is up) is not one observable property. The host knows the moment it changes.
+- **Moving the TOASTS instead.** Toasts are owned by many callers and already stack on a bottom overlay. Moving
+  the one overlay separates the two with no toast change at all.
