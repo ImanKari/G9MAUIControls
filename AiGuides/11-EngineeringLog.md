@@ -1927,3 +1927,23 @@ Check the Doogee S96Pro after returning from the camera or a picker before assum
 document that found it.* The remediation plan was a one-off artifact with an expiry date; a known defect
 has none. Anything left undone in an audit gets copied into this log before the audit's own file is
 deleted, or the next reader re-discovers it from scratch and pays for the reading twice.
+
+## LES-0053 — Release notes are package metadata, and nuget.org caps them at 35,000 characters
+
+**Symptom.** The first 1.4.0 publish (build 510, 2026-10-05) built, tested and packed all five packages, then
+failed on the very first push: `400 (A nuget package's ReleaseNotes property may not be more than 35000
+characters long.)`. The publish script stops at the first failure by design, so NOTHING was published — 1.4.0
+stayed free on nuget.org and was reused for the fix.
+
+**Cause.** `<PackageReleaseNotes>` in `Directory.Build.props` had accumulated every release since 1.0.5. It
+was 35,848 characters with the 1.4.0 entry; 1.3.0 had passed just under the line. Nothing local checks the
+limit — `dotnet pack` happily writes a nuspec nuget.org will refuse, so the failure surfaces only after a full
+pipeline run.
+
+**Fix.** The history moved to `CHANGELOG.md` (repository root, newest first). `PackageReleaseNotes` now holds
+ONLY the current version and a link to the changelog (~2,200 characters). A `G9GuardReleaseNotesLength` target
+(in `Directory.Build.props`, `BeforeTargets="GenerateNuspec"`) fails the pack locally when the notes exceed
+35,000 — verified by lowering its threshold to 100 and watching the pack fail with the message.
+
+**Lesson.** Anything that ends up in a nuspec is subject to the GALLERY's rules, not just the SDK's. A field
+that grows with every release needs a ceiling checked where the build runs, not where the upload happens.

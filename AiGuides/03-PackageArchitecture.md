@@ -96,6 +96,10 @@ Every package sets: `PackageId`, `PackageVersion`, `Title`, `Description`, `Auth
 `PackageTags`, `PackageIcon` (128×128 PNG, transparent), `PackageReadmeFile`, `PackageProjectUrl`,
 `PackageLicenseExpression`, `PackageReleaseNotes`, SourceLink, `.snupkg` symbols.
 
+⛔ `PackageReleaseNotes` carries the CURRENT version only (plus a link); the history is `CHANGELOG.md`. nuget.org
+rejects notes over 35,000 characters and the `G9GuardReleaseNotesLength` target fails the pack before that
+(LES-0053).
+
 Shared values live in `Directory.Build.props`; only `PackageId`, `Title`, `Description`, `PackageTags`
 and the README path are per-package. **The README is per-package and mandatory** — it is the package page,
 and a shared one would document features the consumer did not install.

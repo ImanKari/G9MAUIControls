@@ -52,6 +52,10 @@ Last updated: **2026-10-04**
   of the cradle, grown until the space around it was half of the first round's (5.8 dp at the bowl). Sculpted now draws a **Skia FAB shadow** (`DrawsFabShadow`), traced around the DISC
   (`FabShadowDiameter`) at its own `FabShadowAlpha` 0.3 and `FabShadowOffsetY` 2 — Classic's values for those
   three reproduce its old behaviour exactly. Checked on the AgriPad emulator (Pixel 9 Pro XL AVD) by the owner.
+- **2026-10-05, the first 1.4.0 publish FAILED** (build 510: nuget.org rejected release notes over 35,000
+  characters; nothing was pushed). Fixed without a version change: history moved to `CHANGELOG.md`,
+  `PackageReleaseNotes` keeps only the current version, and `G9GuardReleaseNotesLength` fails a pack that would be
+  refused (LES-0053).
 
 ### CONSUMER-VISIBLE without any app change
 
