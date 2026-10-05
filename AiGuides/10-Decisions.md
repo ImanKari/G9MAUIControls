@@ -1213,3 +1213,37 @@ made that impossible:
   a full-screen sheet is up) is not one observable property. The host knows the moment it changes.
 - **Moving the TOASTS instead.** Toasts are owned by many callers and already stack on a bottom overlay. Moving
   the one overlay separates the two with no toast change at all.
+
+---
+
+## ADR-0030 — A tab bar has STYLES, held as one metrics object per style; chrome and shadow share one outline
+
+**Date:** 2026-10-04 · **Status:** accepted (1.4.0) — see `09-Progress.md` for what was verified
+
+### Context
+
+AgriPad's designers delivered a second bottom navigation («Bottom Navigation / Sculpted»): an opaque bar with
+24 dp corners, a wide S-shouldered cradle instead of the semicircle notch, a flat 48 dp disc that sinks 8 dp into
+the bar, and no selection pill — the selected tab switches to a filled icon. The owner wanted the existing bar
+KEPT and the new one added beside it. Every geometric value of `G9TabBar` was a `const` in `G9TabBarMetrics`
+used directly by ~40 call sites, and the notch path existed twice (chrome drawable and Skia shadow).
+
+### Decision
+
+- `G9TabBarStyle { Classic, Sculpted }` and a bindable `BarStyle` (not `Style` — MAUI owns that name).
+- `G9TabBarStyleMetrics`: one immutable object per style holding everything that differs (bar height and radii,
+  FAB size / disc / glyph ratios / how far its centre sits below the bar top, notch shape and half-width, item
+  sizes, whether there is a pill, shadow recipe). `Classic` is built FROM the old constants, so a bar that never
+  sets `BarStyle` is the same bar. The shared insets, the sub-menu row, overflow and timings stay constants.
+- `G9TabBarOutline.Build(sink, metrics, …)` traces the silhouette once; the chrome (`PathF`) and the shadow
+  (`SKPath`) are sinks. The FAB centre clamp uses the same `ClampNotchCenter`, so FAB and notch cannot part.
+- Colours: style overloads in `G9TabBarColors`; the style-less ones remain the Classic recipe.
+- Sculpted's selected state is `G9TabBarItem.SelectedIcon` + Primary. Classic ignores `SelectedIcon`.
+
+### Rejected
+
+- **A second control (`G9SculptedTabBar`).** The behaviour — selection, FAB slot, sub-menu, overflow, the
+  reserved-height choreography — is 2,700 lines that must not fork.
+- **Making the constants mutable statics.** Two bars in one app (or the gallery) would fight over them.
+- **A free-form "outline provider" delegate.** The shadow, the FAB clamp and the highlight all need to know the
+  notch's half-width; a shape enum plus metrics keeps them consistent.

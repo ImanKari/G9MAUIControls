@@ -38,9 +38,7 @@ namespace G9MAUIControls.TabBar;
 /// </summary>
 internal sealed class G9TabBarShadowView : SKCanvasView
 {
-    /// <summary>Gaussian blur sigma (DIP). ~5.5 gives a soft ~11 dp spread.</summary>
-    private const float BlurSigmaDip = 5.5f;
-
+    private G9TabBarStyleMetrics _metrics = G9TabBarStyleMetrics.Classic;
     private float _layoutHeightDip;
     private float _notchCenterX;
     private float _centerProgress;
@@ -66,6 +64,32 @@ internal sealed class G9TabBarShadowView : SKCanvasView
     private SKPaint? _fabPaint;
     private SKPath? _barPath;
     private BarPathKey _barPathKey;
+
+    /// <summary>
+    ///     The style whose silhouette is shadowed. Also carries the blur sigma (Classic ~5.5 dp for a soft
+    ///     ~11 dp spread; Sculpted 4 dp, the Figma "blur 8"). Set by <see cref="G9TabBar" />.
+    /// </summary>
+    public G9TabBarStyleMetrics Metrics
+    {
+        get => _metrics;
+        set
+        {
+            if (ReferenceEquals(_metrics, value))
+            {
+                return;
+            }
+
+            var sigmaChanged = !_metrics.ShadowBlurSigma.Equals(value.ShadowBlurSigma);
+            _metrics = value;
+            _isDirty = true;
+
+            if (sigmaChanged)
+            {
+                // The blur filter bakes its sigma in; the paints holding it are rebuilt with it.
+                ReleaseSkiaResources();
+            }
+        }
+    }
 
     /// <summary>Control (bar host) reserved height in DIP — the bar bottom sits at this Y.</summary>
     public float LayoutHeightDip
@@ -260,14 +284,13 @@ internal sealed class G9TabBarShadowView : SKCanvasView
         var barLeft = (float)BarHorizontalGap;
         var barRight = dipWidth - (float)BarHorizontalGap;
         var barBottom = MathF.Max(0f, controlHeight - (float)BarBottomGap);
-        var barTop = MathF.Max(0f, barBottom - (float)BarHeight);
+        var barTop = MathF.Max(0f, barBottom - (float)_metrics.BarHeight);
         var centerX = _notchCenterX > 0f ? _notchCenterX : (barLeft + barRight) / 2f;
 
         var progress = Math.Clamp(_centerProgress, 0f, 1f);
-        var r = NotchCircleRadius * progress;
 
-        // Same recipe as before — one Normal blur at BlurSigmaDip shared by both fills — built once.
-        _blurFilter ??= SKMaskFilter.CreateBlur(SKBlurStyle.Normal, BlurSigmaDip);
+        // Same recipe as before — one Normal blur at the style's sigma shared by both fills — built once.
+        _blurFilter ??= SKMaskFilter.CreateBlur(SKBlurStyle.Normal, _metrics.ShadowBlurSigma);
         _barPaint ??= new SKPaint
         {
             IsAntialias = true,
@@ -278,11 +301,13 @@ internal sealed class G9TabBarShadowView : SKCanvasView
 
         // The silhouette only changes with the bar's size or the notch, not with the FAB circle, so it
         // is rebuilt only when one of its inputs does.
-        var pathKey = new BarPathKey(barLeft, barRight, barTop, barBottom, centerX, r, progress);
+        var pathKey = new BarPathKey(_metrics.Style, barLeft, barRight, barTop, barBottom, centerX, progress);
         if (_barPath is null || pathKey != _barPathKey)
         {
             _barPath?.Dispose();
-            _barPath = BuildBarPath(barLeft, barRight, barTop, barBottom, centerX, ref r, progress);
+            _barPath = new SKPath();
+            G9TabBarOutline.Build(
+                new SkPathSink(_barPath), _metrics, barLeft, barRight, barTop, barBottom, centerX, progress);
             _barPathKey = pathKey;
         }
 
@@ -294,7 +319,7 @@ internal sealed class G9TabBarShadowView : SKCanvasView
         // barely overlap and never read as double-darkened. Centered (no offset) so the halo
         // wraps the FAB evenly — the old downward-offset MAUI shadow is exactly what collapsed
         // into a bottom crescent on tight-blur devices.
-        var fabAlpha = Math.Clamp(FabVisibility, 0f, 1f);
+        var fabAlpha = _metrics.DrawsFabShadow ? Math.Clamp(FabVisibility, 0f, 1f) : 0f;
         if (fabAlpha > 0.01f && FabRadius > 0.5f)
         {
             _fabPaint ??= new SKPaint
@@ -310,70 +335,28 @@ internal sealed class G9TabBarShadowView : SKCanvasView
     }
 
     private readonly record struct BarPathKey(
+        G9TabBarStyle Style,
         float Left,
         float Right,
         float Top,
         float Bottom,
         float CenterX,
-        float NotchRadius,
         float Progress);
 
     /// <summary>
-    ///     Builds the bar silhouette (rounded rect + optional FAB notch) as an
-    ///     <see cref="SKPath" />. Mirrors <c>G9TabBarChromeDrawable.BuildBarPath</c> exactly
-    ///     (same corner radii, same kappa-based notch curve, same horizontal/vertical insets)
-    ///     so the shadow lines up pixel-for-pixel with the painted bar.
+    ///     Adapts <see cref="G9TabBarOutline" /> to an <see cref="SKPath" />, so the shadow traces the
+    ///     very same silhouette the chrome paints (same radii, same notch, same insets).
     /// </summary>
-    private static SKPath BuildBarPath(
-        float left,
-        float right,
-        float barTop,
-        float barBottom,
-        float centerX,
-        ref float r,
-        float progress)
+    private sealed class SkPathSink(SKPath path) : IG9TabBarOutlineSink
     {
-        var path = new SKPath();
-        var topR = BarTopRadius;
-        var botR = BarBottomRadius;
+        public void MoveTo(float x, float y) => path.MoveTo(x, y);
+        public void LineTo(float x, float y) => path.LineTo(x, y);
+        public void QuadTo(float cx, float cy, float x, float y) => path.QuadTo(cx, cy, x, y);
 
-        path.MoveTo(left, barTop + topR);
-        path.QuadTo(left, barTop, left + topR, barTop);
+        public void CubicTo(float c1X, float c1Y, float c2X, float c2Y, float x, float y) =>
+            path.CubicTo(c1X, c1Y, c2X, c2Y, x, y);
 
-        if (progress > 0.001f)
-        {
-            // Clamp the notch center so the full semicircle fits inside the bar (matches chrome).
-            var minCX = left + r + topR + 2f;
-            var maxCX = right - r - topR - 2f;
-            if (minCX < maxCX)
-            {
-                centerX = Math.Clamp(centerX, minCX, maxCX);
-            }
-
-            var leftStart = centerX - r;
-            var rightEnd = centerX + r;
-            var notchBottom = barTop + r;
-            var control = r * CircleArcKappa;
-
-            path.LineTo(leftStart, barTop);
-            path.CubicTo(
-                leftStart, barTop + control,
-                centerX - control, notchBottom,
-                centerX, notchBottom);
-            path.CubicTo(
-                centerX + control, notchBottom,
-                rightEnd, barTop + control,
-                rightEnd, barTop);
-        }
-
-        path.LineTo(right - topR, barTop);
-        path.QuadTo(right, barTop, right, barTop + topR);
-        path.LineTo(right, barBottom - botR);
-        path.QuadTo(right, barBottom, right - botR, barBottom);
-        path.LineTo(left + botR, barBottom);
-        path.QuadTo(left, barBottom, left, barBottom - botR);
-        path.Close();
-        return path;
+        public void Close() => path.Close();
     }
 }
 

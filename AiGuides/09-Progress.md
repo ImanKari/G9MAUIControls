@@ -11,16 +11,56 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-10-03**
+Last updated: **2026-10-04**
 
 > **This list is not complete.** It jumps 1.0.3 → 1.0.13; 1.0.4 through 1.0.12 shipped without an entry
 > here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
 > drifted — read it, not this heading list, when you need to know what a version contained.
 
+## 1.4.0 — a second tab-bar style (Sculpted), a title accessory and a filled chip on G9NavCard, day-relative dates (2026-10-04)
+
+> **NOT YET PUBLISHED** — `G9FamilyVersion` is 1.4.0 in the working tree, uncommitted. AgriPad's
+> `agripad-new-structure` working tree already USES every API below (the Sculpted bar on `MainPage`, the task
+> overview sheet, `G9ControlsIntegration`), so the app builds only with `-p:UseG9Source=true` until 1.4.0 is
+> pushed, indexed (all five packages) and `<G9MAUIControlsVersion>` is moved from 1.3.0. Decision record:
+> ADR-0030.
+>
+> **Verified (source mode, AgriPad consuming the projects):** the library builds; the app builds for
+> net10.0-android in Debug, and with `-p:MauiXamlInflator=XamlC`; the Sculpted outline was rendered offline
+> with skia-python from the same numbers `G9TabBarOutline` uses and matched the Figma component (cradle
+> shoulders, disc 8 dp into the bar). **Not verified:** any of it on a device or simulator, the open/close
+> animation of the cradle, dark theme, the sub-menu / overflow cells in Sculpted, iOS / Mac Catalyst / Windows.
+
+### What changed
+
+- **`G9TabBar.BarStyle`** (`G9TabBarStyle.Classic` default / `Sculpted`). Everything that differs between the
+  two lives in **`G9TabBarStyleMetrics`** (public; `Classic` reproduces the old `G9TabBarMetrics` constants
+  exactly) and the style overloads of `G9TabBarColors`. `G9TabBar.CurrentMetrics` exposes the active one.
+  `ApplyStyle()` swaps it in place: drawables' metrics, FAB sizes and glyph ratios, rebuilt items, reserved
+  height, colours — selection and FAB state are untouched.
+- **`G9TabBarOutline`** — ONE builder for the bar silhouette (rounded rect + semicircle or cradle), with a
+  `PathF` sink (chrome) and an `SKPath` sink (shadow). Both used to carry their own copy of the path.
+- **`G9TabBarItem.SelectedIcon`** — shown on the selected item in Sculpted only.
+- **`G9NavCard.TitleAccessoryView`** (a view on the title's line, after the title; a flex row so the TITLE
+  truncates first) and **`G9NavCard.UseFilledIconChip`** (solid accent chip, `OnPrimary` icon).
+- **`G9CultureDateTimeDisplayMode.RelativeDay`** + `G9CultureDateTimeLabel.RelativeDayNow` +
+  `G9StringKey.Tomorrow` / `Yesterday`.
+- Gallery: `NavigationSurfacesPage` shows a Sculpted bar under the Classic one.
+
+### CONSUMER-VISIBLE without any app change
+
+Nothing: every addition defaults to the 1.3.0 behaviour.
+
+### Traps found on the way
+
+- `Style` is `NavigableElement.Style` — a style property on the bar had to be called `BarStyle`.
+- A host computing its bottom inset from `G9TabBarMetrics.BarHeight` (AgriPad's `MainPage` did) is 2 dp
+  short under Sculpted; read `CurrentMetrics.BarHeight`.
+
 ## 1.3.0 — the progress overlay's placement belongs to the host (2026-10-03)
 
-> **NOT YET PUBLISHED** as of writing: built and verified from source, waiting for the owner's go to push
-> `main`. One app-reported item (AgriPad: "separate the sync progress from the toasts; on the map show it
+> **PUBLISHED** — nuget.org listed `G9MAUIControls` 1.3.0 on 2026-10-04 and AgriPad pins 1.3.0. (This note
+> said "not yet published" when it was written.) One app-reported item (AgriPad: "separate the sync progress from the toasts; on the map show it
 > under the top bar"). Decision record: ADR-0029.
 >
 > **Verified (source mode, AgriPad consuming the projects):** ProgressOverlay builds with 0 warnings; the

@@ -38,6 +38,12 @@ namespace G9MAUIControls.Controls;
 ///             <b>Custom trailing</b> (<see cref="TrailingView" />) — any view (a switch, a
 ///             chip, a spinner) takes over the trailing slot completely.
 ///         </item>
+///         <item>
+///             <b>Title accessory</b> (<see cref="TitleAccessoryView" />) — a small view (a count
+///             pill, an unread dot, a "6/10") placed on the title's line, RIGHT AFTER the title,
+///             independent of the trailing slot — so it coexists with the chevron and with the
+///             coming-soon badge.
+///         </item>
 ///     </list>
 ///     // TODO (palette step): badge / chevron colors will move to G9Palette.
 /// </summary>
@@ -49,6 +55,8 @@ public partial class G9NavCard : G9ControlBase
     private readonly Border _iconBadge;
     private readonly ContentView _iconHost;
     private readonly Label _titleLabel;
+    private readonly FlexLayout _titleRow;
+    private readonly ContentView _titleAccessoryHost;
     private readonly Label _subtitleLabel;
     private readonly VerticalStackLayout _textHost;
     private readonly Label _valueLabel;
@@ -120,6 +128,15 @@ public partial class G9NavCard : G9ControlBase
     [AutoBindable(DefaultValue = "true", OnChanged = nameof(OnVisualChanged))] private bool _mirrorBadgeTextInRtl = true;
 
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private View? _trailingView;
+
+    /// <summary>
+    ///     Optional view placed on the title's line immediately after the title (a count pill, an
+    ///     unread dot, a "6/10"). Unlike <see cref="TrailingView" /> it does not take over the
+    ///     trailing slot, so the chevron / value / coming-soon badge keep working beside it. When a
+    ///     long title meets an accessory, the TITLE truncates — the accessory always stays whole.
+    ///     <c>null</c> (the default) leaves the title exactly as it has always been laid out.
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private View? _titleAccessoryView;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _isDestructive;
 
     /// <summary>
@@ -136,6 +153,14 @@ public partial class G9NavCard : G9ControlBase
     ///     the icon-chip accent so the row tint and the icon chip can differ if needed.
     /// </summary>
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private Color? _cardAccentColor;
+
+    /// <summary>
+    ///     When true the leading icon chip is painted SOLID in the accent colour with a white
+    ///     (<c>OnPrimary</c>) icon, instead of the default pastel chip with an accent-coloured icon. For
+    ///     the one primary row of a list (a "view and do" entry point) — paired with
+    ///     <see cref="UseAccentSurface" /> it reads as the emphasised action without a second component.
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _useFilledIconChip;
 
     [AutoBindable] private ICommand? _command;
     [AutoBindable] private object? _commandParameter;
@@ -178,6 +203,24 @@ public partial class G9NavCard : G9ControlBase
             LineBreakMode = LineBreakMode.TailTruncation,
             MaxLines = 1,
             IsVisible = false
+        };
+
+        // Only used while a TitleAccessoryView is set: the title moves into this row so the accessory
+        // can sit right after it. A flex row (not a HorizontalStackLayout) because the TITLE must be
+        // the one that shrinks — a stack measures its children unconstrained and would clip both.
+        _titleAccessoryHost = new ContentView
+        {
+            VerticalOptions = LayoutOptions.Center,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        FlexLayout.SetShrink(_titleAccessoryHost, 0);
+        _titleRow = new FlexLayout
+        {
+            Direction = Microsoft.Maui.Layouts.FlexDirection.Row,
+            Wrap = Microsoft.Maui.Layouts.FlexWrap.NoWrap,
+            AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Center,
+            JustifyContent = Microsoft.Maui.Layouts.FlexJustify.Start,
+            Children = { _titleAccessoryHost }
         };
 
         _textHost = new VerticalStackLayout
@@ -299,10 +342,11 @@ public partial class G9NavCard : G9ControlBase
         var accent = AccentColor ?? palette.Primary;
         if (_frame.BackgroundColor != ResolveCardBackground(palette)) _frame.BackgroundColor = ResolveCardBackground(palette);
         ApplyStroke(palette);
-        _iconBadge.BackgroundColor = G9ColorHelper.Mix(accent, palette.Surface, 0.82);
+        _iconBadge.BackgroundColor = ResolveIconChipBackground(accent, palette);
         if (_iconHost.Content is G9IconView icon)
         {
-            if (icon.Color != accent) icon.Color = accent;
+            var iconColor = ResolveIconColor(accent, palette);
+            if (icon.Color != iconColor) icon.Color = iconColor;
         }
         // The chevron is no longer rebuilt per apply pass, so it has to follow the palette here.
         if (_chevronHost.Content is G9IconView chevron && chevron.Color != palette.TextTertiary)
@@ -325,16 +369,17 @@ public partial class G9NavCard : G9ControlBase
         _frame.BackgroundColor = ResolveCardBackground(palette);
         ApplyStroke(palette);
 
-        _iconBadge.BackgroundColor = G9ColorHelper.Mix(accent, palette.Surface, 0.82);
+        _iconBadge.BackgroundColor = ResolveIconChipBackground(accent, palette);
         G9IconSlot.Apply(
             _iconHost, ref _iconSignature,
             IconEmoji, Icon, IconPath, IconSource,
-            accent, string.IsNullOrWhiteSpace(IconEmoji) ? 18 : 22);
+            ResolveIconColor(accent, palette), string.IsNullOrWhiteSpace(IconEmoji) ? 18 : 22);
 
         ApplyIconBadge(palette);
 
         _titleLabel.Text = Title ?? string.Empty;
         _titleLabel.TextColor = IsDestructive ? palette.Error : palette.TextPrimary;
+        ApplyTitleAccessory();
         _subtitleLabel.Text = Subtitle ?? string.Empty;
         _subtitleLabel.TextColor = palette.TextTertiary;
         _subtitleLabel.IsVisible = !string.IsNullOrWhiteSpace(Subtitle);
@@ -389,6 +434,47 @@ public partial class G9NavCard : G9ControlBase
 
         ApplyAccessibility();
     }
+
+    /// <summary>
+    ///     Moves the title between its two homes: directly in the text stack (no accessory — the
+    ///     historical layout, untouched) or first in <see cref="_titleRow" /> with the accessory after
+    ///     it. Only moves when the home actually changes.
+    /// </summary>
+    private void ApplyTitleAccessory()
+    {
+        var accessory = TitleAccessoryView;
+        if (accessory is null)
+        {
+            _titleAccessoryHost.Content = null;
+            if (_titleLabel.Parent == _titleRow)
+            {
+                _titleRow.Children.Remove(_titleLabel);
+                _textHost.Children.Remove(_titleRow);
+                _textHost.Children.Insert(0, _titleLabel);
+            }
+
+            return;
+        }
+
+        if (!ReferenceEquals(_titleAccessoryHost.Content, accessory))
+        {
+            _titleAccessoryHost.Content = accessory;
+        }
+
+        if (_titleLabel.Parent != _titleRow)
+        {
+            _textHost.Children.Remove(_titleLabel);
+            FlexLayout.SetShrink(_titleLabel, 1);
+            _titleRow.Children.Insert(0, _titleLabel);
+            _textHost.Children.Insert(0, _titleRow);
+        }
+    }
+
+    private Color ResolveIconChipBackground(Color accent, G9Palette palette) =>
+        UseFilledIconChip ? accent : G9ColorHelper.Mix(accent, palette.Surface, 0.82);
+
+    private Color ResolveIconColor(Color accent, G9Palette palette) =>
+        UseFilledIconChip ? palette.OnPrimary : accent;
 
     private void ApplyStroke(G9Palette palette)
     {

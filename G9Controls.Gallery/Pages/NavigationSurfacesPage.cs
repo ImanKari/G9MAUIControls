@@ -62,6 +62,37 @@ public sealed class NavigationSurfacesPage : G9PageBase
         };
         stack.Add(ActionsPage.Section("G9TabBar — FAB notch + overflow sub-menu", palette, tabBar));
 
+        stack.Add(new Label
+        {
+            Text = "Sculpted: an opaque bar, a wide S-shouldered cradle under a flat primary FAB that sinks "
+                 + "8 dp into the bar, and NO pill — the selected tab swaps to its filled icon and the "
+                 + "primary colour. Tap Add to raise the FAB; tap another tab to fold it back inline.",
+            FontSize = 12,
+            TextColor = palette.OnSurfaceVariant
+        });
+
+        var sculptedBar = new G9TabBar
+        {
+            BarStyle = G9TabBarStyle.Sculpted,
+            FabIndex = 2,
+            Items =
+            [
+                // The second icon is the selected (filled) twin; the built-in glyph set has no filled
+                // variants, so the demo reuses one glyph — a real host passes an Outline/Fill pair.
+                new G9TabBarItem("Home", G9Glyph.Menu, G9Glyph.Menu),
+                new G9TabBarItem("Search", G9Glyph.Search),
+                new G9TabBarItem("Add", G9Glyph.Plus),
+                new G9TabBarItem("Time", G9Glyph.Clock),
+                new G9TabBarItem("Info", G9Glyph.Info)
+            ],
+            SubMenuItems =
+            [
+                new G9TabBarItem("New note", G9Glyph.Plus),
+                new G9TabBarItem("Scan", G9Glyph.Search)
+            ]
+        };
+        stack.Add(ActionsPage.Section("G9TabBar — Sculpted style (BarStyle=\"Sculpted\")", palette, sculptedBar));
+
         stack.Add(ActionsPage.Section("G9TabView — underlined", palette, NewTabView(G9TabStyle.Underlined)));
         stack.Add(ActionsPage.Section("G9TabView — pill", palette, NewTabView(G9TabStyle.Pill)));
 

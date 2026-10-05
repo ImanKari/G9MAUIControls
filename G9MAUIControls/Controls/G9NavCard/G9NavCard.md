@@ -22,6 +22,7 @@ The card composes four trailing / badge accessories that can be mixed freely:
 | **Icon count badge** | `IconBadgeText="3"` | A small circle with a count on the icon chip's top-trailing corner (notification style). Width auto-grows for longer text. |
 | **Icon dot badge** | `ShowIconBadgeDot="True"` | A small empty dot on the icon chip corner — the "has updates / unread" indicator. |
 | **Custom trailing** | `TrailingView` | Any view (switch, chip, spinner) takes over the trailing slot completely (wins over `ValueText` + `ShowChevron`). |
+| **Title accessory** (1.4.0) | `TitleAccessoryView` | A small view on the title's line, right AFTER the title (a "6/10", a count pill, an unread dot). Independent of the trailing slot, so it coexists with the chevron and the coming-soon badge. A long title truncates; the accessory never does. |
 
 ## Bindable Properties
 
@@ -43,6 +44,8 @@ The card composes four trailing / badge accessories that can be mixed freely:
 | `IconBadgeColor` | `Color?` | `null` | Override color for the icon badge. Defaults to `Error`. |
 | `MirrorBadgeTextInRtl` | `bool` | `true` | When true the count badge text flows RTL in RTL mode ("99+" → "+99"). |
 | `TrailingView` | `View?` | `null` | Custom content for the trailing slot. Wins over `ValueText` / `ShowChevron`. |
+| `TitleAccessoryView` | `View?` | `null` | (1.4.0) View placed after the title on its line. `null` keeps the historical title layout byte-for-byte (the title only moves into a flex row while an accessory is set). |
+| `UseFilledIconChip` | `bool` | `false` | (1.4.0) Paints the leading icon chip SOLID in `AccentColor` with an `OnPrimary` icon instead of the pastel chip — for a list's one primary row. Pair with `UseAccentSurface`. |
 | `IsDestructive` | `bool` | `false` | Title color flips to `Error`. |
 | `Command` | `ICommand?` | `null` | Executed on tap after the `Tapped` event. |
 | `CommandParameter` | `object?` | `null` | Passed to `Command`. |
@@ -128,6 +131,30 @@ for roadmap affordance, but let `IsComingSoon` own the trailing badge and passiv
 
 When `UseAccentSurface="True"` the whole row gets a soft tint of `CardAccentColor`; the icon
 chip keeps its own `AccentColor`. Used by the map tree/pot operations menus.
+
+### Primary row (filled chip) with a title accessory (1.4.0)
+
+```csharp
+new G9NavCard
+{
+    Title = "مشاهده و انجام کار",
+    Icon = MaterialIcons.Login,
+    AccentColor = palette.Primary,
+    UseAccentSurface = true,
+    UseFilledIconChip = true,               // solid primary chip, white icon
+    Command = openTaskCommand
+};
+
+new G9NavCard
+{
+    Title = "چک‌لیست",
+    Icon = AgriwiseIcons.TaskOutline,
+    IsComingSoon = true,                    // the accessory still shows
+    TitleAccessoryView = new Label { Text = "6/10", FontSize = 12 }
+};
+```
+
+AgriPad's task overview sheet is the reference consumer (`TaskDetailSheetContentView`).
 
 ### Disabled
 

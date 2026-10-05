@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.3.0</G9FamilyVersion>
+    <G9FamilyVersion>1.4.0</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -101,6 +101,28 @@
       the one metadata property in that ADR that nothing actually set until 2026-08-14.
     -->
     <PackageReleaseNotes>
+
+        1.4.0
+        - G9TabBar: a second visual style, Sculpted (ADR-0030). New G9TabBarStyle (Classic, Sculpted) set
+        through the bindable G9TabBar.BarStyle (named so because Style is MAUI's own). Sculpted is an
+        opaque bar with 24 dp corners, a wide S-shouldered cradle instead of the semicircle notch, a flat
+        48 dp primary FAB that sinks 8 dp into the bar, 12 pt labels, and NO selection pill: the selected
+        item switches to its filled icon (new G9TabBarItem.SelectedIcon, plus a three-argument constructor)
+        and the primary colour. Behaviour (selection, FAB slot, sub-menu, overflow, events) is identical.
+        New public G9TabBarStyleMetrics (Classic / Sculpted / For(style)) and G9TabBar.CurrentMetrics: a
+        host that reserves the bar's height must read CurrentMetrics.BarHeight, because Sculpted is 64 dp
+        and the Classic constant G9TabBarMetrics.BarHeight stays 62. The chrome and its Skia shadow now
+        trace ONE outline builder, so the shadow can no longer drift from the painted notch.
+        CONSUMER VISIBLE only when BarStyle is set: Classic renders exactly as in 1.3.0.
+
+        - G9NavCard: TitleAccessoryView (a small view on the title's line, right after the title; the
+        title truncates first) and UseFilledIconChip (a solid accent chip with an OnPrimary icon, for a
+        list's one primary row). Both default off; existing cards are unchanged.
+
+        - G9CultureDateTimeLabel: DisplayMode RelativeDay - "Today, 18:00" / Tomorrow / Yesterday for
+        values within a day, the ordinary date and time otherwise (a midnight value drops its 00:00).
+        "Today" is measured against the new static RelativeDayNow clock (device local time by default).
+        New G9StringKey.Tomorrow and Yesterday (G9StringKey.Today is reused).
 
         1.3.0
         - Progress overlay: the HOST decides where it sits, and a live overlay can move (ADR-0029). New

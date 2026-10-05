@@ -3,8 +3,9 @@ using static G9MAUIControls.TabBar.G9TabBarMetrics;
 namespace G9MAUIControls.TabBar;
 
 /// <summary>
-///     Paints the bar surface, its outline, the platform <c>SetShadow</c> drop, and a
-///     1px inset top-edge "glass" highlight so the bar reads as a lit, separated plane.
+///     Paints the bar surface (in the active <see cref="G9TabBarStyle" />), its outline, the platform
+///     <c>SetShadow</c> drop, and — Classic only — a 1px inset top-edge "glass" highlight so the bar
+///     reads as a lit, separated plane.
 ///     Vertical breathing room for the upward soft shadow comes from
 ///     <see cref="G9TabBarMetrics.ChromeShadowPadding" />, which grows the reserved
 ///     canvas height above the bar without moving the visible bar (the bar is bottom-
@@ -27,6 +28,9 @@ internal sealed class G9TabBarChromeDrawable : IDrawable
     public Color BarTopHighlightColor { get; set; } = Colors.White.WithAlpha(0f);
     public Color ShadowColor { get; set; } = Colors.Black;
 
+    /// <summary>The style whose bar, notch and radii are drawn. Set by <see cref="G9TabBar" />.</summary>
+    public G9TabBarStyleMetrics Metrics { get; set; } = G9TabBarStyleMetrics.Classic;
+
     public void Draw(ICanvas canvas, RectF dirtyRect)
     {
         var width = LayoutWidth > 0 ? LayoutWidth : dirtyRect.Width;
@@ -41,7 +45,7 @@ internal sealed class G9TabBarChromeDrawable : IDrawable
         var barLeft = (float)BarHorizontalGap;
         var barRight = width - (float)BarHorizontalGap;
         var barBottom = MathF.Max(0f, height - (float)BarBottomGap);
-        var barTop = MathF.Max(0f, barBottom - (float)BarHeight);
+        var barTop = MathF.Max(0f, barBottom - (float)Metrics.BarHeight);
         var centerX = NotchCenterX > 0f ? NotchCenterX : (barLeft + barRight) / 2f;
 
         DrawBar(canvas, barLeft, barRight, barBottom, barTop, centerX);
@@ -51,9 +55,11 @@ internal sealed class G9TabBarChromeDrawable : IDrawable
     {
         var progress = Math.Clamp(CenterProgress, 0f, 1f);
 
-        // Perfect semicircle: single radius for both depth and half-width.
-        var r = NotchCircleRadius * progress;
-        var path = BuildBarPath(barLeft, barRight, barBottom, barTop, centerX, ref r, ref centerX, progress);
+        // One outline for both styles and for the Skia shadow (G9TabBarOutline) — the notch shape
+        // (semicircle / cradle) comes from the style's metrics.
+        var path = new PathF();
+        var clampedCenterX = G9TabBarOutline.Build(
+            new G9TabBarPathFSink(path), Metrics, barLeft, barRight, barTop, barBottom, centerX, progress);
 
         canvas.SaveState();
         canvas.SetShadow(new SizeF(0f, BarShadowOffsetY), BarShadowBlur, ShadowColor.WithAlpha(BarShadowAlpha));
@@ -67,75 +73,20 @@ internal sealed class G9TabBarChromeDrawable : IDrawable
         canvas.RestoreState();
 
         // 1px inset hairline along the top edge (and notch curve when open). Skipped if
-        // fully transparent so consumers can opt out by setting alpha to 0.
-        if (BarTopHighlightColor.Alpha > 0.001f)
+        // fully transparent so consumers can opt out by setting alpha to 0. Classic only:
+        // the Sculpted bar is an opaque, un-lit surface.
+        if (Metrics.DrawsTopHighlight && BarTopHighlightColor.Alpha > 0.001f)
         {
-            DrawTopHighlight(canvas, barLeft, barRight, barTop, centerX, r, progress);
+            var r = (float)Metrics.NotchHalfWidth * progress;
+            DrawTopHighlight(canvas, barLeft, barRight, barTop, clampedCenterX, r, progress);
         }
-    }
-
-    /// <summary>
-    ///     Builds the bar outline path including the optional FAB notch on the top edge.
-    ///     <paramref name="r" /> and <paramref name="centerX" /> are passed by ref because
-    ///     the clamping logic adjusts them and the caller (top-edge highlight) needs the
-    ///     same clamped values to align perfectly.
-    /// </summary>
-    private static PathF BuildBarPath(
-        float barLeft,
-        float barRight,
-        float barBottom,
-        float barTop,
-        float centerX,
-        ref float r,
-        ref float clampedCenterX,
-        float progress)
-    {
-        clampedCenterX = centerX;
-
-        var path = new PathF();
-        path.MoveTo(barLeft, barTop + BarTopRadius);
-        path.QuadTo(barLeft, barTop, barLeft + BarTopRadius, barTop);
-
-        if (progress > 0.001f)
-        {
-            // Clamp centerX so the full semicircle fits inside the bar.
-            var minCX = barLeft + r + BarTopRadius + 2f;
-            var maxCX = barRight - r - BarTopRadius - 2f;
-            if (minCX < maxCX)
-            {
-                clampedCenterX = (float)Math.Clamp(centerX, minCX, maxCX);
-            }
-
-            var leftStart = clampedCenterX - r;
-            var rightEnd = clampedCenterX + r;
-            var notchBottom = barTop + r;
-            var control = r * CircleArcKappa;
-
-            path.LineTo(leftStart, barTop);
-            path.CurveTo(
-                leftStart, barTop + control,
-                clampedCenterX - control, notchBottom,
-                clampedCenterX, notchBottom);
-            path.CurveTo(
-                clampedCenterX + control, notchBottom,
-                rightEnd, barTop + control,
-                rightEnd, barTop);
-        }
-
-        path.LineTo(barRight - BarTopRadius, barTop);
-        path.QuadTo(barRight, barTop, barRight, barTop + BarTopRadius);
-        path.LineTo(barRight, barBottom - BarBottomRadius);
-        path.QuadTo(barRight, barBottom, barRight - BarBottomRadius, barBottom);
-        path.LineTo(barLeft + BarBottomRadius, barBottom);
-        path.QuadTo(barLeft, barBottom, barLeft, barBottom - BarBottomRadius);
-        path.Close();
-        return path;
     }
 
     /// <summary>
     ///     Draws a 1px inset hairline along the top of the bar — including the notch
     ///     curve when the FAB is floating. Inset by half the stroke width so the
     ///     highlight sits *inside* the filled bar and reads as a lit upper edge.
+    ///     Classic (semicircle) only — see <see cref="G9TabBarStyleMetrics.DrawsTopHighlight" />.
     /// </summary>
     private void DrawTopHighlight(
         ICanvas canvas,
@@ -146,12 +97,13 @@ internal sealed class G9TabBarChromeDrawable : IDrawable
         float r,
         float progress)
     {
+        var topR = Metrics.BarTopRadius;
         var inset = BarTopHighlightStrokeSize * 0.5f + 0.25f;
         var topY = barTop + inset;
 
         var highlight = new PathF();
-        highlight.MoveTo(barLeft + inset, barTop + BarTopRadius);
-        highlight.QuadTo(barLeft + inset, topY, barLeft + BarTopRadius, topY);
+        highlight.MoveTo(barLeft + inset, barTop + topR);
+        highlight.QuadTo(barLeft + inset, topY, barLeft + topR, topY);
 
         if (progress > 0.001f)
         {
@@ -171,8 +123,8 @@ internal sealed class G9TabBarChromeDrawable : IDrawable
                 rightEnd, topY);
         }
 
-        highlight.LineTo(barRight - BarTopRadius, topY);
-        highlight.QuadTo(barRight - inset, topY, barRight - inset, barTop + BarTopRadius);
+        highlight.LineTo(barRight - topR, topY);
+        highlight.QuadTo(barRight - inset, topY, barRight - inset, barTop + topR);
 
         canvas.SaveState();
         canvas.StrokeColor = BarTopHighlightColor;

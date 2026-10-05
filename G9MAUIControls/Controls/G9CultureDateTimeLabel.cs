@@ -35,6 +35,14 @@ public partial class G9CultureDateTimeLabel : Label
 
     private static readonly PersianCalendar PersianCalendar = new();
 
+    /// <summary>
+    ///     The clock <see cref="G9CultureDateTimeDisplayMode.RelativeDay" /> measures "today" against.
+    ///     Defaults to the device's local time. An app whose timestamps follow one fixed wall clock
+    ///     (for example a server time zone) points this at that clock once at startup, so a value
+    ///     stamped "today" there never reads as "yesterday" on a device set to another zone.
+    /// </summary>
+    public static Func<DateTime> RelativeDayNow { get; set; } = static () => DateTime.Now;
+
     private bool _isCultureChangedAttached;
 
     [AutoBindable(DefaultBindingMode = nameof(BindingMode.OneWay), OnChanged = nameof(OnDateTimeDisplayChanged))]
@@ -142,9 +150,59 @@ public partial class G9CultureDateTimeLabel : Label
             return;
         }
 
-        Text = DateTimeValue.HasValue
-            ? EmbedLeftToRight(Format(DateTimeValue.Value, DisplayMode, G9Culture.CurrentCulture))
-            : EmptyText ?? string.Empty;
+        if (!DateTimeValue.HasValue)
+        {
+            Text = EmptyText ?? string.Empty;
+            return;
+        }
+
+        var culture = G9Culture.CurrentCulture;
+        var value = DateTimeValue.Value;
+
+        // A day WORD ("امروز، ۱۸:۰۰") reads in the culture's own direction, so it is not embedded
+        // left-to-right — the same reason Relative mode is not (see EmbedLeftToRight).
+        if (DisplayMode == G9CultureDateTimeDisplayMode.RelativeDay &&
+            TryFormatRelativeDay(value, culture, out var dayText))
+        {
+            Text = dayText;
+            return;
+        }
+
+        Text = EmbedLeftToRight(Format(value, DisplayMode, culture));
+    }
+
+    /// <summary>
+    ///     «امروز، ۱۸:۰۰» / «فردا» / «دیروز، ۰۹:۳۰» when <paramref name="value" /> is within a day of
+    ///     <see cref="RelativeDayNow" />; <c>false</c> otherwise (the caller falls back to the date).
+    /// </summary>
+    private static bool TryFormatRelativeDay(DateTime value, CultureInfo culture, out string text)
+    {
+        var dayOffset = (value.Date - RelativeDayNow().Date).Days;
+        G9StringKey? key = dayOffset switch
+        {
+            0 => G9StringKey.Today,
+            1 => G9StringKey.Tomorrow,
+            -1 => G9StringKey.Yesterday,
+            _ => null
+        };
+
+        if (key is null)
+        {
+            text = string.Empty;
+            return false;
+        }
+
+        var word = G9Strings.Get(key.Value);
+        if (value.TimeOfDay == TimeSpan.Zero)
+        {
+            text = word;
+            return true;
+        }
+
+        // The Persian comma under fa (the design's «امروز، ۱۸:۰۰»), a Latin one elsewhere.
+        var separator = G9Calendar.IsPersianLanguage(culture) ? "، " : ", ";
+        text = word + separator + FormatTime(value, culture);
+        return true;
     }
 
     /// <summary>
@@ -189,6 +247,15 @@ public partial class G9CultureDateTimeLabel : Label
         if (displayMode == G9CultureDateTimeDisplayMode.Relative)
         {
             return G9RelativeTimeFormatter.FormatAgoWithTime(value, culture);
+        }
+
+        // RelativeDay outside the three named days: the absolute date, with the time only when the
+        // value actually carries one.
+        if (displayMode == G9CultureDateTimeDisplayMode.RelativeDay)
+        {
+            displayMode = value.TimeOfDay == TimeSpan.Zero
+                ? G9CultureDateTimeDisplayMode.Date
+                : G9CultureDateTimeDisplayMode.DateTime;
         }
 
         // Language decides the calendar (fa → Jalali); the rule and the range guard are shared

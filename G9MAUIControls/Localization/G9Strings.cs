@@ -80,6 +80,8 @@ public static class G9Strings
         [G9StringKey.SelectDateTime] = "Select date and time",
         [G9StringKey.SelectDuration] = "Select duration",
         [G9StringKey.Today] = "Today",
+        [G9StringKey.Tomorrow] = "Tomorrow",
+        [G9StringKey.Yesterday] = "Yesterday",
         [G9StringKey.Now] = "Now",
         [G9StringKey.Year] = "Year",
         [G9StringKey.Month] = "Month",
@@ -318,8 +320,14 @@ public enum G9StringKey
     /// <summary>Title of a duration picker sheet.</summary>
     SelectDuration,
 
-    /// <summary>Jump-to-today action in a date picker.</summary>
+    /// <summary>Jump-to-today action in a date picker; also the day word of <c>RelativeDay</c> dates.</summary>
     Today,
+
+    /// <summary>The day word of a <c>RelativeDay</c> date that falls tomorrow.</summary>
+    Tomorrow,
+
+    /// <summary>The day word of a <c>RelativeDay</c> date that fell yesterday.</summary>
+    Yesterday,
 
     /// <summary>Jump-to-now action in a time picker.</summary>
     Now,

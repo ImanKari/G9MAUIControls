@@ -3,7 +3,9 @@ using G9MAUIControls.Theming;
 namespace G9MAUIControls.TabBar;
 
 /// <summary>
-///     Single source of truth for every color the <see cref="G9TabBar" /> renders.
+///     Single source of truth for every color the <see cref="G9TabBar" /> renders, per
+///     <see cref="G9TabBarStyle" /> (the overloads that take a style; the style-less ones are the
+///     Classic recipe and stay as they were).
 ///     Every entry exposes an explicit *light* and *dark* recipe so theme-aware
 ///     adjustments live in one file. Colors are still composed from the global
 ///     <see cref="G9Palette" /> so the menu inherits the app palette, but the
@@ -89,6 +91,13 @@ internal static class G9TabBarColors
                || app is { UserAppTheme: AppTheme.Unspecified, RequestedTheme: AppTheme.Dark };
     }
 
+    public static Color BarBackground(G9Palette theme, G9TabBarStyle style)
+    {
+        // Sculpted: an OPAQUE card surface (Figma: #FFFFFF) — the bar no longer pretends to be glass,
+        // its separation comes from the soft Skia shadow alone.
+        return style == G9TabBarStyle.Sculpted ? theme.CardBackground : BarBackground(theme);
+    }
+
     public static Color BarBackground(G9Palette theme)
     {
         // Tinted-acrylic surface. We pick the brightest container for light and the
@@ -112,6 +121,11 @@ internal static class G9TabBarColors
     ///     1px inset hairline painted along the top edge of the bar by the chrome drawable.
     ///     Bright in light theme (white-ish glass highlight), subtle in dark theme.
     /// </summary>
+    public static Color BarTopHighlight(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? Colors.Transparent : BarTopHighlight(theme);
+    }
+
     public static Color BarTopHighlight(G9Palette theme)
     {
         return IsDark()
@@ -124,9 +138,38 @@ internal static class G9TabBarColors
         return BarBackground(theme);
     }
 
+    /// <summary>
+    ///     The FAB's outer shell. Sculpted has none: the 56 dp box is only the tap target and the ring
+    ///     between the disc and the cradle shows whatever is behind the bar (Figma: no fill, no stroke).
+    /// </summary>
+    public static Color FabSurface(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? Colors.Transparent : FabSurface(theme);
+    }
+
     public static Color FabSurfaceStroke(G9Palette theme)
     {
         return BarStroke(theme);
+    }
+
+    public static Color FabSurfaceStroke(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? Colors.Transparent : FabSurfaceStroke(theme);
+    }
+
+    /// <summary>
+    ///     The glass of the sub-menu and overflow cells. Classic: the FAB shell recipe (which IS the bar
+    ///     recipe). Sculpted: the opaque bar surface — its FAB shell is transparent, and a transparent cell
+    ///     over the map would leave the labels unreadable.
+    /// </summary>
+    public static Color CellSurface(G9Palette theme, G9TabBarStyle style)
+    {
+        return BarBackground(theme, style);
+    }
+
+    public static Color CellSurfaceStroke(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? theme.OutlineVariant : FabSurfaceStroke(theme);
     }
 
     public static Brush FabInnerBackground(G9Palette theme)
@@ -144,6 +187,17 @@ internal static class G9TabBarColors
         };
     }
 
+    /// <summary>Sculpted: a flat primary disc (Figma: solid #009688 → the app's Primary token).</summary>
+    public static Brush FabInnerBackground(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? new SolidColorBrush(theme.Primary) : FabInnerBackground(theme);
+    }
+
+    public static Color FabInnerBorder(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? Colors.Transparent : FabInnerBorder(theme);
+    }
+
     public static Color FabInnerBorder(G9Palette theme)
     {
         return IsDark()
@@ -158,11 +212,27 @@ internal static class G9TabBarColors
             : theme.TextPrimary.WithAlpha(SubMenuLabelAlphaLight);
     }
 
+    /// <summary>
+    ///     Sculpted: the secondary text ink (Figma: #5E6C84 slate). On the OPAQUE Sculpted bar the dark
+    ///     theme's secondary (#C3C7C3 on #15171A) is legible, so the Classic #EEEEEE pin — which exists
+    ///     because the Classic DARK bar is translucent glass — is not needed.
+    /// </summary>
+    public static Color InactiveBottomItem(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? theme.TextSecondary : InactiveBottomItem(theme);
+    }
+
     public static Color InactiveBottomItem(G9Palette theme)
     {
         return IsDark()
             ? InactiveDarkColor
             : theme.TextPrimary.WithAlpha(InactiveLight);
+    }
+
+    /// <summary>Sculpted: the selection IS the colour (no pill), so it is the full primary.</summary>
+    public static Color SelectedBottomItem(G9Palette theme, G9TabBarStyle style)
+    {
+        return style == G9TabBarStyle.Sculpted ? theme.Primary : SelectedBottomItem(theme);
     }
 
     public static Color SelectedBottomItem(G9Palette theme)

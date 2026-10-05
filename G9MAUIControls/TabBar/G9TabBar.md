@@ -22,6 +22,35 @@ Set it to `-1` to disable the FAB entirely (plain tab bar, no notch).
 Use `SelectedIndex` when you need two-way runtime selection binding.
 Use `DefaultSelectedIndex` when you only want to choose the initial selected item.
 
+## Styles — Classic and Sculpted (1.4.0)
+
+```xml
+<customizedMenu:G9TabBar BarStyle="Sculpted" FabIndex="2" ... />
+```
+
+| | `Classic` (default) | `Sculpted` |
+|---|---|---|
+| Bar | translucent glass (0.94), 62 dp, 18 dp corners, lit 1 px top edge | opaque `CardBackground`, 64 dp, 24 dp corners, no highlight |
+| Notch | semicircle, radius FAB/2 + 5 | S-shouldered **cradle** — opening ±57 dp, shoulders to (±32, 23), bowl ≈ 41 dp deep (Figma path, see `G9TabBarStyleMetrics`) |
+| FAB | 72 dp glass shell + radial-gradient disc (78 %), centre ON the bar's top edge | 56 dp tap box (no shell) + flat 48 dp `Primary` disc, centre 8 dp BELOW the top edge |
+| Items | 24 dp icon, 11 pt label, spacing 3, slots across the whole bar | 24 dp icon, 12 pt label, spacing 4, slots inside an 8 dp side padding |
+| Selected | primary-tinted pill + bold label, slot nudged 4 dp down | NO pill: `SelectedIcon` (the filled twin) + `Primary` icon/label, bold |
+| Shadow | Skia, black 50 %, σ 5.5, plus a FAB circle shadow | Skia, black 12 %, σ 4, 1 dp down, no FAB shadow |
+
+- **Everything that differs is in `G9TabBarStyleMetrics`** (`Classic`, `Sculpted`, `For(style)`); `G9TabBar.CurrentMetrics`
+  returns the active one. `G9TabBarMetrics` keeps the SHARED constants (the three shadow insets, sub-menu row,
+  overflow, timings) and the Classic values for compatibility.
+- ⛔ **A host reserving the bar's height reads `CurrentMetrics.BarHeight`**, not `G9TabBarMetrics.BarHeight` (62 —
+  2 dp short of a Sculpted bar).
+- **Selected icon:** `new G9TabBarItem(text, outlineIcon, filledIcon)` or `SelectedIcon = …`. Classic ignores it.
+- **One outline, two painters:** `G9TabBarOutline.Build` traces the bar for the chrome (`PathF`) AND the Skia
+  shadow (`SKPath`). Change the shape there and both follow — the old "mirror the path exactly in two files" rule
+  is gone. `ClampNotchCenter` is shared with the FAB's own centre clamp.
+- Switching `BarStyle` at runtime is supported (`ApplyStyle`): items are rebuilt, the FAB resized, the reserved
+  height re-resolved; selection and FAB state are kept.
+- Behaviour, events, the sub-menu row and overflow are identical in both styles; sub-menu / overflow cells use the
+  style's bar surface (`G9TabBarColors.CellSurface`).
+
 ## Configure Items
 
 ```csharp

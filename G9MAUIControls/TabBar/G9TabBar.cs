@@ -116,6 +116,9 @@ public partial class G9TabBar : ContentView
     private readonly GraphicsView _fabIconView;
     private readonly PropertyChangedEventHandler _themeChangedHandler;
 
+    /// <summary>The geometry of the active <see cref="BarStyle" />. Swapped as a whole by <see cref="ApplyStyle" />.</summary>
+    private G9TabBarStyleMetrics _metrics = G9TabBarStyleMetrics.Classic;
+
     private bool _themeHandlerAttached;
     private double _centerProgress;
     /// <summary>
@@ -206,6 +209,22 @@ public partial class G9TabBar : ContentView
     /// </summary>
     [AutoBindable(DefaultValue = "2", OnChanged = nameof(OnFabIndexChanged))]
     private int _fabIndex;
+
+    /// <summary>
+    ///     The visual style: <see cref="G9TabBarStyle.Classic" /> (default - the glass bar with the
+    ///     semicircle notch and the selection pill) or <see cref="G9TabBarStyle.Sculpted" /> (the opaque
+    ///     bar with the cradle, the flat primary FAB and filled-icon selection). Behaviour is identical.
+    ///     Named <c>BarStyle</c> because <c>Style</c> is MAUI's own property.
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnBarStyleChanged))]
+    private G9TabBarStyle _barStyle;
+
+    /// <summary>
+    ///     The active style's geometry - <see cref="G9TabBarStyleMetrics.BarHeight" /> in particular is
+    ///     what a host reserves under its content. Prefer this over the Classic-only
+    ///     <see cref="G9TabBarMetrics.BarHeight" /> constant.
+    /// </summary>
+    public G9TabBarStyleMetrics CurrentMetrics => _metrics;
 
     /// <summary>True when there are more bar items than fit in the visible slots and the overflow trigger is shown.</summary>
     private bool HasOverflow => (Items?.Count ?? 0) > MaxVisibleBottomItems;
@@ -319,6 +338,11 @@ public partial class G9TabBar : ContentView
         {
             UpdateBottomButtonVisuals();
         }
+    }
+
+    private void OnBarStyleChanged()
+    {
+        ApplyStyle();
     }
 
     private void OnFabIndexChanged()
@@ -503,7 +527,7 @@ public partial class G9TabBar : ContentView
         {
             var slot = _bottomButtons[i].Root;
             slot.AbortAnimation($"G9TabBar.SlotTranslation_{i}");
-            slot.TranslationY = i == highlighted ? SelectedIndicatorDownNudgeY : 0d;
+            slot.TranslationY = i == highlighted ? _metrics.SelectedItemNudgeY : 0d;
         }
 
         _highlightedSlotIndex = highlighted;
@@ -638,7 +662,7 @@ public partial class G9TabBar : ContentView
     {
         var icon = new G9IconView {
             Icon = item.Icon,
-            Size = BottomIconSize,
+            Size = _metrics.BottomIconSize,
             HorizontalOptions = LayoutOptions.Center,
             VerticalOptions = LayoutOptions.Center,
             InputTransparent = true
@@ -647,7 +671,7 @@ public partial class G9TabBar : ContentView
         var label = new Label
         {
             Text = item.Text,
-            FontSize = BottomLabelFontSize,
+            FontSize = _metrics.BottomLabelFontSize,
             FontFamily = ResolveCulturalFont(),
             HorizontalTextAlignment = TextAlignment.Center,
             VerticalTextAlignment = TextAlignment.Center,
@@ -659,7 +683,7 @@ public partial class G9TabBar : ContentView
 
         var content = new VerticalStackLayout
         {
-            Spacing = 3,
+            Spacing = _metrics.BottomContentSpacing,
             VerticalOptions = LayoutOptions.Center,
             HorizontalOptions = LayoutOptions.Fill,
             InputTransparent = true,
@@ -768,8 +792,8 @@ public partial class G9TabBar : ContentView
         var iconView = new GraphicsView
         {
             Drawable = _fabPlusDrawable,
-            WidthRequest = FabIconSize,
-            HeightRequest = FabIconSize,
+            WidthRequest = _metrics.FabIconSize,
+            HeightRequest = _metrics.FabIconSize,
             BackgroundColor = Colors.Transparent,
             HorizontalOptions = LayoutOptions.Center,
             VerticalOptions = LayoutOptions.Center,
@@ -779,10 +803,10 @@ public partial class G9TabBar : ContentView
         // Inner accent ring (carries the primary gradient + the +/× glyph).
         var innerSurface = new Border
         {
-            WidthRequest = FabInnerSize,
-            HeightRequest = FabInnerSize,
+            WidthRequest = _metrics.FabInnerSize,
+            HeightRequest = _metrics.FabInnerSize,
             StrokeThickness = 1,
-            StrokeShape = new RoundRectangle { CornerRadius = FabInnerSize / 2 },
+            StrokeShape = new RoundRectangle { CornerRadius = _metrics.FabInnerSize / 2 },
             HorizontalOptions = LayoutOptions.Center,
             VerticalOptions = LayoutOptions.Center,
             Content = iconView,
@@ -792,18 +816,18 @@ public partial class G9TabBar : ContentView
         // Outer FAB surface — translucent glass that mirrors the main bar.
         var outerSurface = new Border
         {
-            WidthRequest = FabSize,
-            HeightRequest = FabSize,
+            WidthRequest = _metrics.FabSize,
+            HeightRequest = _metrics.FabSize,
             StrokeThickness = BarStrokeSize,
-            StrokeShape = new RoundRectangle { CornerRadius = FabSize / 2 },
+            StrokeShape = new RoundRectangle { CornerRadius = _metrics.FabSize / 2 },
             Content = innerSurface,
             InputTransparent = true
         };
 
         var root = new Grid
         {
-            WidthRequest = FabSize,
-            HeightRequest = FabSize,
+            WidthRequest = _metrics.FabSize,
+            HeightRequest = _metrics.FabSize,
             IsClippedToBounds = false,
             Opacity = 1,
             ZIndex = 12
@@ -823,7 +847,7 @@ public partial class G9TabBar : ContentView
         };
         var icon = new G9IconView {
             Icon = triggerItem.Icon,
-            Size = BottomIconSize,
+            Size = _metrics.BottomIconSize,
             HorizontalOptions = LayoutOptions.Center,
             VerticalOptions = LayoutOptions.Center,
             InputTransparent = true
@@ -832,7 +856,7 @@ public partial class G9TabBar : ContentView
         var label = new Label
         {
             Text = triggerItem.Text,
-            FontSize = BottomLabelFontSize,
+            FontSize = _metrics.BottomLabelFontSize,
             FontFamily = ResolveCulturalFont(),
             HorizontalTextAlignment = TextAlignment.Center,
             VerticalTextAlignment = TextAlignment.Center,
@@ -844,7 +868,7 @@ public partial class G9TabBar : ContentView
 
         var content = new VerticalStackLayout
         {
-            Spacing = 3,
+            Spacing = _metrics.BottomContentSpacing,
             VerticalOptions = LayoutOptions.Center,
             HorizontalOptions = LayoutOptions.Fill,
             InputTransparent = true,
@@ -1385,7 +1409,7 @@ public partial class G9TabBar : ContentView
             _openProgress = 0d;
             _chromeDrawable.CenterProgress = 0f;
             _chromeDrawable.OpenProgress = 0f;
-            SetReservedHeight(FloatingControlHeight);
+            SetReservedHeight(_metrics.FloatingControlHeight);
         }
         else
         {
@@ -1444,8 +1468,8 @@ public partial class G9TabBar : ContentView
         if (isFloating)
         {
             SetReservedHeight(IsFabOpen || _openProgress > 0.001d
-                ? ComputeOpenControlHeight(SubMenuItems?.Count ?? 0)
-                : FloatingControlHeight);
+                ? _metrics.ComputeOpenControlHeight(SubMenuItems?.Count ?? 0)
+                : _metrics.FloatingControlHeight);
         }
 
         var target = isFloating ? 1d : 0d;
@@ -1551,7 +1575,7 @@ public partial class G9TabBar : ContentView
 
         if (isOpen)
         {
-            SetReservedHeight(ComputeOpenControlHeight(SubMenuItems?.Count ?? 0));
+            SetReservedHeight(_metrics.ComputeOpenControlHeight(SubMenuItems?.Count ?? 0));
             UpdateAllVisuals(false);
         }
 
@@ -1712,7 +1736,7 @@ public partial class G9TabBar : ContentView
 
         var width = Width > 0 ? Width : 420d;
         var height = _reservedHeight;
-        var barTop = Math.Max(0d, height - BarHeight - BarBottomGap);
+        var barTop = Math.Max(0d, height - _metrics.BarHeight - BarBottomGap);
         var fabCenterX = ResolveFabCenterX(width);
 
         LayoutFabButton(width, barTop, fabCenterX);
@@ -1722,8 +1746,11 @@ public partial class G9TabBar : ContentView
     private void UpdateBottomButtonVisuals()
     {
         var theme = G9Palette.Current;
-        var selectedColor = ResolveSelectedContentColor(theme);
-        var unselectedColor = ResolveInactiveMenuColor(theme);
+        var selectedColor = G9TabBarColors.SelectedBottomItem(theme, _metrics.Style);
+        var unselectedColor = G9TabBarColors.InactiveBottomItem(theme, _metrics.Style);
+        // Sculpted marks the selection by swapping to the item's FILLED icon (no pill). Classic keeps the
+        // one icon: its pill already says "selected", and a glyph swap under a sliding pill is noise.
+        var swapSelectedIcon = _metrics.Style == G9TabBarStyle.Sculpted;
         var centerInlineRevealProgress = IsCenterFloating ? 0d : EaseOutCubic(1d - _centerProgress);
         var fabIndex = HasFab ? ResolvedFabIndex : -1;
         var triggerSlot = HasOverflow ? OverflowTriggerSlotIndex : -1;
@@ -1752,7 +1779,10 @@ public partial class G9TabBar : ContentView
 
             // Setting a BindableProperty re-runs equality already, but assigning the same icon enum still
             // pumps property-changed events; cache to avoid layout invalidation thrash during animation.
-            if (!Equals(parts.Icon.Icon, parts.Item.Icon)) parts.Icon.Icon = parts.Item.Icon;
+            var icon = swapSelectedIcon && isHighlighted && parts.Item.SelectedIcon is { } selectedIcon
+                ? selectedIcon
+                : parts.Item.Icon;
+            if (!Equals(parts.Icon.Icon, icon)) parts.Icon.Icon = icon;
             if (parts.Label.Text != parts.Item.Text) parts.Label.Text = parts.Item.Text;
             if (parts.Label.FontFamily != fontFamily) parts.Label.FontFamily = fontFamily;
             parts.Icon.Color = isHighlighted ? selectedColor : unselectedColor;
@@ -1869,7 +1899,7 @@ public partial class G9TabBar : ContentView
 
         if (highlighted >= 0 && highlighted < _bottomButtons.Count)
         {
-            AnimateSlotTranslateY(highlighted, SelectedIndicatorDownNudgeY);
+            AnimateSlotTranslateY(highlighted, _metrics.SelectedItemNudgeY);
         }
     }
 
@@ -1950,9 +1980,9 @@ public partial class G9TabBar : ContentView
 
         var fontFamily = ResolveCulturalFont();
         var theme = G9Palette.Current;
-        var inactiveColor = G9TabBarColors.InactiveBottomItem(theme);
-        var glassFill = new SolidColorBrush(G9TabBarColors.FabSurface(theme));
-        var glassStroke = G9TabBarColors.FabSurfaceStroke(theme);
+        var inactiveColor = G9TabBarColors.InactiveBottomItem(theme, _metrics.Style);
+        var glassFill = new SolidColorBrush(G9TabBarColors.CellSurface(theme, _metrics.Style));
+        var glassStroke = G9TabBarColors.CellSurfaceStroke(theme, _metrics.Style);
         var selectedFill = G9TabBarColors.OverflowSelectedFill(theme);
         var selectedStroke = G9TabBarColors.OverflowSelectedStroke(theme);
         var selectedIconColor = G9TabBarColors.OverflowSelectedIconColor(theme);
@@ -2015,13 +2045,55 @@ public partial class G9TabBar : ContentView
         return Math.Clamp((_overflowProgress - delay) / Math.Max(0.01d, 1d - delay), 0d, 1d);
     }
 
+    /// <summary>
+    ///     Swaps every style-dependent piece in place: the metrics the two drawables read, the FAB's
+    ///     sizes and glyph proportions, the item views (REBUILT — their icon size, font size and spacing
+    ///     are set at construction), the reserved height and the colours. Selection, the FAB's
+    ///     floating/open state and the overflow state are left exactly as they are.
+    /// </summary>
+    private void ApplyStyle()
+    {
+        var metrics = G9TabBarStyleMetrics.For(BarStyle);
+        if (ReferenceEquals(metrics, _metrics))
+        {
+            return;
+        }
+
+        _metrics = metrics;
+        _chromeDrawable.Metrics = metrics;
+        _shadowView.Metrics = metrics;
+
+        MinimumHeightRequest = metrics.CompactControlHeight;
+        _root.MinimumHeightRequest = metrics.CompactControlHeight;
+
+        _fabButton.WidthRequest = metrics.FabSize;
+        _fabButton.HeightRequest = metrics.FabSize;
+        _fabOuterSurface.WidthRequest = metrics.FabSize;
+        _fabOuterSurface.HeightRequest = metrics.FabSize;
+        _fabOuterSurface.StrokeShape = new RoundRectangle { CornerRadius = metrics.FabSize / 2 };
+        _fabInnerSurface.WidthRequest = metrics.FabInnerSize;
+        _fabInnerSurface.HeightRequest = metrics.FabInnerSize;
+        _fabInnerSurface.StrokeShape = new RoundRectangle { CornerRadius = metrics.FabInnerSize / 2 };
+        _fabIconView.WidthRequest = metrics.FabIconSize;
+        _fabIconView.HeightRequest = metrics.FabIconSize;
+        _fabPlusDrawable.ArmRatio = metrics.FabPlusArmRatio;
+        _fabPlusDrawable.StrokeRatio = metrics.FabPlusStrokeRatio;
+
+        RebuildBottomButtons();
+        SetReservedHeight(ResolveTargetReservedHeight());
+        _indicatorPositioned = false;
+        ApplyTheme();
+        UpdateAllVisuals(false);
+    }
+
     private void ApplyTheme()
     {
         var theme = G9Palette.Current;
 
-        _chromeDrawable.BarColor = G9TabBarColors.BarBackground(theme);
+        var style = _metrics.Style;
+        _chromeDrawable.BarColor = G9TabBarColors.BarBackground(theme, style);
         _chromeDrawable.BarStrokeColor = G9TabBarColors.BarStroke(theme);
-        _chromeDrawable.BarTopHighlightColor = G9TabBarColors.BarTopHighlight(theme);
+        _chromeDrawable.BarTopHighlightColor = G9TabBarColors.BarTopHighlight(theme, style);
         // Shadow ink for the two Skia-drawn shadows (chrome drawable + G9TabBarShadowView).
         // These are NOT MAUI `Shadow` objects — they are painted on the Skia render thread, which
         // is why they survived the app-wide shadow ban. Black is what the old `theme.Shadow`
@@ -2033,7 +2105,10 @@ public partial class G9TabBar : ContentView
 
         // SkiaSharp drop shadow colour — shadow ink at a soft opacity. Pushed to the shadow
         // view and repainted via SyncShadow at the end of this method.
-        _shadowView.ShadowColor = new SkiaSharp.SKColor(0, 0, 0, (byte)(0.5f * 255f));
+        // Classic: 50 % black. Sculpted: the Figma recipe - 12 % black, 1 dp down, a tighter blur
+        // (the sigma rides the metrics into the shadow view).
+        _shadowView.ShadowColor = new SkiaSharp.SKColor(0, 0, 0, (byte)(_metrics.ShadowAlpha * 255f));
+        _shadowView.ShadowOffsetY = _metrics.ShadowOffsetY;
 
         // Outer FAB shell — translucent glass that mirrors the main bar.
         // NO MAUI Shadow here: the FAB's drop shadow is a Skia circle in G9TabBarShadowView
@@ -2042,13 +2117,13 @@ public partial class G9TabBar : ContentView
         // rendering is device-dependent — open upstream dotnet/maui #15565 / #16311). Do not
         // re-add a Shadow to this Border.
         _fabOuterSurface.BackgroundColor = Colors.Transparent;
-        _fabOuterSurface.Background = new SolidColorBrush(G9TabBarColors.FabSurface(theme));
-        _fabOuterSurface.Stroke = G9TabBarColors.FabSurfaceStroke(theme);
+        _fabOuterSurface.Background = new SolidColorBrush(G9TabBarColors.FabSurface(theme, style));
+        _fabOuterSurface.Stroke = G9TabBarColors.FabSurfaceStroke(theme, style);
 
         // Inner accent ring — keeps the awesome primary gradient that holds the +.
         _fabInnerSurface.BackgroundColor = Colors.Transparent;
-        _fabInnerSurface.Background = G9TabBarColors.FabInnerBackground(theme);
-        _fabInnerSurface.Stroke = G9TabBarColors.FabInnerBorder(theme);
+        _fabInnerSurface.Background = G9TabBarColors.FabInnerBackground(theme, style);
+        _fabInnerSurface.Stroke = G9TabBarColors.FabInnerBorder(theme, style);
 
         _fabPlusDrawable.Color = theme.OnPrimary;
         _fabIconView.Invalidate();
@@ -2077,15 +2152,15 @@ public partial class G9TabBar : ContentView
 
             // Outer glass shell — mirrors the bar.
             parts.OuterSurface.BackgroundColor = Colors.Transparent;
-            parts.OuterSurface.Background = new SolidColorBrush(G9TabBarColors.FabSurface(theme));
-            parts.OuterSurface.Stroke = G9TabBarColors.FabSurfaceStroke(theme);
+            parts.OuterSurface.Background = new SolidColorBrush(G9TabBarColors.CellSurface(theme, _metrics.Style));
+            parts.OuterSurface.Stroke = G9TabBarColors.CellSurfaceStroke(theme, _metrics.Style);
             // NO MAUI Shadow — the app is shadow-free by policy (design guide §12b). The glass
             // fill + stroke carry the sub-menu button's separation from the page behind it.
 
             // Inner green accent ring — primary gradient with the icon.
             parts.InnerSurface.BackgroundColor = Colors.Transparent;
-            parts.InnerSurface.Background = G9TabBarColors.FabInnerBackground(theme);
-            parts.InnerSurface.Stroke = G9TabBarColors.FabInnerBorder(theme);
+            parts.InnerSurface.Background = G9TabBarColors.FabInnerBackground(theme, _metrics.Style);
+            parts.InnerSurface.Stroke = G9TabBarColors.FabInnerBorder(theme, _metrics.Style);
 
             parts.Label.TextColor = labelColor;
         }
@@ -2093,7 +2168,7 @@ public partial class G9TabBar : ContentView
 
     private void ApplyOverflowTheme(G9Palette theme)
     {
-        var inactiveColor = G9TabBarColors.InactiveBottomItem(theme);
+        var inactiveColor = G9TabBarColors.InactiveBottomItem(theme, _metrics.Style);
         for (var i = 0; i < _overflowItems.Count; i++)
         {
             var parts = _overflowItems[i];
@@ -2101,8 +2176,8 @@ public partial class G9TabBar : ContentView
             // Default = idle glass; UpdateOverflowVisuals will swap to the primary gradient
             // for whichever item is the active selection.
             parts.Surface.BackgroundColor = Colors.Transparent;
-            parts.Surface.Background = new SolidColorBrush(G9TabBarColors.FabSurface(theme));
-            parts.Surface.Stroke = G9TabBarColors.FabSurfaceStroke(theme);
+            parts.Surface.Background = new SolidColorBrush(G9TabBarColors.CellSurface(theme, _metrics.Style));
+            parts.Surface.Stroke = G9TabBarColors.CellSurfaceStroke(theme, _metrics.Style);
             // NO MAUI Shadow — see ApplySubMenuTheme.
 
             parts.Icon.Color = inactiveColor;
@@ -2116,7 +2191,8 @@ public partial class G9TabBar : ContentView
 
     private void UpdateIndicator(bool animate)
     {
-        if (_bottomButtons.Count == 0)
+        // Sculpted has no pill: the selected item's filled icon + primary colour carry the selection.
+        if (_bottomButtons.Count == 0 || !_metrics.ShowsSelectionIndicator)
         {
             _indicator.Opacity = 0;
             _indicator.InputTransparent = true;
@@ -2222,9 +2298,7 @@ public partial class G9TabBar : ContentView
         var width = Width > 0 ? Width : 420d;
         var itemCount = Math.Max(1, _bottomButtons.Count);
         // Match LayoutElements: slots live inside the horizontally-inset bar span.
-        var barLeft = BarHorizontalGap;
-        var barWidth = Math.Max(1d, width - 2d * BarHorizontalGap);
-        var slotWidth = barWidth / itemCount;
+        var (barLeft, slotWidth) = ResolveSlotSpan(width, itemCount);
         // Items folded into the overflow column anchor the indicator on the trigger slot.
         var anchorIndex = HasOverflow && index >= OverflowTriggerSlotIndex
             ? OverflowTriggerSlotIndex
@@ -2232,12 +2306,12 @@ public partial class G9TabBar : ContentView
         var visualSlot = IsRtl() ? itemCount - 1 - anchorIndex : anchorIndex;
         var centerX = barLeft + (visualSlot + 0.5d) * slotWidth;
         var height = _reservedHeight;
-        var barTop = Math.Max(0d, height - BarHeight - BarBottomGap);
+        var barTop = Math.Max(0d, height - _metrics.BarHeight - BarBottomGap);
 
         var x = centerX - (IndicatorWidth / 2d);
         // Nudge the pill downward so the green pill sits visually centered on the icon and
         // the selected slot doesn't read as "pushed up" against the top of the bar.
-        var y = barTop + IndicatorTopOffset + SelectedIndicatorDownNudgeY;
+        var y = barTop + IndicatorTopOffset + _metrics.SelectedItemNudgeY;
         return (x, y);
     }
 
@@ -2383,31 +2457,31 @@ public partial class G9TabBar : ContentView
 
         if (!HasFab)
         {
-            return CompactControlHeight;
+            return _metrics.CompactControlHeight;
         }
 
         if (IsFabOpen || _openProgress > 0.001d)
         {
-            return ComputeOpenControlHeight(SubMenuItems?.Count ?? 0);
+            return _metrics.ComputeOpenControlHeight(SubMenuItems?.Count ?? 0);
         }
 
         if (IsCenterFloating || _centerProgress > 0.001d)
         {
-            return FloatingControlHeight;
+            return _metrics.FloatingControlHeight;
         }
 
-        return CompactControlHeight;
+        return _metrics.CompactControlHeight;
     }
 
-    private static double ComputeOverflowControlHeight(int overflowItemCount)
+    private double ComputeOverflowControlHeight(int overflowItemCount)
     {
         if (overflowItemCount <= 0)
         {
-            return CompactControlHeight;
+            return _metrics.CompactControlHeight;
         }
 
         var stack = overflowItemCount * OverflowItemSize + (overflowItemCount - 1) * OverflowItemSpacing;
-        return BarHeight + OverflowAboveBarGap + stack + 8d + ChromeShadowPadding + BarBottomGap;
+        return _metrics.BarHeight + OverflowAboveBarGap + stack + 8d + ChromeShadowPadding + BarBottomGap;
     }
 
     /// <summary>
@@ -2428,17 +2502,14 @@ public partial class G9TabBar : ContentView
     {
         var width = Width > 0 ? Width : 420d;
         var height = _reservedHeight;
-        var barTop = Math.Max(0d, height - BarHeight - BarBottomGap);
+        var barTop = Math.Max(0d, height - _metrics.BarHeight - BarBottomGap);
         // The bar is drawn inset from each horizontal edge of the control by
         // BarHorizontalGap so the SkiaSharp drop shadow's left/right halo renders
         // INSIDE the control bounds (Android clips negative-margin overflow). All
         // bottom items, the FAB, the indicator, and overflow are positioned within
         // [barLeft, barRight] so they sit ON the bar instead of past its edges.
-        var barLeft = BarHorizontalGap;
-        var barRight = width - BarHorizontalGap;
-        var barWidth = Math.Max(1d, barRight - barLeft);
         var itemCount = Math.Max(1, _bottomButtons.Count);
-        var slotWidth = barWidth / itemCount;
+        var (barLeft, slotWidth) = ResolveSlotSpan(width, itemCount);
         var rtl = IsRtl();
         var fabCenterX = ResolveFabCenterX(width);
 
@@ -2465,7 +2536,7 @@ public partial class G9TabBar : ContentView
 
             AbsoluteLayout.SetLayoutBounds(
                 _bottomButtons[i].Root,
-                new Rect(centerX - (itemWidth / 2d), y, itemWidth, BottomItemHeight));
+                new Rect(centerX - (itemWidth / 2d), y, itemWidth, _metrics.BarHeight));
         }
 
         LayoutFabButton(width, barTop, fabCenterX);
@@ -2511,6 +2582,19 @@ public partial class G9TabBar : ContentView
     }
 
     /// <summary>
+    ///     The span the item slots share: the drawn bar (<c>[BarHorizontalGap, width − BarHorizontalGap]</c>)
+    ///     minus the style's side padding, divided evenly. Items, the FAB, the selection pill and the
+    ///     overflow column all position against THIS, so none of them can disagree about where a slot is.
+    /// </summary>
+    private (double SlotLeft, double SlotWidth) ResolveSlotSpan(double width, int itemCount)
+    {
+        var left = BarHorizontalGap + _metrics.ItemsHorizontalPadding;
+        var right = width - BarHorizontalGap - _metrics.ItemsHorizontalPadding;
+        var span = Math.Max(1d, right - left);
+        return (left, span / Math.Max(1, itemCount));
+    }
+
+    /// <summary>
     ///     Returns the horizontal center of the FAB button in layout coordinates,
     ///     accounting for RTL and which item slot is the FAB.
     ///     Fixes: the notch/FAB always tracks the correct slot center, including edge slots.
@@ -2526,33 +2610,30 @@ public partial class G9TabBar : ContentView
         // The bar lives inside [BarHorizontalGap, width - BarHorizontalGap]; slot positions
         // and the FAB notch are computed against that inner span so they line up with the
         // drawn bar instead of the control's full width.
-        var barLeft = BarHorizontalGap;
-        var barRight = width - BarHorizontalGap;
-        var barWidth = Math.Max(1d, barRight - barLeft);
-        var slotWidth = barWidth / itemCount;
+        var (slotLeft, slotWidth) = ResolveSlotSpan(width, itemCount);
         var rtl = IsRtl();
         var fabSlot = Math.Clamp(ResolvedFabIndex, 0, itemCount - 1);
         var visualSlot = rtl ? itemCount - 1 - fabSlot : fabSlot;
-        var rawCenterX = barLeft + slotWidth * visualSlot + slotWidth * 0.5d;
+        var rawCenterX = slotLeft + slotWidth * visualSlot + slotWidth * 0.5d;
 
-        // Clamp so the semicircle notch (and FAB) always fits inside the bar.
-        var notchR = FabSize / 2d + NotchGap;
-        var minCX = barLeft + notchR + BarTopRadius + 2d;
-        var maxCX = barRight - notchR - BarTopRadius - 2d;
-        return Math.Clamp(rawCenterX, minCX, maxCX);
+        // Clamp so the notch (semicircle or cradle) and the FAB always fit inside the bar - the
+        // same clamp the outline applies, so the FAB and its notch can never part company.
+        return G9TabBarOutline.ClampNotchCenter(
+            _metrics, (float)BarHorizontalGap, (float)(width - BarHorizontalGap), (float)rawCenterX, 1f);
     }
 
     private void LayoutFabButton(double width, double barTop, double fabCenterX)
     {
         var positionProgress = IsCenterFloating ? _centerProgress : 1d;
-        var fabY = barTop - (FabSize * FabFloatingOverlapRatio) +
+        var fabSize = _metrics.FabSize;
+        var fabY = barTop - _metrics.FabProtrusionAboveBar +
                    ((1d - positionProgress) * FabIdleVerticalOffset);
         var fabVisibilityProgress = ResolveFabVisibilityProgress();
         // Scale is driven only by how far the FAB has risen — no change when open/closed.
         var fabScale = FabIdleScaleMin + (FabFloatingScaleBoost * fabVisibilityProgress);
 
         _fabButton.Scale = fabScale;
-        AbsoluteLayout.SetLayoutBounds(_fabButton, new Rect(fabCenterX - (FabSize / 2d), fabY, FabSize, FabSize));
+        AbsoluteLayout.SetLayoutBounds(_fabButton, new Rect(fabCenterX - (fabSize / 2d), fabY, fabSize, fabSize));
 
         // Mirror the FAB's final geometry into the Skia shadow view — the FAB's drop shadow is a
         // blurred circle drawn THERE (device-independent), not a MAUI Shadow on the Border (which
@@ -2566,8 +2647,8 @@ public partial class G9TabBar : ContentView
         // of the sub-menu OPEN animation, which moves none of the FAB geometry — and an unconditional
         // InvalidateSurface() there re-ran two blurred Skia fills per frame for an identical picture.
         _shadowView.FabCenterX = (float)(HasFab ? fabCenterX : 0d);
-        _shadowView.FabCenterY = (float)(fabY + (FabSize / 2d));
-        _shadowView.FabRadius = (float)(FabSize / 2d * fabScale);
+        _shadowView.FabCenterY = (float)(fabY + (fabSize / 2d));
+        _shadowView.FabRadius = (float)(fabSize / 2d * fabScale);
         _shadowView.FabVisibility = HasFab ? (float)Math.Clamp(fabVisibilityProgress, 0d, 1d) : 0f;
         _shadowView.InvalidateIfChanged();
     }
@@ -2595,7 +2676,7 @@ public partial class G9TabBar : ContentView
         // Position the row so the green circle sits just above the FAB top edge with
         // SubMenuRowAboveFabGap of clearance. The cell extends below the circle to host the
         // label without growing the visible spacing toward the FAB.
-        var fabTopY = barTop - FabSize * FabFloatingOverlapRatio;
+        var fabTopY = barTop - _metrics.FabProtrusionAboveBar;
         var itemY = fabTopY - SubMenuRowAboveFabGap - itemSize;
 
         // Total row width so we can clamp it within screen bounds.
