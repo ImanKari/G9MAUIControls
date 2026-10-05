@@ -1239,6 +1239,11 @@ used directly by ~40 call sites, and the notch path existed twice (chrome drawab
   (`SKPath`) are sinks. The FAB centre clamp uses the same `ClampNotchCenter`, so FAB and notch cannot part.
 - Colours: style overloads in `G9TabBarColors`; the style-less ones remain the Classic recipe.
 - Sculpted's selected state is `G9TabBarItem.SelectedIcon` + Primary. Classic ignores `SelectedIcon`.
+- **Amended 2026-10-05 (owner's device review, before publishing):** Sculpted is larger than its component — bar
+  68 dp, the cradle path × 56/48 (`CradleScale`), and a 66 dp disc sized INDEPENDENTLY of the cradle (the space
+  around it was asked to be half of what a proportional scale gave). The disc gets a Skia drop shadow traced
+  around the DISC (`FabShadowDiameter`, `FabShadowAlpha`, `FabShadowOffsetY`; Classic's values reproduce its old
+  box-sized shadow). Still no MAUI `Shadow` anywhere on the bar.
 
 ### Rejected
 

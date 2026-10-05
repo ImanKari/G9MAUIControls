@@ -46,6 +46,12 @@ Last updated: **2026-10-04**
 - **`G9CultureDateTimeDisplayMode.RelativeDay`** + `G9CultureDateTimeLabel.RelativeDayNow` +
   `G9StringKey.Tomorrow` / `Yesterday`.
 - Gallery: `NavigationSurfacesPage` shows a Sculpted bar under the Classic one.
+- **2026-10-05, still 1.4.0 (unpublished, uncommitted on top of 7743d8a):** after the owner's device review the
+  Sculpted bar is 68 dp (Figma 64); the cradle path stays in Figma's design units and is multiplied by the new
+  internal `CradleScale` (56/48); the disc is 66 dp in a 74 dp box (Figma 48/56), «+» 30 dp — sized INDEPENDENTLY
+  of the cradle, grown until the space around it was half of the first round's (5.8 dp at the bowl). Sculpted now draws a **Skia FAB shadow** (`DrawsFabShadow`), traced around the DISC
+  (`FabShadowDiameter`) at its own `FabShadowAlpha` 0.3 and `FabShadowOffsetY` 2 — Classic's values for those
+  three reproduce its old behaviour exactly. Checked on the AgriPad emulator (Pixel 9 Pro XL AVD) by the owner.
 
 ### CONSUMER-VISIBLE without any app change
 

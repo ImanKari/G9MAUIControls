@@ -316,9 +316,11 @@ internal sealed class G9TabBarShadowView : SKCanvasView
         // FAB circle shadow — same blur recipe as the bar so the two halos read as one system.
         // Drawn as its own pass because its alpha follows the FAB's visibility fade; while the
         // FAB is floating it sits in the notch HOLE of the bar path, so the two blurred fills
-        // barely overlap and never read as double-darkened. Centered (no offset) so the halo
-        // wraps the FAB evenly — the old downward-offset MAUI shadow is exactly what collapsed
-        // into a bottom crescent on tight-blur devices.
+        // barely overlap and never read as double-darkened. Classic keeps it centred (no extra
+        // drop) — the old downward-offset MAUI shadow is exactly what collapsed into a bottom
+        // crescent on tight-blur devices; Sculpted drops it a little further, which Skia renders
+        // the same on every device. Its opacity is the style's own: the Sculpted disc needs more
+        // weight than the bar's 12 % to lift off a map.
         var fabAlpha = _metrics.DrawsFabShadow ? Math.Clamp(FabVisibility, 0f, 1f) : 0f;
         if (fabAlpha > 0.01f && FabRadius > 0.5f)
         {
@@ -328,9 +330,9 @@ internal sealed class G9TabBarShadowView : SKCanvasView
                 Style = SKPaintStyle.Fill,
                 MaskFilter = _blurFilter
             };
-            _fabPaint.Color = _shadowColor.WithAlpha((byte)(_shadowColor.Alpha * fabAlpha));
+            _fabPaint.Color = _shadowColor.WithAlpha((byte)(_metrics.FabShadowAlpha * 255f * fabAlpha));
 
-            canvas.DrawCircle(FabCenterX, FabCenterY, FabRadius, _fabPaint);
+            canvas.DrawCircle(FabCenterX, FabCenterY + _metrics.FabShadowOffsetY, FabRadius, _fabPaint);
         }
     }
 

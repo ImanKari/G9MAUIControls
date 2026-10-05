@@ -30,22 +30,29 @@ Use `DefaultSelectedIndex` when you only want to choose the initial selected ite
 
 | | `Classic` (default) | `Sculpted` |
 |---|---|---|
-| Bar | translucent glass (0.94), 62 dp, 18 dp corners, lit 1 px top edge | opaque `CardBackground`, 64 dp, 24 dp corners, no highlight |
-| Notch | semicircle, radius FAB/2 + 5 | S-shouldered **cradle** — opening ±57 dp, shoulders to (±32, 23), bowl ≈ 41 dp deep (Figma path, see `G9TabBarStyleMetrics`) |
-| FAB | 72 dp glass shell + radial-gradient disc (78 %), centre ON the bar's top edge | 56 dp tap box (no shell) + flat 48 dp `Primary` disc, centre 8 dp BELOW the top edge |
+| Bar | translucent glass (0.94), 62 dp, 18 dp corners, lit 1 px top edge | opaque `CardBackground`, **68 dp** (Figma 64), 24 dp corners, no highlight |
+| Notch | semicircle, radius FAB/2 + 5 | S-shouldered **cradle** — the Figma path (opening ±57, shoulders to (±32, 23), bowl ≈ 41 deep around a 48 dp disc) × `CradleScale` 56/48 → opening ±66.5, bowl ≈ 48 dp deep |
+| FAB | 72 dp glass shell + radial-gradient disc (78 %), centre ON the bar's top edge | **74 dp** tap box (no shell) + flat **66 dp** `Primary` disc (Figma 56/48), 30 dp «+», centre 9 dp BELOW the top edge — 5.8 dp from the bowl at its tightest |
 | Items | 24 dp icon, 11 pt label, spacing 3, slots across the whole bar | 24 dp icon, 12 pt label, spacing 4, slots inside an 8 dp side padding |
 | Selected | primary-tinted pill + bold label, slot nudged 4 dp down | NO pill: `SelectedIcon` (the filled twin) + `Primary` icon/label, bold |
-| Shadow | Skia, black 50 %, σ 5.5, plus a FAB circle shadow | Skia, black 12 %, σ 4, 1 dp down, no FAB shadow |
+| Shadow | Skia, black 50 %, σ 5.5, plus a FAB circle shadow the size of the shell | Skia, black 12 %, σ 4, 1 dp down; FAB shadow traces the **disc** (not the transparent box), black 30 %, 3 dp down |
 
 - **Everything that differs is in `G9TabBarStyleMetrics`** (`Classic`, `Sculpted`, `For(style)`); `G9TabBar.CurrentMetrics`
   returns the active one. `G9TabBarMetrics` keeps the SHARED constants (the three shadow insets, sub-menu row,
   overflow, timings) and the Classic values for compatibility.
 - ⛔ **A host reserving the bar's height reads `CurrentMetrics.BarHeight`**, not `G9TabBarMetrics.BarHeight` (62 —
-  2 dp short of a Sculpted bar).
+  6 dp short of a Sculpted bar).
 - **Selected icon:** `new G9TabBarItem(text, outlineIcon, filledIcon)` or `SelectedIcon = …`. Classic ignores it.
 - **One outline, two painters:** `G9TabBarOutline.Build` traces the bar for the chrome (`PathF`) AND the Skia
   shadow (`SKPath`). Change the shape there and both follow — the old "mirror the path exactly in two files" rule
   is gone. `ClampNotchCenter` is shared with the FAB's own centre clamp.
+- **Sculpted is bigger than its Figma component, on purpose** (two rounds of the owner's device review,
+  2026-10-05): the bar is 68 dp; the cradle is Figma's path × `SculptedCradleScale` (56/48); the disc is
+  `SculptedFabDisc` (66) — grown INTO the cradle until the gap around it was half of what it had been. The two
+  are independent: change the disc to change the gap, the scale to change the cradle (`FabSize` = disc + 8
+  follows); never edit the `Cradle*` design constants for a size change.
+- **The FAB shadow is Skia, never MAUI `Shadow`** (both styles): `G9TabBarShadowView` draws a blurred circle of
+  `FabShadowDiameter` at `FabShadowAlpha`, dropped `FabShadowOffsetY` beyond the bar's offset, fading with the FAB.
 - Switching `BarStyle` at runtime is supported (`ApplyStyle`): items are rebuilt, the FAB resized, the reserved
   height re-resolved; selection and FAB state are kept.
 - Behaviour, events, the sub-menu row and overflow are identical in both styles; sub-menu / overflow cells use the

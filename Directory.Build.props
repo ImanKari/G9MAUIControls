@@ -105,13 +105,16 @@
         1.4.0
         - G9TabBar: a second visual style, Sculpted (ADR-0030). New G9TabBarStyle (Classic, Sculpted) set
         through the bindable G9TabBar.BarStyle (named so because Style is MAUI's own). Sculpted is an
-        opaque bar with 24 dp corners, a wide S-shouldered cradle instead of the semicircle notch, a flat
-        48 dp primary FAB that sinks 8 dp into the bar, 12 pt labels, and NO selection pill: the selected
+        opaque 68 dp bar with 24 dp corners, a wide S-shouldered cradle instead of the semicircle notch, a
+        flat 66 dp primary FAB disc centred 9 dp below the bar's top edge with a soft Skia drop shadow
+        (never a MAUI Shadow), 12 pt labels, and NO selection pill: the selected
         item switches to its filled icon (new G9TabBarItem.SelectedIcon, plus a three-argument constructor)
         and the primary colour. Behaviour (selection, FAB slot, sub-menu, overflow, events) is identical.
         New public G9TabBarStyleMetrics (Classic / Sculpted / For(style)) and G9TabBar.CurrentMetrics: a
-        host that reserves the bar's height must read CurrentMetrics.BarHeight, because Sculpted is 64 dp
-        and the Classic constant G9TabBarMetrics.BarHeight stays 62. The chrome and its Skia shadow now
+        host that reserves the bar's height must read CurrentMetrics.BarHeight, because Sculpted is 68 dp
+        and the Classic constant G9TabBarMetrics.BarHeight stays 62. Sculpted is deliberately larger than
+        its Figma component (bar 64, disc 48) after device review; the cradle and the disc are sized
+        independently in G9TabBarStyleMetrics. The chrome and its Skia shadow now
         trace ONE outline builder, so the shadow can no longer drift from the painted notch.
         CONSUMER VISIBLE only when BarStyle is set: Classic renders exactly as in 1.3.0.
 

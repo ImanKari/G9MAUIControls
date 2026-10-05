@@ -2648,7 +2648,9 @@ public partial class G9TabBar : ContentView
         // InvalidateSurface() there re-ran two blurred Skia fills per frame for an identical picture.
         _shadowView.FabCenterX = (float)(HasFab ? fabCenterX : 0d);
         _shadowView.FabCenterY = (float)(fabY + (fabSize / 2d));
-        _shadowView.FabRadius = (float)(fabSize / 2d * fabScale);
+        // The shadow traces what the eye reads as the FAB: Classic's glass box, Sculpted's disc (its box
+        // is transparent there).
+        _shadowView.FabRadius = (float)(_metrics.FabShadowDiameter / 2d * fabScale);
         _shadowView.FabVisibility = HasFab ? (float)Math.Clamp(fabVisibilityProgress, 0d, 1d) : 0f;
         _shadowView.InvalidateIfChanged();
     }

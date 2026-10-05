@@ -94,7 +94,7 @@ internal static class G9TabBarOutline
     {
         if (metrics.NotchShape == G9TabBarNotchShape.Cradle)
         {
-            AppendCradle(sink, cx, top, progress);
+            AppendCradle(sink, cx, top, progress * metrics.CradleScale);
             return;
         }
 
@@ -110,12 +110,13 @@ internal static class G9TabBarOutline
         sink.CubicTo(cx + control, bottom, rightEnd, top + control, rightEnd, top);
     }
 
-    private static void AppendCradle(IG9TabBarOutlineSink sink, float cx, float top, float p)
+    private static void AppendCradle(IG9TabBarOutlineSink sink, float cx, float top, float scale)
     {
         // Both axes scale with progress, so at 0 the cradle collapses onto the top edge (a flat bar)
         // and the open/close animation grows it from the centre — the same feel as the semicircle.
-        float X(float dx) => cx + dx * p;
-        float Y(float dy) => top + dy * p;
+        // The style's CradleScale rides the same factor: the design path is drawn around a 48 dp disc.
+        float X(float dx) => cx + dx * scale;
+        float Y(float dy) => top + dy * scale;
 
         const float hw = G9TabBarStyleMetrics.CradleHalfWidth;
         const float shoulderHandle = G9TabBarStyleMetrics.CradleShoulderHandleX;
