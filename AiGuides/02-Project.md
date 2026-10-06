@@ -50,6 +50,13 @@ with something a stranger can wire up in five lines.
   diagnostics are all opt-in. The one exception is the page host — the overlay layers require
   `G9PageBase` + `G9PageTemplate` (ADR-0004).
 
+- **One version per family, and the Lynx port follows it.** `G9FamilyVersion` is the single version of the five
+  packages. G9LynxControls (the ReactLynx successor, npm `@g9tm/lynxcontrols-*`) is pinned to one release of this
+  repository and publishes exactly that version (its `scripts/fetch-maui-source.mjs` + `npm run check:versions`): a
+  change here reaches Lynx by moving that pin, never by a version of its own.
+- **CI is Azure Pipelines only** (definition 27): build, pack, publish to nuget.org, then mirror to GitHub, which is a
+  read-only copy (no `.github/workflows`). After a release, upgrade every consumer (AgriPad) and bump its version.
+
 ## Must not
 
 - Contain anything belonging to the source product: brand fonts, resource keys, domain types, screen
