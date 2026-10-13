@@ -2679,6 +2679,16 @@ public static class G9BottomSheetHelper
                 contentHost.Margin.Bottom);
         }
 
+        if (!renderFooter && ResolveBottomSafeAreaInset(options) is var bodyBottomInset and > 0)
+        {
+            // No footer: the body is the last band, so its end clears the home indicator instead.
+            contentHost.Margin = new Thickness(
+                contentHost.Margin.Left,
+                contentHost.Margin.Top,
+                contentHost.Margin.Right,
+                contentHost.Margin.Bottom + bodyBottomInset);
+        }
+
         root.Children.Add(contentHost);
         AttachSheetContentDragGesture(sheet, contentHost, options);
 
@@ -3811,6 +3821,13 @@ public static class G9BottomSheetHelper
             {
                 chrome += G9LayoutMetrics.SheetHeaderVerticalGap;
             }
+
+            // The bottom inset a footer-less toolbar sheet adds under its body (CreateSheetContentRoot). A footer carries
+            // its inset inside its own padding, measured with the footer.
+            if (!ShouldRenderFooter(options))
+            {
+                chrome += ResolveBottomSafeAreaInset(options);
+            }
         }
 
         if (ShouldShowSheetGrabber(options))
@@ -4895,6 +4912,29 @@ public static class G9BottomSheetHelper
             options.TopSafeAreaPaddingOverride);
     }
 
+    /// <summary>
+    ///     The bottom safe-area inset a sheet's last band keeps clear: the home indicator on iOS / Mac Catalyst (34 pt on a
+    ///     Face ID iPhone), read from the host page like the top inset. 0 when the option is off and on every other platform —
+    ///     on Android the page's bottom inset is only a display cutout and the window already ends above the navigation bar.
+    /// </summary>
+    /// <remarks>
+    ///     Found 2026-10-13 on an iPhone 12 Pro Max (AgriPad two-way sync test): the footers «تأیید» and «عملیات روی درخت» ended
+    ///     23-28 pt inside the home-indicator band — tappable, but on the system gesture area — because the sheet reserved
+    ///     the TOP safe area only.
+    /// </remarks>
+    private static double ResolveBottomSafeAreaInset(G9BottomSheetOptions options)
+    {
+        if (!options.UseBottomSafeAreaPadding ||
+            (DeviceInfo.Current.Platform != DevicePlatform.iOS && DeviceInfo.Current.Platform != DevicePlatform.MacCatalyst))
+        {
+            return 0;
+        }
+
+        return G9ModalHostRegistry.TryGetCurrentHost(out var host)
+            ? Math.Max(0, host.Page.BottomSafeAreaInset)
+            : 0;
+    }
+
     private static double ResolveTopSafeAreaInset()
     {
         return G9ModalHostRegistry.TryGetCurrentHost(out var host)
@@ -5532,9 +5572,12 @@ public static class G9BottomSheetHelper
         footerRoot.Children.Add(divider);
         Grid.SetRow(divider, 0);
 
+        var footerPadding = G9LayoutMetrics.G9BottomSheetFooterPadding;
         var contentHost = new Grid
         {
-            Padding = G9LayoutMetrics.G9BottomSheetFooterPadding,
+            // The footer is the sheet's last band, so it is what has to clear the home indicator (ResolveBottomSafeAreaInset).
+            Padding = new Thickness(footerPadding.Left, footerPadding.Top, footerPadding.Right,
+                footerPadding.Bottom + ResolveBottomSafeAreaInset(options)),
             HorizontalOptions = LayoutOptions.Fill,
             FlowDirection = ResolveCurrentFlowDirection()
         };

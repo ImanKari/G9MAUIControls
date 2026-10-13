@@ -8,6 +8,19 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.1
+
+- Bottom sheets keep their footer clear of the iOS home indicator. On iOS / Mac Catalyst the footer
+(FooterButtons / FooterView) now adds the page's bottom safe-area inset under its buttons, and a
+toolbar sheet without a footer adds it under its body; the sheet background still runs to the screen
+edge. Before, only the TOP safe area was reserved, so a footer ended 23-28 pt inside the home-indicator
+band on an iPhone 12 Pro Max (tappable, but on the system gesture area). New
+G9BottomSheetOptions.UseBottomSafeAreaPadding (default true) turns it off per sheet. Sheets with
+ShowToolbar = false lay out their own body and are unchanged; Android is unchanged (the page's bottom
+inset there is only a display cutout and the sheet's window ends above the navigation bar).
+CONSUMER VISIBLE on iOS: a fit-to-content sheet grows by the inset, a fixed-height one gives it from its body
+(34 pt on a Face ID iPhone, 0 on a Home-button iPhone).
+
 ## 1.4.0
 
 - G9TabBar: a second visual style, Sculpted (ADR-0030). New G9TabBarStyle (Classic, Sculpted) set

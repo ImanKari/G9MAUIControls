@@ -840,6 +840,23 @@ camera-height band of sheet background above it.
 
 For body-only full-screen sheets without the helper toolbar, the helper accounts for the native grabber area so the first body content does not get an oversized top gap under the camera cutout.
 
+## Bottom Safe Area (1.4.1)
+
+On iOS / Mac Catalyst a sheet's LAST band keeps clear of the bottom safe-area inset (the home indicator, 34 pt on a
+Face ID iPhone), read from the host page like the top inset (`ResolveBottomSafeAreaInset`):
+
+- with a footer (`FooterButtons` / `FooterView`): the inset is added under the footer's buttons, inside the footer, so
+  the footer background still reaches the screen edge;
+- a toolbar sheet without a footer: the inset is added as bottom margin under the body, and counted in the helper
+  chrome height so a fit-to-content sheet grows by it instead of clipping its last row;
+- `ShowToolbar = false` sheets lay out their own body and are left alone.
+
+`UseBottomSafeAreaPadding` (default true) turns it off per sheet. Android is unchanged: the page's bottom inset there
+is only a display cutout, and the sheet's window ends above the navigation bar.
+
+Why: until 1.4.0 only the TOP safe area was reserved, so on an iPhone 12 Pro Max footers such as a form's «تأیید» ended
+23-28 pt inside the home-indicator band (AgriPad, 2026-10-13) — tappable, but on the system's swipe-home gesture area.
+
 ## Modal Overlay Opacity
 
 The helper renders its own modal overlay behind every sheet (a `BoxView` inserted into `OverlayHost` ahead of the sheet). The `G9SheetView`'s internal overlay is left disabled (`G9SheetView.IsModal = false`) because the helper-owned overlay covers the host even at the `Collapsed` state and animates in lockstep with state changes plus interactive drags.

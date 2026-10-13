@@ -406,6 +406,15 @@ public sealed record G9BottomSheetOptions
     public double? TopSafeAreaPaddingOverride { get; init; }
 
     /// <summary>
+    ///     When true (the default), a sheet on iOS / Mac Catalyst keeps its footer — or, without a footer, the bottom of a
+    ///     toolbar sheet's body — clear of the bottom safe-area inset (the home indicator, 34 pt on a Face ID iPhone). The
+    ///     sheet's background still runs to the screen edge; only the content is lifted. Sheets with
+    ///     <see cref="ShowToolbar" /> false lay out their own body and are left alone. Android reports no such inset for the
+    ///     sheet's window, so nothing changes there.
+    /// </summary>
+    public bool UseBottomSafeAreaPadding { get; init; } = true;
+
+    /// <summary>
     ///     Renders the helper-owned drag handle for full-screen toolbar sheets.
     /// </summary>
     public bool ShowFullScreenDragHandle { get; init; } = true;
