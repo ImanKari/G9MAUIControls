@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.4.1</G9FamilyVersion>
+    <G9FamilyVersion>1.4.2</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -106,17 +106,11 @@
       (2026-10-05). The G9GuardReleaseNotesLength target below fails the PACK, locally, before that.
     -->
     <PackageReleaseNotes>
-        1.4.1
-        - Bottom sheets keep their footer clear of the iOS home indicator. On iOS / Mac Catalyst the footer
-        (FooterButtons / FooterView) now adds the page's bottom safe-area inset under its buttons, and a
-        toolbar sheet without a footer adds it under its body; the sheet background still runs to the screen
-        edge. Before, only the TOP safe area was reserved, so a footer ended 23-28 pt inside the home-indicator
-        band on an iPhone 12 Pro Max (tappable, but on the system gesture area). New
-        G9BottomSheetOptions.UseBottomSafeAreaPadding (default true) turns it off per sheet. Sheets with
-        ShowToolbar = false lay out their own body and are unchanged; Android is unchanged (the page's bottom
-        inset there is only a display cutout and the sheet's window ends above the navigation bar).
-        CONSUMER VISIBLE on iOS: a fit-to-content sheet grows by the inset, a fixed-height one gives it from its body
-        (34 pt on a Face ID iPhone, 0 on a Home-button iPhone).
+        1.4.2
+        - G9IntroCarousel: BottomInset (double, default 0) lifts the chrome — caption, step dots, arrows and the sign-in button —
+        by the host's bottom safe-area inset while the media still fills the screen to the edge. Until now the sign-in button sat
+        IntroContentBottomPadding (24) above the very bottom: 10 pt inside the 34 pt home-indicator band of a Face ID iPhone
+        (AgriPad, iPhone 12 Pro Max). Bind or set it from the page's BottomSafeAreaInset; 0 keeps the 1.4.1 layout.
 
         Earlier versions: https://github.com/ImanKari/G9MAUIControls/blob/main/CHANGELOG.md
     </PackageReleaseNotes>

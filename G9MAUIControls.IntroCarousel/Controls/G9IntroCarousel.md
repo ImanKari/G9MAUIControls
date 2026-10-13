@@ -64,6 +64,7 @@ button, and a primary sign-in CTA.
 | `MediaFadeOutDurationMs` | `int` | `420` | Opacity fade-out duration for slide changes and video loop ends. Set `0` for immediate swap/no loop fade out. |
 | `OverlayOpacity` | `double` | `0.52` | Bottom opacity for the dark overlay. Also used as the flat overlay opacity when `UseGradientOverlay=false`. |
 | `UseGradientOverlay` | `bool` | `false` | When true, paints the overlay as a top-to-bottom black gradient instead of a flat black layer. |
+| `BottomInset` | `double` | `0` | (1.4.2) The host's bottom safe-area inset. Lifts the chrome (caption, dots, arrows, sign-in button) clear of the iOS home indicator; the media still runs to the screen edge. Set it from the page's `BottomSafeAreaInset`. |
 | `OverlayTopOpacityRatio` | `double` | `0.4` | Top opacity multiplier for gradient mode. `0.4` means the top is 60% lighter than the bottom. |
 | `OverlayTopOpacity` | `double` | `NaN` | Optional explicit top opacity for gradient mode. When not set, top opacity is derived from `OverlayTopOpacityRatio`. |
 | `OverlayColor` | `Color` | `Black` | Color used by both flat and gradient overlays. |

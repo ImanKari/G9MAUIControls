@@ -8,6 +8,13 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.2
+
+- G9IntroCarousel: BottomInset (double, default 0) lifts the chrome — caption, step dots, arrows and the sign-in button —
+by the host's bottom safe-area inset while the media still fills the screen to the edge. Until now the sign-in button sat
+IntroContentBottomPadding (24) above the very bottom: 10 pt inside the 34 pt home-indicator band of a Face ID iPhone
+(AgriPad, iPhone 12 Pro Max). Bind or set it from the page's BottomSafeAreaInset; 0 keeps the 1.4.1 layout.
+
 ## 1.4.1
 
 - Bottom sheets keep their footer clear of the iOS home indicator. On iOS / Mac Catalyst the footer

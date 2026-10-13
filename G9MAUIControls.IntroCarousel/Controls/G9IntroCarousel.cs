@@ -93,6 +93,10 @@ public partial class G9IntroCarousel : G9ControlBase
     [AutoBindable(DefaultValue = "G9Metrics.IntroOverlayTopOpacityRatio", OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayTopOpacityRatio = G9Metrics.IntroOverlayTopOpacityRatio;
     [AutoBindable(DefaultValue = "double.NaN", OnChanged = nameof(OnOverlayVisualChanged))] private double _overlayTopOpacity = double.NaN;
     [AutoBindable(DefaultValue = "global::Microsoft.Maui.Graphics.Colors.Black", OnChanged = nameof(OnOverlayVisualChanged))] private Color _overlayColor = Colors.Black;
+    // The host page's bottom safe-area inset (the iOS home indicator). The CHROME — caption, step dots, arrows, sign-in button —
+    // is lifted by it; the media still fills the screen to the edge. Until 1.4.2 the sign-in button sat
+    // IntroContentBottomPadding (24) above the very bottom, which on a Face ID iPhone is 10 pt inside the 34 pt home-indicator band.
+    [AutoBindable(OnChanged = nameof(OnBottomInsetChanged))] private double _bottomInset;
     [AutoBindable(DefaultValue = "true")] private bool _useMediaFadeTransitions = true;
     [AutoBindable(DefaultValue = "true")] private bool _useVideoLoopFade = true;
     [AutoBindable(DefaultValue = "true")] private bool _skipFirstSlideInitialFadeIn = true;
@@ -472,6 +476,14 @@ public partial class G9IntroCarousel : G9ControlBase
     }
 
     private void OnOverlayVisualChanged() => ApplyOverlayVisual();
+
+    private void OnBottomInsetChanged()
+    {
+        if (_chrome is not null)
+        {
+            _chrome.Padding = new Thickness(0, 0, 0, Math.Max(0, BottomInset));
+        }
+    }
 
     private void ApplyOverlayVisual()
     {
