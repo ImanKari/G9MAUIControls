@@ -1947,3 +1947,22 @@ ONLY the current version and a link to the changelog (~2,200 characters). A `G9G
 
 **Lesson.** Anything that ends up in a nuspec is subject to the GALLERY's rules, not just the SDK's. A field
 that grows with every release needs a ceiling checked where the build runs, not where the upload happens.
+
+## LES-0054 — An "observer" gesture recognizer is still a competitor
+
+**Symptom.** AgriPad ITCS-15976 (2026-10-21): on an iPhone 12 Pro Max no column of the date / age wheel moved under a
+drag. Android and the simulator-free compile were fine, so nothing caught it before a tester did.
+
+**Cause.** `G9DrumColumn` tracked finger contact with its own `UIPanGestureRecognizer` added to the `UIScrollView`,
+configured with `CancelsTouchesInView = false` and no delays, on the belief that this made it passive. It does not:
+those flags only control what happens to the TOUCHES; the recognizer still takes part in recognition, and two pan
+recognizers on one view are mutually exclusive unless a delegate allows simultaneity. UIKit let ours recognize, and
+ours scrolls nothing.
+
+**Fix (1.4.3).** Observe the scroll view's own `PanGestureRecognizer` with `AddTarget` — a target hears every state
+change and has no say in recognition. The token is kept and removed on re-attach. The non-UIScrollView fallback keeps an
+observer but sets `ShouldRecognizeSimultaneously = (_, _) => true`.
+
+**Lesson.** On iOS, to watch a gesture that a system view already recognizes, add a target to ITS recognizer. A new
+recognizer is a competitor however passive its touch flags look, and Android's return-false touch listener has no iOS
+equivalent with that name.

@@ -8,6 +8,14 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.3
+
+- G9DateTimePicker / G9DrumColumn on iOS and Mac Catalyst: dragging a wheel column scrolls again. The column
+watched the finger through a second UIPanGestureRecognizer added beside the UIScrollView's own pan; on a real iPhone
+UIKit let that observer win (CancelsTouchesInView=false does not stop it recognizing), so a drag moved no row at all
+(AgriPad, iPhone 12 Pro Max). The column now adds a target to the scroll view's own PanGestureRecognizer, which only
+hears its state changes. Android and Windows are unchanged.
+
 ## 1.4.2
 
 - G9IntroCarousel: BottomInset (double, default 0) lifts the chrome — caption, step dots, arrows and the sign-in button —

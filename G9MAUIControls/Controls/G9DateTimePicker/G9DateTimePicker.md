@@ -143,11 +143,16 @@ hook attached on `HandlerChanged`:
   after the touch slop is exceeded. Treating MOVE as a finger-in-contact
   signal closes that hole — `SetFingerDown(true)` is idempotent so repeated
   MOVEs are cheap.
-- **iOS / Mac Catalyst** — a passive `UIPanGestureRecognizer` with
-  `CancelsTouchesInView=false` so the native scroll pan still drives
-  scrolling. Both `Began` and `Changed` flip `_isFingerDown = true` (same
-  rationale as the Android MOVE guard — a touch starting on a child view
-  may skip the Began callback on our observer).
+- **iOS / Mac Catalyst** — a target added to the `UIScrollView`'s OWN
+  `PanGestureRecognizer` (1.4.3). It only hears that pan's state changes and
+  never competes for the touch. Both `Began` and `Changed` flip
+  `_isFingerDown = true` (same rationale as the Android MOVE guard).
+  ⛔ Never add a SECOND `UIPanGestureRecognizer` to the scroll view: up to
+  1.4.2 one was added with `CancelsTouchesInView=false`, but that flag does
+  not stop it from recognizing — UIKit let it win over the scroll pan, and a
+  drag on the drum scrolled nothing on a real iPhone (AgriPad ITCS-15976).
+  If the platform view is ever not a `UIScrollView`, the fallback observer
+  sets `ShouldRecognizeSimultaneously` so it can never take the gesture.
 - **Windows** — `PointerPressed` / `PointerReleased` / `PointerCanceled` /
   `PointerCaptureLost` routed events on the platform `ScrollViewer`.
 

@@ -929,9 +929,20 @@ internal sealed class G9DrumColumn : Grid
 #if IOS || MACCATALYST
     private global::UIKit.UIPanGestureRecognizer? _iosObserverPan;
 
+    /// <summary>The scroll view's OWN pan we observe, and the target token that removes our observer.</summary>
+    private global::UIKit.UIPanGestureRecognizer? _iosObservedScrollPan;
+
+    private global::UIKit.UIGestureRecognizer.Token? _iosObservedScrollPanToken;
+
     private void AttachIosPanRecognizer()
     {
-        if (_scroll.Handler?.PlatformView is not global::UIKit.UIView view) return;
+        if (_iosObservedScrollPan is not null && _iosObservedScrollPanToken is not null)
+        {
+            _iosObservedScrollPan.RemoveTarget(_iosObservedScrollPanToken);
+        }
+
+        _iosObservedScrollPan = null;
+        _iosObservedScrollPanToken = null;
 
         if (_iosObserverPan is not null)
         {
@@ -940,14 +951,29 @@ internal sealed class G9DrumColumn : Grid
             _iosObserverPan = null;
         }
 
-        // Attach a passive UIPanGestureRecognizer that reports state but never
-        // claims the gesture (CancelsTouchesInView=false). The native scroll
-        // pan still drives scrolling; ours just observes the touch lifecycle.
+        if (_scroll.Handler?.PlatformView is global::UIKit.UIScrollView scrollView)
+        {
+            // ⛔ Observe the scroll view's OWN pan, never a second one beside it. A second
+            // UIPanGestureRecognizer on the same view COMPETES with the scroll pan — UIKit lets one
+            // recognize, and it was ours, which scrolls nothing: on iPhone a drag on the date / age
+            // drum moved no row at all (2026-10-21; Android's touch listener is passive, so it never
+            // showed there). A target added to the scroll pan only hears its state changes.
+            var scrollPan = scrollView.PanGestureRecognizer;
+            _iosObservedScrollPanToken = scrollPan.AddTarget(() => OnIosPan(scrollPan));
+            _iosObservedScrollPan = scrollPan;
+            return;
+        }
+
+        if (_scroll.Handler?.PlatformView is not global::UIKit.UIView view) return;
+
+        // Not a UIScrollView (should not happen): a passive observer that recognizes ALONGSIDE every
+        // other recognizer, so it can never take the gesture from anything.
         var pan = new global::UIKit.UIPanGestureRecognizer(OnIosPan)
         {
             CancelsTouchesInView = false,
             DelaysTouchesBegan = false,
-            DelaysTouchesEnded = false
+            DelaysTouchesEnded = false,
+            ShouldRecognizeSimultaneously = (_, _) => true
         };
         view.AddGestureRecognizer(pan);
         _iosObserverPan = pan;
