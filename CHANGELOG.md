@@ -8,6 +8,11 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.4
+
+- No change in the controls. Released so the family keeps one version with G9LynxControls 1.4.4, its Lynx port, which
+ships Lynx-side fixes (the port's version always equals the G9MAUIControls release it is pinned to).
+
 ## 1.4.3
 
 - G9DateTimePicker / G9DrumColumn on iOS and Mac Catalyst: dragging a wheel column scrolls again. The column
