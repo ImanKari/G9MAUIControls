@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.4.5</G9FamilyVersion>
+    <G9FamilyVersion>1.4.6</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -106,9 +106,10 @@
       (2026-10-05). The G9GuardReleaseNotesLength target below fails the PACK, locally, before that.
     -->
     <PackageReleaseNotes>
-        1.4.5
-        - No change in the controls. Released so the family keeps one version with G9LynxControls 1.4.5, its Lynx port,
-        which ships Lynx-side fixes (the port's version always equals the G9MAUIControls release it is pinned to).
+        1.4.6
+        - A bottom sheet keeps a scroller's explicit ScrollBarVisibility.Always. G9BottomSheetScrollBarPolicy hides the bar of
+        every scroller inside a sheet; it used to overwrite Always too, so a long menu could not say "there is more below".
+        The policy now replaces only the default, axis by axis; every other sheet scroller keeps its hidden bar.
 
         Earlier versions: https://github.com/ImanKari/G9MAUIControls/blob/main/CHANGELOG.md
     </PackageReleaseNotes>

@@ -22,6 +22,12 @@ namespace G9MAUIControls.BottomSheet;
 ///         bars. Setting the MANAGED <c>ScrollBarVisibility</c> property (not the platform view)
 ///         keeps this cross-platform; MAUI maps it down for us.
 ///     </para>
+///     <para>
+///         <b>An explicit <see cref="ScrollBarVisibility.Always" /> is kept.</b> The policy replaces the
+///         default, not a decision: a long menu whose last rows sit below the sheet's edge needs its bar,
+///         or nothing says «there is more below» (AgriPad TR-0030, 2026-11-03 — the tree operations menu
+///         set <c>Always</c> and this mapper silently turned it back to <c>Never</c>). Axis by axis.
+///     </para>
 /// </summary>
 internal static class G9BottomSheetScrollBarPolicy
 {
@@ -42,8 +48,15 @@ internal static class G9BottomSheetScrollBarPolicy
         {
             if (view is ScrollView scrollView && IsInsideG9BottomSheet(scrollView))
             {
-                scrollView.VerticalScrollBarVisibility = ScrollBarVisibility.Never;
-                scrollView.HorizontalScrollBarVisibility = ScrollBarVisibility.Never;
+                if (scrollView.VerticalScrollBarVisibility != ScrollBarVisibility.Always)
+                {
+                    scrollView.VerticalScrollBarVisibility = ScrollBarVisibility.Never;
+                }
+
+                if (scrollView.HorizontalScrollBarVisibility != ScrollBarVisibility.Always)
+                {
+                    scrollView.HorizontalScrollBarVisibility = ScrollBarVisibility.Never;
+                }
             }
         });
 
@@ -66,8 +79,15 @@ internal static class G9BottomSheetScrollBarPolicy
             return;
         }
 
-        view.VerticalScrollBarVisibility = ScrollBarVisibility.Never;
-        view.HorizontalScrollBarVisibility = ScrollBarVisibility.Never;
+        if (view.VerticalScrollBarVisibility != ScrollBarVisibility.Always)
+        {
+            view.VerticalScrollBarVisibility = ScrollBarVisibility.Never;
+        }
+
+        if (view.HorizontalScrollBarVisibility != ScrollBarVisibility.Always)
+        {
+            view.HorizontalScrollBarVisibility = ScrollBarVisibility.Never;
+        }
     }
 #endif
 

@@ -8,6 +8,10 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.6
+
+- A bottom sheet keeps a scroller's explicit `ScrollBarVisibility.Always`. `G9BottomSheetScrollBarPolicy` hides the bar of every scroller inside a sheet; it used to overwrite `Always` too, so a long menu could not say «there is more below» (AgriPad TR-0030). The policy now replaces only the default, axis by axis; every other sheet scroller keeps its hidden bar.
+
 ## 1.4.5
 
 - No change in the controls. Released so the family keeps one version with G9LynxControls 1.4.5, its Lynx port, which

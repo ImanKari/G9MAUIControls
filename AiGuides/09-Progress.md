@@ -11,11 +11,16 @@
 app on all four TFMs, in both project- and package-reference mode. Outstanding: the visual pass, which
 needs a human eye, and iOS NativeAOT.**
 
-Last updated: **2026-10-04**
+Last updated: **2026-11-03**
 
 > **This list is not complete.** It jumps 1.0.3 → 1.0.13; 1.0.4 through 1.0.12 shipped without an entry
 > here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
 > drifted — read it, not this heading list, when you need to know what a version contained.
+
+## 1.4.6 — a sheet keeps an explicit always-visible scroll bar (2026-11-03)
+
+- A bottom sheet keeps a scroller's explicit `ScrollBarVisibility.Always`. `G9BottomSheetScrollBarPolicy` hides the bar of every scroller inside a sheet; it used to overwrite `Always` too, so a long menu could not say «there is more below» (AgriPad TR-0030). The policy now replaces only the default, axis by axis; every other sheet scroller keeps its hidden bar.
+- Proven on an Android emulator in AgriPad source mode: the tree operations menu shows its bar at rest, keeps it after 6 s and the thumb follows the scroll; the side inset is unchanged. 1.4.4 and 1.4.5 have no entry here (version-only releases for G9LynxControls, see `CHANGELOG.md`).
 
 ## 1.4.0 — a second tab-bar style (Sculpted), a title accessory and a filled chip on G9NavCard, day-relative dates (2026-10-04)
 
