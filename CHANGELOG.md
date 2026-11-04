@@ -8,6 +8,11 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.7
+
+- A stacked bottom sheet recedes the right parent again. When the next step was stacked on a sheet before that sheet had finished closing (a selection sheet's Done that opens the following step), the closing sheet was taken out of the stack by a rebuild that REVERSED the stack: the step on screen dropped to the bottom, and every later step receded the wrong sheet and was drawn over a fully visible parent. The rebuild keeps the order now; recede/restore animations are no longer behind an app-wide concurrency guard and cancel the sheet's running animation first; a closing child no longer restores a parent the next step already covers. (AgriPad survey wizard, 2026-11-04; LES-0055.)
+- G9SelectionSheet.ShowForResultAsync(..., minimumSelected): multi-select Done stays disabled until that many rows are selected, so a caller never has to refuse an empty answer and reopen the sheet.
+
 ## 1.4.6
 
 - A bottom sheet keeps a scroller's explicit `ScrollBarVisibility.Always`. `G9BottomSheetScrollBarPolicy` hides the bar of every scroller inside a sheet; it used to overwrite `Always` too, so a long menu could not say «there is more below» (AgriPad TR-0030). The policy now replaces only the default, axis by axis; every other sheet scroller keeps its hidden bar.

@@ -1092,10 +1092,15 @@ public static class G9BottomSheetHelper
                 }
                 else
                 {
-                    // Rebuild stack without this sheet (rare case: not on top)
-                    var remaining = new Stack<CustomizedSfG9BottomSheet>(stack.Where(s => !ReferenceEquals(s, sheet)).Reverse());
+                    // Not on top: the next step was stacked on this sheet before its close finished (a
+                    // selection sheet's Done that opens the following step). Rebuild without it, KEEPING
+                    // THE ORDER. ⛔ This used to build a Stack from the bottom-first list and then push
+                    // that Stack's own top-first enumeration back — reversed, so the step the user was
+                    // on dropped to the bottom and every later step receded the wrong parent, drawn over
+                    // a fully visible one (2026-11-04, LES-0055).
+                    var bottomFirst = stack.Where(s => !ReferenceEquals(s, sheet)).Reverse().ToList();
                     stack.Clear();
-                    foreach (var s in remaining)
+                    foreach (var s in bottomFirst)
                     {
                         stack.Push(s);
                     }
@@ -2205,17 +2210,55 @@ public static class G9BottomSheetHelper
 
         var offset = Math.Max(24, visibleHeight * StackParentRecedeHeightFraction);
 
+        // ⛔ Not concurrency-guarded, and the parent's own running animations are cancelled first (2026-11-04).
+        // The guard (G9SafeCommand's default, one fixed key for EVERY recede in the app) skipped a recede while an
+        // earlier one was still "running" — and an animation interrupted by another on the same view (a restore
+        // starting over a recede: a child closed and the next step opened on the same parent at once, e.g. a
+        // G9SelectionSheet's «تأیید» that opens the following step) never completes its Task. That one hung Task held
+        // the key for the rest of the session: no parent receded again, every later step was drawn over a fully
+        // visible parent (the AgriPad survey wizard, owner screenshot). Each recede is about one parent; nothing to guard.
+        RunRecedeAnimation(parent, offset, 0, nameof(ApplyStackParentRecede));
+    }
+
+    /// <summary>
+    ///     Moves <paramref name="sheet" /> to <paramref name="translationY" /> / <paramref name="opacity" />, cancelling
+    ///     whatever transform animation it is still running (a recede and a restore of the same parent can overlap).
+    ///     Fire and forget, never guarded — see <see cref="ApplyStackParentRecede" />.
+    /// </summary>
+    private static void RunRecedeAnimation(CustomizedSfG9BottomSheet sheet, double translationY, double opacity, string source)
+    {
+        sheet.CancelAnimations();
         G9SafeCommand.RunSafe(
             () => Task.WhenAll(
-                parent.TranslateToAsync(0, offset, StackParentRecedeDurationMs, Easing.CubicOut),
-                parent.FadeToAsync(0, StackParentRecedeDurationMs, Easing.CubicOut)),
+                sheet.TranslateToAsync(0, translationY, StackParentRecedeDurationMs, Easing.CubicOut),
+                sheet.FadeToAsync(opacity, StackParentRecedeDurationMs, Easing.CubicOut)),
             new G9SafeCommandOptions
             {
                 Source = nameof(G9BottomSheetHelper),
                 ShowErrorG9Popup = false,
                 EnableThrottle = false,
-                ThrottleKey = $"{nameof(G9BottomSheetHelper)}.{nameof(ApplyStackParentRecede)}"
+                PreventConcurrentExecution = false,
+                ThrottleKey = $"{nameof(G9BottomSheetHelper)}.{source}"
             });
+    }
+
+    /// <summary>
+    ///     True while another live stacked child still has <paramref name="parent" /> receded — the next step was opened
+    ///     on it while <paramref name="closingChild" /> was still closing. Restoring the parent then would bring it back,
+    ///     fully visible, behind the new step.
+    /// </summary>
+    private static bool IsRecededByAnotherChild(CustomizedSfG9BottomSheet parent, CustomizedSfG9BottomSheet closingChild)
+    {
+        foreach (var (child, receded) in StackedRecededParents)
+        {
+            if (!ReferenceEquals(child, closingChild) && ReferenceEquals(receded, parent) &&
+                IsSheetAlive(child) && child.IsOpen && child.State != SfG9BottomSheetState.Hidden)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -2242,24 +2285,21 @@ public static class G9BottomSheetHelper
             return;
         }
 
+        // The next step already sits on this parent (opened while this child was closing): it stays receded.
+        if (IsRecededByAnotherChild(parent, child))
+        {
+            return;
+        }
+
         if (instant)
         {
+            parent.CancelAnimations();
             parent.TranslationY = 0;
             parent.Opacity = 1;
             return;
         }
 
-        G9SafeCommand.RunSafe(
-            () => Task.WhenAll(
-                parent.TranslateToAsync(0, 0, StackParentRecedeDurationMs, Easing.CubicOut),
-                parent.FadeToAsync(1, StackParentRecedeDurationMs, Easing.CubicOut)),
-            new G9SafeCommandOptions
-            {
-                Source = nameof(G9BottomSheetHelper),
-                ShowErrorG9Popup = false,
-                EnableThrottle = false,
-                ThrottleKey = $"{nameof(G9BottomSheetHelper)}.{nameof(RestoreRecededParent)}"
-            });
+        RunRecedeAnimation(parent, 0, 1, nameof(RestoreRecededParent));
     }
 
     private static void LogSheetCreated(CustomizedSfG9BottomSheet sheet, G9BottomSheetOptions options, string role)

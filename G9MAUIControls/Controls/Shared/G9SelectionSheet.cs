@@ -93,6 +93,12 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     private readonly G9TextEntry? _searchEntry;
     private bool _isCompleted;
 
+    /// <summary>Multi-select: told the selected count whenever it changes (ShowForResultAsync's minimumSelected).</summary>
+    internal Action<int>? SelectedCountChanged { get; set; }
+
+    /// <summary>How many rows are selected now.</summary>
+    internal int SelectedCount => _selectedKeys.Count;
+
     /// <summary>A close-on-select pick is waiting out its 120 ms before closing; further taps are ignored.</summary>
     private bool _pickInFlight;
     private string _query = string.Empty;
@@ -380,6 +386,10 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     ///     "changed" from "untouched". This is what <see cref="G9ComboBox" /> and
     ///     <see cref="G9Picker" /> use.
     /// </summary>
+    /// <param name="minimumSelected">
+    ///     Multi-select: Done stays disabled until at least this many rows are selected (default 0 — always enabled).
+    ///     The sheet stays open instead of closing on an empty answer the caller would have to refuse and reopen.
+    /// </param>
     public static Task<G9SelectionSheetResult> ShowForResultAsync(
         string title,
         IEnumerable<G9SelectionItem> items,
@@ -389,7 +399,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         bool showSearch,
         string? emptyText = null,
         G9TextInputDirection itemTextDirection = G9TextInputDirection.MatchParent,
-        IEnumerable<G9SelectionItem>? resetSelection = null)
+        IEnumerable<G9SelectionItem>? resetSelection = null,
+        int minimumSelected = 0)
     {
         var tcs = new TaskCompletionSource<G9SelectionSheetResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         G9SelectionSheet? sheet = null;
@@ -427,6 +438,7 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         Label? countLabel = null;
         Border? countBadge = null;
         View? headerTrailingView = null;
+        G9Button? doneButton = null;
         if (allowMultiple)
         {
             countLabel = new Label
@@ -449,14 +461,16 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
                 VerticalOptions = LayoutOptions.Center,
                 IsVisible = false
             };
-            var doneButton = new G9Button
+            doneButton = new G9Button
             {
                 Text = G9Strings.Get(G9StringKey.Done),
                 Variant = G9ButtonVariant.Text,
                 Size = G9ControlSize.Small,
                 VerticalOptions = LayoutOptions.Center,
+                IsEnabled = (materializedSelected?.Count ?? 0) >= minimumSelected,
                 Command = new Command(() =>
                 {
+                    if (sheet is null || sheet.SelectedCount < minimumSelected) return;
                     // Done is a COMMIT, not a dismissal — the distinction the result carries.
                     sheet?.Complete(sheet.CollectSelection(), accepted: true);
                     sheet?.G9BottomSheetHandle.Close();
@@ -536,6 +550,12 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         {
             var built = new G9SelectionSheet(title, materializedItems, materializedSelected, allowMultiple, closeOnSingleSelection, showSearch, emptyText, itemTextDirection, countLabel, countBadge);
             built.Completed += OnCompleted;
+            if (doneButton is not null && minimumSelected > 0)
+            {
+                built.SelectedCountChanged = count => doneButton.IsEnabled = count >= minimumSelected;
+                doneButton.IsEnabled = built.SelectedCount >= minimumSelected;
+            }
+
             return built;
         }
 
@@ -940,6 +960,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         {
             _selectedCountBorder.IsVisible = _allowMultiple && _selectedKeys.Count > 0;
         }
+
+        SelectedCountChanged?.Invoke(_selectedKeys.Count);
     }
 
     /// <summary>

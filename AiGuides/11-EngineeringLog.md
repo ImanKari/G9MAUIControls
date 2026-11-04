@@ -1966,3 +1966,28 @@ observer but sets `ShouldRecognizeSimultaneously = (_, _) => true`.
 **Lesson.** On iOS, to watch a gesture that a system view already recognizes, add a target to ITS recognizer. A new
 recognizer is a competitor however passive its touch flags look, and Android's return-false touch listener has no iOS
 equivalent with that name.
+
+## LES-0055 — A stack rebuilt in reverse: every later step drawn over a visible parent
+
+**Symptom.** AgriPad, 2026-11-04 (owner screenshot): in the survey wizard, «ثبت ویژگی‌ها» opened the category step OVER
+a fully visible «چه چیزی را ثبت می‌کنید؟» step instead of receding it. Not after a fresh start — only once the product
+step's multi-select sheet had been confirmed; from then on, in that flow, back and forward were out of step.
+
+**Cause.** The selection sheet's «تأیید» closes it, and the caller opens the next step at once — stacked on the
+selection sheet, whose close had not finished. When its cleanup ran, the closing sheet was no longer on top, so
+`CleanupStackedSheet` took the "rare case" path: `new Stack<T>(list.Where(...).Reverse())` (top = the right sheet), then
+`stack.Clear()` and `foreach (var s in remaining) stack.Push(s)` — but enumerating a `Stack<T>` yields TOP FIRST, so the
+pushes rebuilt it upside down. The step on screen went to the bottom; the next push read the old bottom as its parent
+(a device trace proved it: «ثبت ویژگی‌ها» pushed with parent «فیلتر محصول») and receded that one, which was already out
+of sight. Found while suspecting something else, also fixed: every recede/restore ran under `G9SafeCommand`'s default
+concurrency guard with ONE app-wide key (a hung animation task would have muted all recedes for the session), and a
+closing child restored its parent even after the next step had already covered it.
+
+**Fix (1.4.7).** The rebuild pushes a bottom-first `List` (order kept). `RunRecedeAnimation`: `CancelAnimations()` first,
+fire and forget, `PreventConcurrentExecution = false`. `RestoreRecededParent` returns early while another live child
+still has that parent receded (`IsRecededByAnotherChild`). And `G9SelectionSheet` gained `minimumSelected`, so the
+AgriPad step that closed an empty list only to reopen it no longer does.
+
+**Lesson.** `new Stack<T>(IEnumerable)` and `foreach (var x in stack)` run in OPPOSITE orders; never round-trip a stack
+through its own enumeration. The "rare" branch of a cleanup is exactly the one a fast flow hits — trace the stack, not
+the animation, when a parent "does not recede".
