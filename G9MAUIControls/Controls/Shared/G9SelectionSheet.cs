@@ -385,11 +385,12 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     ///     list from <see cref="ShowAsync" /> — distinguishes "committed" from "dismissed" and
     ///     "changed" from "untouched". This is what <see cref="G9ComboBox" /> and
     ///     <see cref="G9Picker" /> use.
+    ///     <para>
+    ///         <c>minimumSelected</c> (multi-select): Done stays disabled until at least this many rows are selected
+    ///         (default 0 — always enabled). The sheet stays open instead of closing on an empty answer the caller would
+    ///         have to refuse and reopen.
+    ///     </para>
     /// </summary>
-    /// <param name="minimumSelected">
-    ///     Multi-select: Done stays disabled until at least this many rows are selected (default 0 — always enabled).
-    ///     The sheet stays open instead of closing on an empty answer the caller would have to refuse and reopen.
-    /// </param>
     public static Task<G9SelectionSheetResult> ShowForResultAsync(
         string title,
         IEnumerable<G9SelectionItem> items,
