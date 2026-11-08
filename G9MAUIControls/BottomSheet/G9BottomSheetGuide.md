@@ -425,7 +425,9 @@ Because a duration is now resolved per motion, nothing may assume a configured c
 - **Close cleanup** — waits the closing motion's own duration, and then for `IsMotionRunning` to clear
   (bounded by `CloseAnimationTimeoutMs`). The motion can outlast its nominal duration — see the driver
   below — and tearing a sheet down under a close that is still on screen is a visible pop.
-- **Opened work** (`OpenedCommand`, the deferred load) — unchanged: it fires from `OpenMotionCompleted`.
+- **Opened work** (`OpenedCommand`, the deferred load) — fires from `OpenMotionCompleted`, with a fallback
+  that keeps looking (every 100 ms, up to 10 s) until the sheet is open and at rest. See "The open completes
+  when the body comes to REST" below.
 - **Quick close for a queued replacement** — `CloseDurationScale` scales whatever the model resolved.
 
 ### The motion driver (`G9SheetMotionDriver`, `G9FrameClock`)
@@ -584,6 +586,16 @@ first, builds after) or through `ShowProcessingG9BottomSheet`.
 - **An aborted motion does not complete.** `finished` honours `cancelled`. A retargeted motion
   inherits the completion of the one it replaces, so `OpenMotionCompleted` fires exactly once, at the
   real end — never mid-animation, which is what used to start a deferred load inside the open.
+- **⛔ The open completes when the body comes to REST — by any route (1.4.8, field report 2026-11-08).**
+  `Show()` sets a pending open completion; `Close()` clears it; `OpenMotionCompleted` is raised ONCE, the
+  first time the opened body is at rest: the open's own end, a retarget that inherited it, the settle
+  after a finger took the open over (`CompleteMotion`), or a `SetFitHeight` SNAP (no animation, or a
+  change of 1 dp or less). Until 1.4.7 the last two called `AbortMotion()`, which drops the running
+  motion's completion — so a same-height re-fit landing mid-open, or a finger on a rising sheet, lost
+  `OpenMotionCompleted` for good. The helper's one-shot fallback timer had usually already stepped aside
+  (a staged open outlasts it on a slow phone), so every `DeferContent` body — the date and duration
+  pickers, selection lists — stayed on its spinner for ever (Samsung A24, the graft date picker). The
+  fallback in `RunOpenedCommandLater` now keeps looking until the sheet is open and at rest.
 - **`ApplyBodyHeightForState` has one rule per situation:** staged → stay parked; under a finger →
   leave it to the finger; moving → RETARGET; at rest → animate a large host change (keyboard,
   rotation), follow a small one instantly (a window being dragged). It used to write the position
@@ -1639,6 +1651,7 @@ Run the whole G9BottomSheet tab after changing `G9BottomSheetHelper`, `G9BottomS
 - Do not let an `IG9BottomSheetContentHeightProvider` return a hard-coded constant for content whose real height can change (a shared card, a row template). The helper trusts the provider without independently re-measuring, so a drifted constant clips content out of frame with NO animated correction — this is what clipped `SamplingTargetContentView`'s register button when `TreeInfoCardView` grew past the old 126dp estimate. Measure the attached body (`Measure(width, ∞)`) and return that; keep a static number only as the pre-attach cold-open value, aimed slightly low. And subscribe that body's `Loaded` → `RaiseG9BottomSheetHeightChanged()` so the slow-cold-open case (all settle passes run before attach) still gets one animated correction instead of an intermittent few-dp clip.
 - Do not ship a deferred sheet body that mutates its visual after construction (async data fill, collection repopulate, scroll-to-selection on `Loaded`, late image source) without either a `LoadableSheetContentView` in-body spinner OR the readiness gate (`GateContentReadiness()` + `MarkContentReady()`). The covered reveal drops its spinner on a fixed timer, so an ungated post-reveal mutation blinks. See "Post-reveal mutation → the blink". When editing the gate on a base class, do a CLEAN Android build — stale incremental output silently disables the base method.
 - Do not make post-open fit resizes instant again (`shouldAnimate` must keep the `sheet.IsOpen` arm). The instant path is reserved for pre-open passes; an instant post-open apply is exactly the visible "pop" the 2026-07 instrumentation caught on all 18 fit sheets.
+- Do not tie `OpenMotionCompleted` to one motion's `onFinish` again, and do not let any path that puts an open sheet at rest (a snap, a drag settle) skip `RaiseOpenMotionCompletedIfPending`. A lost open completion is a sheet that spins for ever; the fallback's polling is the safety net, not the mechanism.
 - Do not remove the `OpenMotionCompleted` wiring from `RunOpenedCommandLater` and fall back to the fixed timer alone. The timer is the non-scaled worst case; on partial-height sheets it starts deferred loads ~300 ms late, which pushes the content's real height past the scheduled settle passes and makes the correction land visibly late.
 - Do not replace the `G9Shimmer` band with a MAUI `Animation`/timer/SkiaSharp-invalidation shimmer. Only render-thread mechanisms (Android AVD, iOS Core Animation) keep animating while the UI thread builds the content the placeholder masks — a UI-thread shimmer freezes at exactly the wrong moment (see `G9Shimmer.md`).
 - Do not add reopen-previous `ClosedCommand`s to stacked step flows, and do not close only the TOP sheet on a commit path. Stacked chaining's contract is: back closes the top step (the receded parent restores itself), commit closes the whole stack (`CloseG9BottomSheet()`). A reopen-ClosedCommand duplicates the parent; a top-only commit close resurrects the historical stale-sheet bug.

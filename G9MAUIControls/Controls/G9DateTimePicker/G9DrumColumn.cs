@@ -366,14 +366,19 @@ internal sealed class G9DrumColumn : Grid
 
     private View CreateRow(G9DrumItem item)
     {
+        // ONE view per row (1.4.8). A row used to be a Label inside a ContentView that carried the tap — two
+        // platform views per row, and the year drum alone held 101 rows, all built on the UI thread before the
+        // picker could show. That cost is why the picker opened behind a spinner; halving the views (and
+        // narrowing the year window, see G9DateTimePickerSheet.YearWindowRadius) is what lets it open
+        // pre-built instead. The Label takes the tap itself.
         var palette = G9Palette.Current;
         var label = new Label
         {
             HeightRequest = G9Metrics.DrumRowHeight,
             HorizontalTextAlignment = TextAlignment.Center,
             VerticalTextAlignment = TextAlignment.Center,
-            InputTransparent = true,
-            BackgroundColor = Colors.Transparent
+            BackgroundColor = Colors.Transparent,
+            BindingContext = item
         };
         // Assigned, not bound. G9DrumItem.Text is `init`-only, so the binding could never fire a second
         // time — it bought nothing and cost trim-unsafety: a string-path Binding resolves by reflection and
@@ -390,16 +395,8 @@ internal sealed class G9DrumColumn : Grid
 
         var tap = new TapGestureRecognizer();
         tap.Tapped += (_, _) => SelectFromTap(item);
-
-        var hit = new ContentView
-        {
-            HeightRequest = G9Metrics.DrumRowHeight,
-            BackgroundColor = Colors.Transparent,
-            Content = label,
-            BindingContext = item
-        };
-        hit.GestureRecognizers.Add(tap);
-        return hit;
+        label.GestureRecognizers.Add(tap);
+        return label;
     }
 
     private static void Apply(Label label, bool selected, G9Palette palette)

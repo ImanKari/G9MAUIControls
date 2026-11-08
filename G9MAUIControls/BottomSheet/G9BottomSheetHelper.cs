@@ -4225,9 +4225,35 @@ public static class G9BottomSheetHelper
                 await Task.Delay(delayMs).ConfigureAwait(true);
             }
 
-            RunOpenedWorkOnce("timerFallback");
+            // ⛔ The fallback keeps LOOKING until the sheet is open and at rest; it used to look once.
+            // A staged open routinely outlasts delayMs on a slow phone (the off-screen hold has its
+            // own budget), so the single look found the sheet "not open yet" or "still moving",
+            // stepped aside — and from then on the deferred body depended on OpenMotionCompleted
+            // alone. Any lost completion then meant a sheet that spun for ever (field report
+            // 2026-11-08: the graft date picker on a Samsung A24). Plain delays, not frames: this is
+            // the path that must still work when frames are late.
+            var deadline = G9FrameAwaiter.Deadline.After(OpenedWorkFallbackMaxMs);
+            while (true)
+            {
+                RunOpenedWorkOnce("timerFallback");
+                if (ran || deadline.IsExpired)
+                {
+                    break;
+                }
+
+                await Task.Delay(OpenedWorkFallbackPollMs).ConfigureAwait(true);
+            }
         });
     }
+
+    /// <summary>How often the opened-work fallback looks again while the sheet is not yet open and at rest.</summary>
+    private const int OpenedWorkFallbackPollMs = 100;
+
+    /// <summary>
+    ///     How long the opened-work fallback keeps looking. Covers the two staged-hold budgets plus the
+    ///     open motion with a wide margin; a sheet still not open by then was abandoned.
+    /// </summary>
+    private const int OpenedWorkFallbackMaxMs = 10_000;
 
     /// <summary>
     ///     Records "open then fill" content so <see cref="TriggerDeferredLoad" /> can drive its

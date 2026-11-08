@@ -300,22 +300,19 @@ DateField.FormattedDisplayText = $"Week {GetWeek(date)} of {date.Year}";
 
 - The picker calls `this.Unfocus()` before opening the sheet so the parent ScrollView
   doesn't auto-scroll to the picker.
-- **Deferred sheet content** — the bottom sheet opens with a centered spinner FIRST
-  and constructs the heavy view tree (4–5 drum columns × ~100 rows each = hundreds of
-  Label + ContentView allocations) AFTER the open animation has played. Without this
-  the user saw a 1–3s tap-to-open lag because everything ran synchronously on the UI
-  thread before the sheet could appear. Measured on emulator: tap → ShowAsync 64ms →
-  factory invoked +480ms (after open animation) → factory body 336ms → ~816ms total
-  perceived time, with the sheet visibly animating in immediately.
-- **Crossfade reveal (`FadeDeferredContentIn = true`)** — the drum columns realize
-  row-by-row on first paint, so a plain spinner→content swap looked staggered ("one
-  part shows, then the next"). The sheet sets `G9BottomSheetOptions.FadeDeferredContentIn`,
-  which keeps the spinner on screen while the freshly-built tree lays out hidden
-  (`Opacity 0`), then crossfades the whole picker in as **one settled unit**. Because an
-  `Opacity 0` child still measures at full size, the fit-to-content sheet has already
-  grown to the picker's real height before the fade — no resize jump during the reveal.
-  Business logic is untouched: it only changes *when/how* the already-built tree becomes
-  visible. See `G9BottomSheetGuide.md` → "Lazy heavy-content rendering" → "Crossfade reveal".
+- **⛔ Pre-built, no spinner (1.4.8).** The sheet body is built ON THE TAP and handed to the sheet
+  pre-built (`ShowG9BottomSheet(sheet, options)` with `DeferContent = false`), so it goes through
+  stage-before-show like every short selection sheet: laid out off screen, then opened once, finished.
+  Until 1.4.7 it was the last sheet in the suite on the pre-1.1 path — factory + `DeferContent = true` +
+  `FadeDeferredContentIn` — which opened with a spinner and built the drums only when the open motion
+  reported it had finished. On a slow, memory-pressed phone that spinner stayed for seconds, and when
+  the open signal was lost it stayed for good (field report 2026-11-08, Samsung A24, the graft date
+  picker). Two changes made the eager build cheap enough: a drum row is ONE view (a `Label` carrying
+  the tap — it used to be a `Label` inside a `ContentView`), and the year window is ±12 years, not ±50
+  (it still grows at both edges). Measured on the emulator (Debug): tap → wheels built 150 ms → staged
+  220 ms → open motion done at **684 ms**, wheels in place from the first frame; the old path took
+  ~816 ms behind a spinner. `G9TimeSpanPicker` opens the same way. Do not move either back to a
+  factory / `DeferContent = true`: a spinner here is a regression, not a loading state.
 - The drum column uses a `ScrollView` with fixed-height rows. The 16ms-tick settle
   detector (see Drum Picker → "Settle detection" above) decides when to snap; no
   platform `CollectionView` snap points are involved — keeps behaviour identical across
@@ -353,8 +350,8 @@ DateField.FormattedDisplayText = $"Week {GetWeek(date)} of {date.Year}";
 - `MinDate` / `MaxDate` bound the underlying `DateTime`. In Persian mode the same
   Gregorian min/max are converted to Persian year/month/day for the year column range.
 - **The year drum is a window, not Min..Max.** The drum is not virtualized, so it holds at most
-  ±50 years around the selection (inside Min/Max). Scrolling to within two rows of the window's end
-  appends 25 more years in place; reaching its start re-centres the window once the drum is at
+  ±12 years around the selection (inside Min/Max; ±50 until 1.4.8). Scrolling to within two rows of the window's end
+  appends 12 more years in place; reaching its start re-centres the window once the drum is at
   rest. A `MinDate = 1900` sentinel no longer costs ~175 realized rows on open.
 - When Min/Max clamp a value the drums roll onto the clamped value (they used to keep showing the
   out-of-range date while the preview and the result said otherwise), and **Today** rebuilds the

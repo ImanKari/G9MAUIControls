@@ -8,6 +8,11 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.11
+
+- **The date and time-span pickers open pre-built — no spinner.** `G9DateTimePicker` and `G9TimeSpanPicker` were the last sheets on the pre-1.1 factory + `DeferContent` path: they opened with a spinner and built their drums only when the open motion reported it had finished. On a slow, memory-pressed phone the spinner stayed for seconds, and when the open signal was lost it stayed for good (AgriPad field report 2026-11-08, Samsung A24, the graft date picker). Their bodies are now built on the tap and go through stage-before-show like every short selection sheet. A drum row is one `Label` (it was a `Label` in a `ContentView`) and the year window is ±12 years (was ±50; it still grows at both edges). Emulator (Debug): fully open at 684 ms with the wheels in place from the first frame, against ~816 ms behind a spinner.
+- **A sheet's open completion can no longer be lost.** `OpenMotionCompleted` is raised the first time an opened sheet comes to REST, by any route — the open's own end, a retarget, the settle after a finger took the open over, or a `SetFitHeight` snap. Until 1.4.7 a same-height re-fit landing mid-open, or a finger on a rising sheet, aborted the motion and dropped the event, and every deferred (`DeferContent`) body waited for it for ever. The helper's opened-work fallback also keeps looking (every 100 ms, up to 10 s) instead of looking once.
+
 ## 1.4.10
 
 - `G9SelectionItem.IsAvatar`: the item's image (`IconPath` / `IconSource`) is a person's picture - drawn ROUND, at the new

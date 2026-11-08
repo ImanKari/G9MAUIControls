@@ -115,25 +115,19 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
         G9TimeSpanPicker? owner)
     {
         var tcs = new TaskCompletionSource<TimeSpan?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        G9TimeSpanPickerSheet? sheet = null;
+
+        // PRE-BUILT, like G9DateTimePickerSheet.ShowAsync (1.4.8): laid out off screen and opened finished —
+        // no spinner, and no build waiting on the open-motion signal. See that method for why.
+        var sheet = new G9TimeSpanPickerSheet(title, selected, mode, owner);
+        sheet.Completed += (_, value) => tcs.TrySetResult(value);
 
         G9BottomSheetHelper.ShowG9BottomSheet(
-            () =>
-            {
-                sheet = new G9TimeSpanPickerSheet(title, selected, mode, owner);
-                sheet.Completed += (_, value) => tcs.TrySetResult(value);
-                return sheet;
-            },
+            sheet,
             G9BottomSheetOptions.FitToContentOptions() with
             {
-                DeferContent = true,
-                FadeDeferredContentIn = true,
+                DeferContent = false,
                 BackgroundColor = G9Palette.Current.Surface,
-                ClosedCommand = new Command(() =>
-                {
-                    if (sheet is not null) sheet.CompleteFromClose();
-                    else tcs.TrySetResult(null);
-                })
+                ClosedCommand = new Command(sheet.CompleteFromClose)
             });
 
         return tcs.Task;

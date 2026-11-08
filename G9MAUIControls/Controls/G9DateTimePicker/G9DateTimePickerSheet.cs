@@ -26,11 +26,17 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
     ///     Years built on each side of the selection. The year drum is NOT virtualized — every year
     ///     is a realized row — so it must never be sized from Min..Max: a <c>MinDate = 1900</c>
     ///     sentinel alone was ~175 rows, at a measured ~700 ms per 31 rows on Android.
+    ///     <para>
+    ///         12, not 50 (1.4.8): the picker is now built BEFORE it opens (pre-built, no spinner), so
+    ///         every row is paid for in the tap-to-open time. ±12 years covers any date a field
+    ///         operator picks without scrolling, and the window grows by itself at both edges
+    ///         (<see cref="GrowYearWindowIfNeeded" />) for the rare one that needs more.
+    ///     </para>
     /// </summary>
-    private const int YearWindowRadius = 50;
+    private const int YearWindowRadius = 12;
 
     /// <summary>Rows appended when the selection gets close to the END of the built window.</summary>
-    private const int YearWindowStep = 25;
+    private const int YearWindowStep = 12;
 
     /// <summary>How close (in rows) to a window edge the selection must be before the window grows.</summary>
     private const int YearWindowEdgeRows = 2;
@@ -220,36 +226,28 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
         bool showTodayButton = true)
     {
         var tcs = new TaskCompletionSource<DateTime?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        G9DateTimePickerSheet? sheet = null;
 
-        // Use the factory + DeferContent path. The sheet constructor builds 4-5
-        // drum columns each with up to ~100 rows (year column = ±50 years), every row
-        // a Label + ContentView with bindings — that's hundreds of view-tree
-        // allocations. Synchronous construction before the open animation produced a
-        // perceptible 1-3s lag on tap. With DeferContent=true the sheet host is laid
-        // out FIRST with a centered spinner, the open animation plays, and only then
-        // is the heavy view tree built — by that point the user is already looking at
-        // the sheet so the build cost is masked. Measured on emulator: tap →
-        // ShowAsync 64ms → factory invoked +480ms (after open animation) → factory
-        // body 336ms → total perceived 816ms vs the previous synchronous 1-3s lag.
+        // ⛔ PRE-BUILT, not factory + DeferContent (1.4.8). The picker used to open behind a spinner and build
+        // its drums only once the open motion reported it had finished — the one sheet in the suite still on
+        // that pre-1.1 path. It made the picker the only sheet that visibly "loaded", and it tied the build to
+        // a signal that can be lost (a re-fit or a finger landing mid-open): on a slow, memory-pressed phone
+        // the spinner stayed for good (field report 2026-11-08, Samsung A24, the graft date picker). Built here
+        // instead, the body goes through stage-before-show like every short selection sheet: laid out off
+        // screen, then opened once, finished — no spinner, no swap, nothing waiting on the open signal. What
+        // made the eager build cost "1-3 s" before is gone: one view per drum row (G9DrumColumn.CreateRow) and
+        // a ±12-year window (YearWindowRadius) instead of ±50.
+        var sheet = new G9DateTimePickerSheet(title, selected, mode, minDate, maxDate, twentyFourHour, owner, showTodayButton);
+        sheet.Completed += (_, value) => tcs.TrySetResult(value);
+
         G9BottomSheetHelper.ShowG9BottomSheet(
-            () =>
-            {
-                sheet = new G9DateTimePickerSheet(title, selected, mode, minDate, maxDate, twentyFourHour, owner, showTodayButton);
-                sheet.Completed += (_, value) => tcs.TrySetResult(value);
-                return sheet;
-            },
+            sheet,
             G9BottomSheetOptions.FitToContentOptions() with
             {
-                DeferContent = true,
-                // Drum columns realize row-by-row on first paint; crossfade the built tree in
-                // (spinner held until laid out) so it appears as one unit, not piecemeal.
-                FadeDeferredContentIn = true,
+                DeferContent = false,
                 BackgroundColor = G9Palette.Current.Surface,
                 ClosedCommand = new Command(() =>
                 {
-                    if (sheet is not null) sheet.CompleteFromClose();
-                    else tcs.TrySetResult(null);
+                    sheet.CompleteFromClose();
                 })
             });
 

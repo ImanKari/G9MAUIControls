@@ -134,6 +134,15 @@ public partial class G9SheetView : Grid
     private bool _isPointerPressed;
     private bool _isOverlayAdded;
     private bool _pendingShow;
+
+    /// <summary>
+    ///     Set by <see cref="Show" />, cleared by <see cref="Close" /> and by the one raise of
+    ///     <see cref="OpenMotionCompleted" />. The open is "complete" the first time the opened body
+    ///     comes to REST — by whatever route it gets there — not when one particular motion runs to
+    ///     its end; see <see cref="RaiseOpenMotionCompletedIfPending" />.
+    /// </summary>
+    private bool _openCompletionPending;
+
     private double _initialTouchY;
 
     /// <summary>Raw finger travel over the current gesture — drives the drag-to-CLOSE decision.</summary>
@@ -890,6 +899,13 @@ public partial class G9SheetView : Grid
             _bottomSheet.TranslationY = target + SettleOvershoot;
             UpdateBottomPin();
             RaisePositionChanged();
+
+            // ⛔ The snap just put the body at rest. When it interrupted the OPEN motion, the abort
+            // above dropped that motion's completion — and with it OpenMotionCompleted, the signal a
+            // deferred body ("open then fill": the date picker's wheels, a selection list) waits for
+            // to be built. A re-fit to the same height landing mid-open left those sheets showing
+            // their spinner for ever (field report 2026-11-08, Samsung A24, the graft date picker).
+            RaiseOpenMotionCompletedIfPending();
             return;
         }
 
@@ -922,12 +938,13 @@ public partial class G9SheetView : Grid
         SetupForShow();
         _isStaged = false;
         _isBottomPinFrozen = false;
+        _openCompletionPending = true;
         var target = GetTargetPosition();
         var velocity = _releaseVelocityY;
         _releaseVelocityY = 0;
         AnimateG9BottomSheet(
             target,
-            onFinish: () => OpenMotionCompleted?.Invoke(this, EventArgs.Empty),
+            onFinish: RaiseOpenMotionCompletedIfPending,
             velocityY: velocity);
         IsOpen = true;
     }
@@ -940,7 +957,9 @@ public partial class G9SheetView : Grid
         _isBottomPinFrozen = true;
         _isStaged = false;
 
-        // Aborted explicitly so the close does NOT inherit an interrupted open's completion.
+        // Aborted explicitly so the close does NOT inherit an interrupted open's completion — and a
+        // sheet closed before it ever came to rest never reports an open.
+        _openCompletionPending = false;
         AbortMotion();
         AnimateG9BottomSheet(ResolveOffscreenTranslation(), onFinish: () =>
         {
@@ -981,7 +1000,9 @@ public partial class G9SheetView : Grid
             case G9SheetViewTouchAction.Pressed:
                 // A finger landing on a moving sheet takes it over. Without this the settle
                 // animation and the drag both write the position and the body shudders between
-                // them until the animation ends.
+                // them until the animation ends. An interrupted OPEN is not lost by this: the
+                // pending open completion stays set and is raised when the settle that follows the
+                // release comes to rest (CompleteMotion), unless that release closes the sheet.
                 AbortMotion();
                 _initialTouchY = touchY;
                 _isPointerPressed = true;
@@ -1668,6 +1689,29 @@ public partial class G9SheetView : Grid
         UpdateBottomPin();
         RaisePositionChanged();
         onFinish?.Invoke();
+
+        // Any motion that brings an OPEN sheet to rest completes a pending open — the open's own,
+        // a retarget that inherited it, or the settle after a finger took the open motion over.
+        // A close has already cleared the pending flag, so it never raises here.
+        if (_isSheetOpen && !_isPointerPressed)
+        {
+            RaiseOpenMotionCompletedIfPending();
+        }
+    }
+
+    /// <summary>
+    ///     Raises <see cref="OpenMotionCompleted" /> once per <see cref="Show" />, the first time the
+    ///     opened body is at rest. Idempotent: the open's own finish and a later rest both call it.
+    /// </summary>
+    private void RaiseOpenMotionCompletedIfPending()
+    {
+        if (!_openCompletionPending)
+        {
+            return;
+        }
+
+        _openCompletionPending = false;
+        OpenMotionCompleted?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
