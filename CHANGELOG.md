@@ -8,6 +8,15 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.8
+
+- `G9SelectionSheet` (behind `G9ComboBox` and `G9Picker`) no longer builds one row per item. It shows the first
+  `RowPageSize` (60) matches, builds the next page when the user scrolls to the end, stops at `MaxRenderedRows` (200)
+  and counts the rest in a «N more — search to narrow the list» footer (`G9StringKey.MoreResultsFormat`, new). A
+  selected item beyond the window is still listed, so it can be un-chosen. The loading skeleton is capped at what the
+  sheet can show; it used to be one placeholder row per item too. A 3,416-person list took 36,733 Android global
+  references in one go and was killed as an ANR (AgriPad, 2026-11-08; LES-0056).
+
 ## 1.4.7
 
 - A stacked bottom sheet recedes the right parent again. When the next step was stacked on a sheet before that sheet had finished closing (a selection sheet's Done that opens the following step), the closing sheet was taken out of the stack by a rebuild that REVERSED the stack: the step on screen dropped to the bottom, and every later step receded the wrong sheet and was drawn over a fully visible parent. The rebuild keeps the order now; recede/restore animations are no longer behind an app-wide concurrency guard and cancel the sheet's running animation first; a closing child no longer restores a parent the next step already covers. (AgriPad survey wizard, 2026-11-04; LES-0055.)

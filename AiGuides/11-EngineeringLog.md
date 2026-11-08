@@ -1991,3 +1991,27 @@ AgriPad step that closed an empty list only to reopen it no longer does.
 **Lesson.** `new Stack<T>(IEnumerable)` and `foreach (var x in stack)` run in OPPOSITE orders; never round-trip a stack
 through its own enumeration. The "rare" branch of a cleanup is exactly the one a fast flow hits — trace the stack, not
 the animation, when a parent "does not recede".
+
+## LES-0056 — A selection sheet built a row for every item: 3,416 people, 36,733 references, an ANR
+
+**Symptom.** AgriPad, 2026-11-08: opening «مسئولان» (a multi-select `G9ComboBox` of every person on the farm) in the
+new-task form froze the app; Android killed it as not responding. The app log stopped at
+`G9BottomSheetHelper.TriggerDeferredViews` (started, never completed) and `JniPressureMonitor` logged 46,093 global
+references, +36,733 since the previous sample — 90% of the 51,200 ceiling.
+
+**Cause.** `G9SelectionSheet.BuildRows` built every row up front (a Border + Grid + Label + check icon + gesture,
+about 25 Android global references each, measured) and searching only toggled `IsVisible`; the loading skeleton was given
+`LoadingSkeletonRowCount = items.Count`, so it built 3,416 placeholder rows first. The comment above
+`EagerBuildItemLimit` already said the rows are not virtualized and a very long list is expensive — the cost was
+known, the size of a real list was not: the sheet had only ever seen tens of items.
+
+**Fix (1.4.8).** Windowed rows: the first `RowPageSize` matches, the next page on a scroll to the end, at most
+`MaxRenderedRows` per query, a «N more» footer for the rest; selected items beyond the window stay listed. Rows are
+built on first show and cached by index; past twice the cap the rows outside the window are dropped and their
+handlers disconnected, so a run of searches cannot grow the sheet back. The skeleton is capped at the rows the tallest
+sheet can show.
+
+**Lesson.** A non-virtualized list needs its cap in the control, not in the caller's good intentions: the caller here
+(a people list) had no idea its count was four digits on a real farm. Size every list control by the largest real data
+set, and when a sheet "freezes", read the JNI pressure line before the stack — an ANR stack inside
+`RunnableImplementor.n_run` names nothing.

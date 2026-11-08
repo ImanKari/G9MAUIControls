@@ -124,7 +124,9 @@ public static class G9Strings
 
         [G9StringKey.Checked] = "checked",
         [G9StringKey.NotChecked] = "not checked",
-        [G9StringKey.PartiallyChecked] = "partially checked"
+        [G9StringKey.PartiallyChecked] = "partially checked",
+
+        [G9StringKey.MoreResultsFormat] = "{0} more — search to narrow the list"
     };
 
     /// <summary>
@@ -444,5 +446,11 @@ public enum G9StringKey
     NotChecked,
 
     /// <summary>Screen-reader state of an indeterminate ("some of them") <c>G9CheckBox</c>.</summary>
-    PartiallyChecked
+    PartiallyChecked,
+
+    /// <summary>
+    ///     Footer of a long selection list that shows only its first rows; <c>{0}</c> is how many matches are left out.
+    ///     Asks the user to narrow the list with the search box.
+    /// </summary>
+    MoreResultsFormat
 }

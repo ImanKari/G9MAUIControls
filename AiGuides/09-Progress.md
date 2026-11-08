@@ -17,6 +17,15 @@ Last updated: **2026-11-03**
 > here. `Directory.Build.props` → `PackageReleaseNotes` has every version and is the record that has not
 > drifted — read it, not this heading list, when you need to know what a version contained.
 
+## 1.4.8 — a selection sheet holds a window of rows, not one per item (2026-11-08)
+
+- `G9SelectionSheet` builds the first `RowPageSize` (60) matches, a page more on a scroll to the end, at most `MaxRenderedRows`
+  (200); a «N more» footer counts the rest (`G9StringKey.MoreResultsFormat`). Selected items beyond the window stay listed. The
+  window logic is `G9SelectionWindow` (MAUI-free, 7 tests in `G9SelectionWindowTests`). The loading skeleton is capped too.
+- Found by AgriPad (2026-11-08): «مسئولان» over 3,416 people was an ANR (+36,733 global references, LES-0056). Proven on the
+  DOOGEE in source mode: the sheet opens in ~1.6 s (Debug), +2,185 references, the footer reads «۳۱۱۶ مورد دیگر», and 200 rows
+  hold 18.6k references in all (36% of the ceiling; 300 were tried first).
+
 ## 1.4.6 — a sheet keeps an explicit always-visible scroll bar (2026-11-03)
 
 - A bottom sheet keeps a scroller's explicit `ScrollBarVisibility.Always`. `G9BottomSheetScrollBarPolicy` hides the bar of every scroller inside a sheet; it used to overwrite `Always` too, so a long menu could not say «there is more below» (AgriPad TR-0030). The policy now replaces only the default, axis by axis; every other sheet scroller keeps its hidden bar.

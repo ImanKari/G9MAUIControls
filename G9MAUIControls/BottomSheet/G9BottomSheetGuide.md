@@ -628,6 +628,10 @@ only on-device data opened on a spinner, swapped, faded and resized, all in view
 - Do NOT opt in a body whose first render waits on the network: it sits out the hold with nothing on
   screen and then opens on its spinner anyway.
 
+`G9SelectionSheet` holds at most `MaxRenderedRows` rows whatever the item count (a page of `RowPageSize` at a time, a
+«N more» footer for the rest, the skeleton capped at the rows a sheet can show) — it once built a row per item and a
+3,416-item list was an ANR (LES-0056).
+
 Pickers: `ShowListG9BottomSheetAsync` (fit-to-content) and `G9SelectionSheet` (≤ `EagerBuildItemLimit`)
 build eagerly **even when called off the UI thread** — they marshal to it. Falling back to the factory
 path there is what opened a six-row picker at the 180 dp loading floor and grew it to 415 dp in view.

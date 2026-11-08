@@ -206,3 +206,14 @@ user **committed** (`WasAccepted`) and whether the selection **changed** (`Selec
   never dropped by merely opening the sheet.
 - The `CollectionChanged` subscriptions on `ItemsSource` / `SelectedItems` are held only between
   `Loaded` and `Unloaded`, so a shared lookup list does not keep the page alive.
+
+## Long lists (1.4.8)
+
+The sheet is not virtualized, so it never builds a row per item: it shows the first `G9SelectionSheet.RowPageSize`
+(60) matches, adds a page when the user scrolls to the end, stops at `G9SelectionSheet.MaxRenderedRows` (200) and
+counts the rest in a «N more — search to narrow the list» footer (`G9StringKey.MoreResultsFormat`). Selected items
+are always listed. A list of thousands (every person on a farm) is fine; the search box is how the user reaches the
+rest. Before 1.4.8 a 3,416-item list froze the app (LES-0056).
+
+Disabled items are left out of the sheet unless selected, so a disabled «heading» row never shows — put a group's name
+in each item's text instead.

@@ -92,7 +92,7 @@
       version" there, not "the family's". Keying the CPM pins off $(Version) resolved them to the app's
       1.0 and failed restore with NU1102. See LES-0025.
     -->
-    <G9FamilyVersion>1.4.7</G9FamilyVersion>
+    <G9FamilyVersion>1.4.8</G9FamilyVersion>
     <Version>$(G9FamilyVersion)</Version>
 
     <!--
@@ -106,9 +106,8 @@
       (2026-10-05). The G9GuardReleaseNotesLength target below fails the PACK, locally, before that.
     -->
     <PackageReleaseNotes>
-        1.4.7
-        - A stacked bottom sheet recedes the right parent again. When the next step was stacked on a sheet before that sheet had finished closing (a selection sheet’s Done that opens the following step), the closing sheet was taken out of the stack by a rebuild that REVERSED the stack: the step on screen dropped to the bottom, and every later step receded the wrong sheet and was drawn over a fully visible parent. The rebuild keeps the order now; recede/restore animations are no longer behind an app-wide concurrency guard and cancel the sheet’s running animation first; a closing child no longer restores a parent the next step already covers.
-        - G9SelectionSheet.ShowForResultAsync(..., minimumSelected): multi-select Done stays disabled until that many rows are selected, so a caller never has to refuse an empty answer and reopen the sheet.
+        1.4.8
+        - G9SelectionSheet (behind G9ComboBox and G9Picker) no longer builds one row per item: the first RowPageSize (60) matches, the next page on a scroll to the end, at most MaxRenderedRows (200), and a «N more — search to narrow the list» footer (G9StringKey.MoreResultsFormat, new) for the rest. Selected items beyond the window stay listed. The loading skeleton is capped at the rows a sheet can show. A 3,416-person list used to take 36,733 Android global references at once and was killed as an ANR.
 
         Earlier versions: https://github.com/ImanKari/G9MAUIControls/blob/main/CHANGELOG.md
     </PackageReleaseNotes>

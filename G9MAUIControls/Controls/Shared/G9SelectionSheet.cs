@@ -73,8 +73,23 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     private readonly HashSet<object> _selectedKeys;
     private readonly HashSet<object> _initialKeys;
 
-    /// <summary>Every row, built once. Searching toggles <see cref="VisualElement.IsVisible" /> on these.</summary>
-    private readonly List<(G9SelectionItem Item, Border Row)> _rows = [];
+    /// <summary>
+    ///     The rows built so far, by item index — built on first show, reused while they stay in the window, dropped
+    ///     (<see cref="TrimRowCache" />) when too many pile up. Never one per item up front: see <see cref="RowPageSize" />.
+    /// </summary>
+    private readonly Border?[] _rowCache;
+    private int _cachedRowCount;
+
+    /// <summary>The item indices whose rows are in the list now, in list order.</summary>
+    private List<int> _window = [];
+
+    /// <summary>How many matching rows the window may hold now; grows by a page as the user scrolls to the end.</summary>
+    private int _renderLimit;
+
+    /// <summary>Matches left out of the window by the cap; what the «N more» footer counts.</summary>
+    private int _hiddenCount;
+    private bool _growPending;
+    private Label? _moreLabel;
     private Label? _emptyLabel;
     private IDispatcherTimer? _searchTimer;
     private readonly bool _allowMultiple;
@@ -116,6 +131,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         Border? countBadge = null)
     {
         _allItems = items.ToList();
+        _rowCache = new Border?[_allItems.Count];
+        _renderLimit = RowPageSize;
         _initialSelection = selected?.ToList() ?? [];
         _ambiguousTexts = FindAmbiguousTexts(_allItems);
         _initialKeys = _initialSelection.Select(KeyOf).ToHashSet();
@@ -164,6 +181,8 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             _searchEntry.InnerEntry.TextChanged += (_, e) =>
             {
                 _query = e.NewTextValue ?? string.Empty;
+                // A new query starts from the first page again: the window is the top of ITS matches.
+                _renderLimit = RowPageSize;
                 ScheduleFilter();
             };
             Grid.SetRow(_searchEntry, 1);
@@ -181,6 +200,7 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         // chrome keeps the scroll filling exactly up to the sheet's clamped height.
         var scrollMaxHeight = G9Metrics.SelectionMaxHeight - ChromeAllowance(showSearch);
         _itemsScroll = new ScrollView { Content = _itemsHost, MaximumHeightRequest = scrollMaxHeight };
+        _itemsScroll.Scrolled += OnItemsScrolled;
         Grid.SetRow(_itemsScroll, 2);
         Children.Add(_itemsScroll);
 
@@ -262,9 +282,9 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
 
     private View? FindFirstSelectedRow()
     {
-        foreach (var (item, row) in _rows)
+        foreach (var index in _window)
         {
-            if (row.IsVisible && _selectedKeys.Contains(KeyOf(item)))
+            if (_rowCache[index] is { } row && _selectedKeys.Contains(KeyOf(_allItems[index])))
             {
                 return row;
             }
@@ -519,7 +539,9 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             // Skeleton rows instead of a spinner while the list builds — the row count matches
             // the real list so the placeholder reads as the content taking shape.
             LoadingSkeleton = G9BottomSheetLoadingSkeleton.ListRows,
-            LoadingSkeletonRowCount = materializedItems.Count,
+            // ⛔ Capped at what the sheet can show. This was the item count: 3,416 people built 3,416
+            // placeholder rows before the real ones (the ANR of 2026-11-08 — see RowPageSize).
+            LoadingSkeletonRowCount = Math.Min(materializedItems.Count, SkeletonRowCap),
             BackgroundColor = G9Palette.Current.Surface,
             // BOTH single- and multi-select now use the SHARED standard bottom-sheet header (back
             // arrow + title beside it, NearBack — the app-wide title standard). Multi-select adds
@@ -615,6 +637,24 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     /// </summary>
     public static int EagerBuildItemLimit { get; set; } = 40;
 
+    /// <summary>
+    ///     Rows built per page: the list shows the first this-many matches and builds the next page when the user scrolls to
+    ///     its end, up to <see cref="MaxRenderedRows" />; the rest are counted in a «N more — search» footer. Default <c>60</c>.
+    ///     <para>
+    ///         ⛔ The rows are not virtualized, and every one costs about 25 Android global references (measured on the DOOGEE, 2026-11-08). The sheet
+    ///         used to build a row for EVERY item: a 3,416-person assignee list took 36,733 references in one go, reached
+    ///         90% of the 51,200 ceiling, froze the UI thread and was killed as an ANR (AgriPad, 2026-11-08). Whatever the
+    ///         item count, the sheet now holds at most <see cref="MaxRenderedRows" /> rows plus a small cache.
+    ///     </para>
+    /// </summary>
+    public static int RowPageSize { get; set; } = 60;
+
+    /// <summary>The most rows the list builds for one query, whatever the scrolling; see <see cref="RowPageSize" />. Default <c>200</c>: a row costs about 25 references, and the 300 first tried took the DOOGEE to 36% of the ceiling (2026-11-08).</summary>
+    public static int MaxRenderedRows { get; set; } = 200;
+
+    /// <summary>Placeholder rows: no more than the tallest sheet can show.</summary>
+    private static int SkeletonRowCap => (int)Math.Ceiling(G9Metrics.SelectionMaxHeight / G9Metrics.SelectionRowHeight) + 1;
+
     private static FlowDirection ResolveItemFlowDirection(G9TextInputDirection direction)
     {
         return direction switch
@@ -626,20 +666,62 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     }
 
     /// <summary>
-    ///     Builds every row ONCE. The list is not virtualized, and a row is a Border + Grid + Label
-    ///     + icon + gesture recognizer; the old code tore all of them down and rebuilt them on every
-    ///     search keystroke. Searching now only toggles visibility (<see cref="ApplyFilter" />).
+    ///     Builds the first window of rows (<see cref="ApplyFilter" />). The list is not virtualized, and a row is a
+    ///     Border + Grid + Label + icon + gesture recognizer, so it is built only when it enters the window and reused
+    ///     while it stays there — never one per item up front (<see cref="RowPageSize" />).
     /// </summary>
-    private void BuildRows()
-    {
-        foreach (var item in _allItems)
-        {
-            var row = CreateRow(item);
-            _rows.Add((item, row));
-            _itemsHost.Children.Add(row);
-        }
+    private void BuildRows() => ApplyFilter();
 
-        ApplyFilter();
+    /// <summary>The row of an item, built the first time it is needed.</summary>
+    private Border RowAt(int index)
+    {
+        if (_rowCache[index] is { } cached) return cached;
+        var row = CreateRow(_allItems[index]);
+        _rowCache[index] = row;
+        _cachedRowCount++;
+        return row;
+    }
+
+    /// <summary>
+    ///     Drops the cached rows outside the window once the cache passes twice the cap — so that searching for one name after
+    ///     another cannot grow the sheet back to one row per item. Their handlers are disconnected so the Android peers go now,
+    ///     not at some later collection.
+    /// </summary>
+    private void TrimRowCache()
+    {
+        if (_cachedRowCount <= MaxRenderedRows * 2) return;
+        var keep = _window.ToHashSet();
+        for (var i = 0; i < _rowCache.Length; i++)
+        {
+            if (_rowCache[i] is not { } row || keep.Contains(i)) continue;
+            _rowCache[i] = null;
+            _cachedRowCount--;
+            try
+            {
+                row.DisconnectHandlers();
+            }
+            catch (Exception)
+            {
+                // A row that never got a handler has nothing to release.
+            }
+        }
+    }
+
+    /// <summary>Scrolled near the end of the window with matches left out: the next page joins it.</summary>
+    private void OnItemsScrolled(object? sender, ScrolledEventArgs e)
+    {
+        if (_growPending || _hiddenCount == 0 || _renderLimit >= MaxRenderedRows) return;
+        var remaining = _itemsScroll.ContentSize.Height - (e.ScrollY + _itemsScroll.Height);
+        if (remaining > G9Metrics.SelectionRowHeight * 4) return;
+
+        _growPending = true;
+        // Not inside the scroll callback: adding rows re-lays-out the content being scrolled.
+        Dispatcher.Dispatch(() =>
+        {
+            _growPending = false;
+            _renderLimit = Math.Min(_renderLimit + RowPageSize, MaxRenderedRows);
+            ApplyFilter();
+        });
     }
 
     /// <summary>
@@ -668,23 +750,48 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
         _searchTimer.Start();
     }
 
+    /// <summary>
+    ///     Puts the window in the list: the first <see cref="_renderLimit" /> matches of the query, in list order, plus every
+    ///     selected match beyond them (a chosen value must stay visible to be un-chosen), then the «N more» footer or the
+    ///     empty state. Only the rows that changed are removed or added, so a scroll page or a narrowing search keeps the
+    ///     rows it shares with the window before.
+    /// </summary>
     private void ApplyFilter()
     {
         var hasQuery = !string.IsNullOrWhiteSpace(_query);
-        var anyVisible = false;
+        var (window, hidden) = G9SelectionWindow.Compute(
+            _allItems.Count,
+            i => !hasQuery || _allItems[i].Text.Contains(_query, StringComparison.CurrentCultureIgnoreCase),
+            i => _selectedKeys.Contains(KeyOf(_allItems[i])),
+            _renderLimit);
 
-        foreach (var (item, row) in _rows)
+        // Footers leave first and come back after the rows.
+        if (_emptyLabel is not null) _itemsHost.Children.Remove(_emptyLabel);
+        if (_moreLabel is not null) _itemsHost.Children.Remove(_moreLabel);
+
+        var keep = G9SelectionWindow.CommonPrefix(_window, window);
+        for (var c = _itemsHost.Children.Count - 1; c >= keep; c--) _itemsHost.Children.RemoveAt(c);
+        for (var w = keep; w < window.Count; w++) _itemsHost.Children.Add(RowAt(window[w]));
+        _window = window;
+        _hiddenCount = hidden;
+        TrimRowCache();
+
+        if (hidden > 0)
         {
-            var matches = !hasQuery || item.Text.Contains(_query, StringComparison.CurrentCultureIgnoreCase);
-            if (row.IsVisible != matches) row.IsVisible = matches;
-            anyVisible |= matches;
+            _moreLabel ??= new Label
+            {
+                TextColor = G9Palette.Current.TextTertiary,
+                FontSize = 12,
+                // The culture's own face, so the count reads in Persian digits in a Persian sheet.
+                FontFamily = G9Culture.ResolveFontFamily(),
+                HorizontalTextAlignment = TextAlignment.Center,
+                Padding = new Thickness(16, 14)
+            };
+            _moreLabel.Text = string.Format(G9Culture.CurrentCulture, G9Strings.Get(G9StringKey.MoreResultsFormat), hidden);
+            _itemsHost.Children.Add(_moreLabel);
         }
 
-        if (anyVisible)
-        {
-            if (_emptyLabel is not null) _emptyLabel.IsVisible = false;
-            return;
-        }
+        if (window.Count > 0) return;
 
         if (_emptyLabel is null)
         {
@@ -696,10 +803,9 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
                 HorizontalTextAlignment = TextAlignment.Center,
                 Padding = new Thickness(16, 28)
             };
-            _itemsHost.Children.Add(_emptyLabel);
         }
 
-        _emptyLabel.IsVisible = true;
+        _itemsHost.Children.Add(_emptyLabel);
     }
 
     private Border CreateRow(G9SelectionItem item)
@@ -903,9 +1009,10 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     {
         var palette = G9Palette.Current;
 
-        foreach (var child in _itemsHost.Children)
+        // Every BUILT row, not only the ones in the window: a cached row that comes back later must already be current.
+        foreach (var border in _rowCache)
         {
-            if (child is not Border border || border.Content is not Grid row) continue;
+            if (border is null || border.Content is not Grid row) continue;
 
             // Retrieve the item identity stored in the row's BindingContext.
             if (row.BindingContext is not G9SelectionItem item) continue;
