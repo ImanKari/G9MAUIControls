@@ -1,6 +1,16 @@
 # 09 - Progress
 
 # G9MAUIControls
+
+## 2026-11-09 — 1.4.9: Segmented chips, a logarithmic range slider, count badges, inner placeholders
+
+For AgriPad's task form (priority کم / متوسط / زیاد) and the redesigned sort / filter sheets of every list (Figma «Site Picker»):
+`G9ChipGroup.LayoutMode.Segmented` (+ `SegmentColumns`), `G9RangeSlider.Logarithmic` / `ShowThumbValues`, and `BadgeText` on
+`G9BottomSheetToolbarItem` / `G9HeaderActionButton`; outlined fields draw their placeholder inside the box under an `AlwaysFloat`
+label (`RestingPlaceholder`), and `PlaceholderInside` makes it a plain inner hint that never floats (a chat composer).
+Additive: nothing that did not opt in changes. Built and used from source in the
+AgriPad app first (`-p:UseG9Source=true`), then released.
+
 ## Project Progress & Execution Log
 
 ---

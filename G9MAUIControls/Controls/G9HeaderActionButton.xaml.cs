@@ -70,6 +70,24 @@ public partial class G9HeaderActionButton : ContentView
             true,
             propertyChanged: OnVisualStateRelatedPropertyChanged);
 
+    /// <summary>A count in the badge (1.4.9): a pill with this text, shown whenever it is set; null / empty = the dot rules.</summary>
+    public static readonly BindableProperty BadgeTextProperty =
+        BindableProperty.Create(nameof(BadgeText), typeof(string), typeof(G9HeaderActionButton), null, propertyChanged: OnBadgeTextChanged);
+
+    public string? BadgeText
+    {
+        get => (string?)GetValue(BadgeTextProperty);
+        set => SetValue(BadgeTextProperty, value);
+    }
+
+    private static void OnBadgeTextChanged(BindableObject bindable, object oldValue, object newValue)
+    {
+        if (bindable is not G9HeaderActionButton button) return;
+        var text = newValue as string;
+        button.CountBadge.IsVisible = !string.IsNullOrEmpty(text);
+        button.CountBadgeLabel.Text = text;
+    }
+
     public static readonly BindableProperty AnimatePressProperty =
         BindableProperty.Create(nameof(AnimatePress), typeof(bool), typeof(G9HeaderActionButton), true);
 

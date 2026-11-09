@@ -478,6 +478,8 @@ public partial class G9Editor : G9OutlinedFieldBase
         }
     }
 
+    private bool _wroteInnerPlaceholder;
+
     private void ApplyEditorProperties()
     {
         if (_editor is null) return;
@@ -530,6 +532,17 @@ public partial class G9Editor : G9OutlinedFieldBase
 
         var targetTextColor = IsEnabled ? palette.TextPrimary : palette.TextDisabled;
         if (_editor.TextColor != targetTextColor) _editor.TextColor = targetTextColor;
+
+        // The native hint inside the box: with PlaceholderInside, or a Label that AlwaysFloat keeps up (RestingPlaceholder). Written
+        // only while the field owns it, so a hint an app set on the inner control itself is never wiped.
+        var ownsHint = PlaceholderInside || !string.IsNullOrWhiteSpace(Label);
+        if (ownsHint || _wroteInnerPlaceholder)
+        {
+            var targetPlaceholder = ownsHint ? RestingPlaceholder ?? string.Empty : string.Empty;
+            if (!string.Equals(_editor.Placeholder, targetPlaceholder, StringComparison.Ordinal)) _editor.Placeholder = targetPlaceholder;
+            if (_editor.PlaceholderColor != palette.TextTertiary) _editor.PlaceholderColor = palette.TextTertiary;
+            _wroteInnerPlaceholder = ownsHint;
+        }
 
         var targetFlow = InputTextDirection switch
         {

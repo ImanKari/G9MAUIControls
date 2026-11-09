@@ -5702,7 +5702,8 @@ public static class G9BottomSheetHelper
 
             button.IsBusy = isBusy;
             button.IsActive = sheetItem?.IsActive == true;
-            button.ShowActiveBadge = sheetItem?.ShowActiveBadge == true;
+            button.ShowActiveBadge = sheetItem?.ShowActiveBadge == true && string.IsNullOrEmpty(sheetItem.BadgeText);
+            button.BadgeText = sheetItem?.BadgeText;
             button.AnimatePress = sheetItem?.AnimatePress ?? true;
             button.IsEnabled = canInteract;
 

@@ -60,6 +60,11 @@ public partial class G9ChipGroup : G9ControlBase
     private readonly HorizontalStackLayout _lineHost;
     private readonly ScrollView _lineScroll;
 
+    /// <summary>Host for <see cref="G9ChipGroupLayoutMode.Segmented" />: one star column per chip.</summary>
+    private readonly Grid _segmentHost;
+
+    private bool IsSegmented => LayoutMode == G9ChipGroupLayoutMode.Segmented;
+
     private readonly Dictionary<object, ChipBinding> _bindings = [];
     private ObservableCollection<G9SelectionItem>? _attachedItems;
     private ObservableCollection<G9SelectionItem>? _attachedSelected;
@@ -103,6 +108,13 @@ public partial class G9ChipGroup : G9ControlBase
     [AutoBindable(OnChanged = nameof(OnShowSelectionCheckmarkChanged))]
     private bool _showSelectionCheckmark;
 
+    /// <summary>
+    ///     <see cref="G9ChipGroupLayoutMode.Segmented" /> only: how many equal cells one row holds; more items wrap onto the next row
+    ///     in the same columns (the design's «مرتب‌سازی بر اساس», three a row). <c>0</c> (default) = every item on one row.
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnSegmentColumnsChanged))]
+    private int _segmentColumns;
+
     public G9ChipGroup()
     {
         _wrapHost = new FlexLayout
@@ -132,6 +144,8 @@ public partial class G9ChipGroup : G9ControlBase
             VerticalOptions = LayoutOptions.Start,
             Content = _lineHost
         };
+
+        _segmentHost = new Grid { HorizontalOptions = LayoutOptions.Fill, VerticalOptions = LayoutOptions.Start };
 
         Content = _wrapHost;
 
@@ -191,6 +205,9 @@ public partial class G9ChipGroup : G9ControlBase
         public ContentView? CheckmarkHost { get; init; }
         public G9IconView? CheckmarkIcon { get; init; }
 
+        /// <summary>Built for <see cref="G9ChipGroupLayoutMode.Segmented" />: flat, equal-width, bold when chosen.</summary>
+        public bool IsSegment { get; init; }
+
         // Live tracking — used as the "from" value of a fresh animation when one starts
         // mid-flight (e.g., user double-taps the chip). Without this, mid-animation
         // cancellation would snap to the resting state before re-interpolating.
@@ -223,8 +240,18 @@ public partial class G9ChipGroup : G9ControlBase
     /// <summary>Swaps the host and re-parents the chips (a chip can only live in one layout at a time).</summary>
     private void OnLayoutModeChanged()
     {
-        Content = LayoutMode == G9ChipGroupLayoutMode.SingleLineScroll ? _lineScroll : _wrapHost;
+        Content = LayoutMode switch
+        {
+            G9ChipGroupLayoutMode.SingleLineScroll => _lineScroll,
+            G9ChipGroupLayoutMode.Segmented => _segmentHost,
+            _ => _wrapHost
+        };
         RebuildAll();
+    }
+
+    private void OnSegmentColumnsChanged()
+    {
+        if (IsSegmented) RebuildAll();
     }
 
     /// <summary>The checkmark widgets are built (or not) in <see cref="BuildChip" />, so this needs a rebuild.</summary>
@@ -239,8 +266,12 @@ public partial class G9ChipGroup : G9ControlBase
         }
     }
 
-    private Layout ActiveHost =>
-        LayoutMode == G9ChipGroupLayoutMode.SingleLineScroll ? _lineHost : _wrapHost;
+    private Layout ActiveHost => LayoutMode switch
+    {
+        G9ChipGroupLayoutMode.SingleLineScroll => _lineHost,
+        G9ChipGroupLayoutMode.Segmented => _segmentHost,
+        _ => _wrapHost
+    };
 
     private void OnItemsSourceChanged()
     {
@@ -355,16 +386,36 @@ public partial class G9ChipGroup : G9ControlBase
         // the old one would be a stale duplicate.
         _wrapHost.Children.Clear();
         _lineHost.Children.Clear();
+        _segmentHost.Children.Clear();
+        _segmentHost.ColumnDefinitions.Clear();
+        _segmentHost.RowDefinitions.Clear();
         _bindings.Clear();
 
         var items = ItemsSource;
         if (items is null) return;
 
         var host = ActiveHost;
+        _segmentHost.ColumnSpacing = ItemSpacing;
+        _segmentHost.RowSpacing = ItemSpacing;
+        var columns = SegmentColumns > 0 ? Math.Min(SegmentColumns, Math.Max(1, items.Count)) : Math.Max(1, items.Count);
+        if (IsSegmented)
+        {
+            for (var c = 0; c < columns; c++) _segmentHost.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+            for (var r = 0; r < (items.Count + columns - 1) / columns; r++) _segmentHost.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+        }
+
+        var index = 0;
         foreach (var item in items)
         {
             var binding = BuildChip(item);
             _bindings[item] = binding;
+            if (IsSegmented)
+            {
+                Grid.SetColumn(binding.Chip, index % columns);
+                Grid.SetRow(binding.Chip, index / columns);
+                index++;
+            }
+
             host.Children.Add(binding.Chip);
             ApplyChipState(binding, IsSelected(item), animate: false);
         }
@@ -385,11 +436,12 @@ public partial class G9ChipGroup : G9ControlBase
                 palette.TextSecondary, IconSize, 4)
             : null;
 
+        var segmented = IsSegmented;
         var label = new Label
         {
             Text = item.Text,
-            FontSize = G9Metrics.ChipFontSize,
-            FontAttributes = FontAttributes.Bold,
+            FontSize = segmented ? G9Metrics.SegmentFontSize : G9Metrics.ChipFontSize,
+            FontAttributes = segmented ? FontAttributes.None : FontAttributes.Bold,
             TextColor = palette.TextSecondary,
             LineBreakMode = LineBreakMode.NoWrap,
             VerticalTextAlignment = TextAlignment.Center,
@@ -427,7 +479,7 @@ public partial class G9ChipGroup : G9ControlBase
         // background / stroke / shadow crossfade.
         G9IconView? checkmarkIcon = null;
         ContentView? checkmarkHost = null;
-        if (ShowSelectionCheckmark)
+        if (ShowSelectionCheckmark && !segmented)
         {
             checkmarkIcon = new G9IconView {
                 Icon = G9Glyphs.Check,
@@ -475,16 +527,18 @@ public partial class G9ChipGroup : G9ControlBase
         // all of which already animate in lockstep.
         var chip = new Border
         {
-            HeightRequest = ChipHeight,
-            MinimumHeightRequest = ChipHeight,
-            Margin = new Thickness(0, 0, ItemSpacing, ItemSpacing),
+            HeightRequest = segmented ? Math.Max(ChipHeight, G9Metrics.SegmentHeight) : ChipHeight,
+            MinimumHeightRequest = segmented ? Math.Max(ChipHeight, G9Metrics.SegmentHeight) : ChipHeight,
+            // A segment fills its column; the grid's ColumnSpacing is the gap (no trailing margin to throw the row off centre).
+            Margin = segmented ? Thickness.Zero : new Thickness(0, 0, ItemSpacing, ItemSpacing),
             Padding = new Thickness(G9Metrics.ChipHorizontalPadding, 0),
-            StrokeThickness = 1.5,
+            StrokeThickness = segmented ? 1 : 1.5,
             Stroke = strokeBrush,
-            StrokeShape = G9Colors.Round(ChipCornerRadius),
+            StrokeShape = G9Colors.Round(segmented ? G9Metrics.SegmentCornerRadius : ChipCornerRadius),
             Background = bgBrush,
             Content = row,
             BindingContext = item,
+            HorizontalOptions = segmented ? LayoutOptions.Fill : LayoutOptions.Start,
             VerticalOptions = LayoutOptions.Start,
             // G9SelectionItem.IsEnabled was ignored here: a disabled chip looked and toggled like
             // any other. Dimmed on the chip itself (constant for its life; no animation writes it).
@@ -504,6 +558,7 @@ public partial class G9ChipGroup : G9ControlBase
             StrokeBrush = strokeBrush,
             CheckmarkHost = checkmarkHost,
             CheckmarkIcon = checkmarkIcon,
+            IsSegment = segmented,
             IsSelected = false
         };
 
@@ -570,6 +625,16 @@ public partial class G9ChipGroup : G9ControlBase
         var targetBg = selected ? selectedBg : unselectedBg;
         var targetStroke = selected ? selectedBg : unselectedStroke;
         var targetText = selected ? selectedFg : unselectedFg;
+        if (binding.IsSegment)
+        {
+            // The design's segment: resting = a grey cell on a hairline; chosen = a faint accent tint, the accent as the
+            // outline, and the text in the strong text colour, bold (the weight switches at once - it cannot be crossfaded).
+            var accent = binding.Item.SelectedColor ?? SelectedBackground ?? palette.Primary;
+            targetBg = selected ? G9ColorHelper.Mix(palette.Surface, accent, 0.08) : palette.SurfaceContainer;
+            targetStroke = selected ? accent : palette.OutlineVariant;
+            targetText = selected ? binding.Item.SelectedTextColor ?? SelectedTextColor ?? palette.TextPrimary : palette.TextSecondary;
+            binding.TextLabel.FontAttributes = selected ? FontAttributes.Bold : FontAttributes.None;
+        }
         var targetCheck = selected ? 1.0 : 0.0;
 
         binding.IsSelected = selected;
@@ -682,9 +747,10 @@ public partial class G9ChipGroup : G9ControlBase
     /// </summary>
     private static void CommitState(ChipBinding binding, Color bg, Color stroke, Color text, double checkProgress)
     {
-        binding.BackgroundStopTop.Color = G9ColorHelper.Lighten(bg, 0.08);
+        // A segment is FLAT (the design); a chip keeps its soft top-to-bottom gradient.
+        binding.BackgroundStopTop.Color = binding.IsSegment ? bg : G9ColorHelper.Lighten(bg, 0.08);
         binding.BackgroundStopMid.Color = bg;
-        binding.BackgroundStopBottom.Color = G9ColorHelper.Darken(bg, 0.08);
+        binding.BackgroundStopBottom.Color = binding.IsSegment ? bg : G9ColorHelper.Darken(bg, 0.08);
 
         binding.StrokeBrush.Color = stroke;
         binding.TextLabel.TextColor = text;

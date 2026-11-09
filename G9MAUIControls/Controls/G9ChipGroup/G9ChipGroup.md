@@ -41,7 +41,7 @@ new G9SelectionItem { Text = "To Do", Key = stateId, SelectedColor = Color.FromA
 | `IconSize` | `double` | `16` | Icon size inside the chip. |
 | `SelectedBackground` | `Color?` | `null` | Override selected chip background. Defaults to `Primary`. |
 | `SelectedTextColor` | `Color?` | `null` | Override selected chip text color. Defaults to `OnPrimary`. |
-| `LayoutMode` | `G9ChipGroupLayoutMode` | `Wrap` | `Wrap` = chips flow onto more lines. `SingleLineScroll` = one line, scrolls horizontally on overflow (scroll bar hidden). See "Layout modes". |
+| `LayoutMode` | `G9ChipGroupLayoutMode` | `Wrap` | `Wrap` = chips flow onto more lines. `SingleLineScroll` = one line, scrolls horizontally on overflow (scroll bar hidden). `Segmented` = one row of equal flat cells (1.4.9). See "Layout modes". |
 | `ShowSelectionCheckmark` | `bool` | `true` | Whether a selected chip grows the trailing M3 checkmark. Set `false` for chips that carry their own meaningful icon. See "Selection checkmark". |
 | `ChipCornerRadius` | `double` | `G9LayoutMetrics.ControlCornerRadius` (9) | Corner radius of every chip. See "Corner radius". |
 
@@ -100,6 +100,7 @@ Changing it reshapes the live chips in place (pure geometry — no rebuild, no a
 |---|---|---|
 | `Wrap` (default) | wrapping `FlexLayout` | The group may grow taller without hurting anything (inside a sheet / form section). |
 | `SingleLineScroll` | `HorizontalStackLayout` inside a horizontal `ScrollView`, both scroll bars `Never` | The group's height must be constant — a filter strip pinned above a list. On a narrow phone the chips scroll instead of wrapping onto a second line and pushing the content below down. `TasksPageContentView`'s state filters are the reference. |
+| `Segmented` | a `Grid`, one star column per chip, `ColumnSpacing` = `ItemSpacing` | A few short, mutually exclusive options shown as one row of equal cells (AgriPad's task priority کم / متوسط / زیاد, Figma «اولویت», 2026-11-09). Flat cells 44 dp, radius 10, 14 sp: resting = `SurfaceContainer` on an `OutlineVariant` hairline, text `TextSecondary`; chosen = the accent (`SelectedColor` / `SelectedBackground` / `Primary`) at 8 % over `Surface`, a 1 dp accent outline, `TextPrimary` bold. No checkmark (`ShowSelectionCheckmark` is ignored). `SegmentColumns` (default 0 = all on one row) wraps the cells into rows of that many equal columns (the site picker's sort fields, 3). An item's icon is drawn before its text. |
 
 ```xml
 <g9:G9ChipGroup

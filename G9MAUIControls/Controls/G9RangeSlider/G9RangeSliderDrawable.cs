@@ -32,6 +32,8 @@ internal sealed class G9RangeSliderDrawable : IDrawable
     public bool IsRtl { get; set; }
     public bool IsEnabled { get; set; } = true;
     public G9RangeSliderThumb ActiveThumb { get; set; }
+    public bool Logarithmic { get; set; }
+    public bool ShowThumbValues { get; set; }
 
     // The fill gradient depends only on the Primary colour and the direction, yet it used to be
     // rebuilt — paint, two stops, a lightened colour — on every paint, i.e. on every pointer
@@ -88,7 +90,23 @@ internal sealed class G9RangeSliderDrawable : IDrawable
             DrawThumb(canvas, endX, trackCenterY, RangeEnd, ActiveThumb == G9RangeSliderThumb.End);
         }
 
-        if (ShowLabels)
+        if (ShowLabels && ShowThumbValues)
+        {
+            // The design's readout: each thumb's value above it, always (the edge labels are left out).
+            canvas.FontSize = 12;
+            canvas.FontColor = G9Palette.Current.TextSecondary;
+            var y = trackCenterY - ThumbRadius - LabelGap - 18;
+            if (Mode == G9RangeSliderMode.Single)
+            {
+                canvas.DrawString(FormatValue(Value), endX - 50, y, 100, 18, HorizontalAlignment.Center, VerticalAlignment.Bottom);
+            }
+            else
+            {
+                canvas.DrawString(FormatValue(RangeStart), startX - 50, y, 100, 18, HorizontalAlignment.Center, VerticalAlignment.Bottom);
+                canvas.DrawString(FormatValue(RangeEnd), endX - 50, y, 100, 18, HorizontalAlignment.Center, VerticalAlignment.Bottom);
+            }
+        }
+        else if (ShowLabels)
         {
             // Place labels well below the thumb circle so they don't kiss the edge.
             var labelY = trackCenterY + ThumbRadius + LabelGap;
@@ -153,6 +171,8 @@ internal sealed class G9RangeSliderDrawable : IDrawable
         var trackWidth = Math.Max(1, width - (HorizontalInset * 2));
         var ratio = Math.Clamp((x - HorizontalInset) / trackWidth, 0, 1);
         if (IsRtl) ratio = 1 - ratio;
+        if (Logarithmic && Minimum > 0 && Maximum > Minimum)
+            return Math.Exp(Math.Log(Minimum) + (ratio * (Math.Log(Maximum) - Math.Log(Minimum))));
         return Minimum + (ratio * (Maximum - Minimum));
     }
 
@@ -163,7 +183,9 @@ internal sealed class G9RangeSliderDrawable : IDrawable
         // floor — still mapped the full track, so the thumb and the finger disagreed.
         var range = Maximum - Minimum;
         if (range <= 0) range = 1;
-        var ratio = (float)Math.Clamp((value - Minimum) / range, 0, 1);
+        var ratio = Logarithmic && Minimum > 0 && Maximum > Minimum && value > 0
+            ? (float)Math.Clamp((Math.Log(value) - Math.Log(Minimum)) / (Math.Log(Maximum) - Math.Log(Minimum)), 0, 1)
+            : (float)Math.Clamp((value - Minimum) / range, 0, 1);
         if (IsRtl) ratio = 1 - ratio;
         return trackLeft + (trackWidth * ratio);
     }
@@ -181,7 +203,7 @@ internal sealed class G9RangeSliderDrawable : IDrawable
             // thumb circle plus a small bottom gap — there's no space above the
             // thumb for a tooltip, and the consumer is expected to bind an external
             // Label to Value / RangeStart / RangeEnd for the live readout.
-            if (ShowLabels)
+            if (ShowLabels && !ShowThumbValues)
             {
                 DrawTooltip(canvas, x, value);
             }
@@ -221,6 +243,23 @@ internal sealed class G9RangeSliderDrawable : IDrawable
     {
         // The library culture, like every other culture-dependent decision in the suite; the
         // thread culture is only what it falls back to.
-        return value.ToString(string.IsNullOrWhiteSpace(ValueFormat) ? "0" : ValueFormat, G9Culture.CurrentCulture);
+        var text = value.ToString(string.IsNullOrWhiteSpace(ValueFormat) ? "0" : ValueFormat, G9Culture.CurrentCulture);
+        // The canvas draws with the platform font, not the app's (whose Persian font shapes 0-9 as ۰-۹): a Persian or Arabic
+        // culture gets its own digits here, so the slider reads like every label around it (1.4.9).
+        var language = G9Culture.CurrentCulture.TwoLetterISOLanguageName;
+        if (language is "fa" or "ar")
+        {
+            var zero = language == "fa" ? '۰' : '٠';
+            text = string.Create(text.Length, (text, zero), static (span, state) =>
+            {
+                for (var i = 0; i < span.Length; i++)
+                {
+                    var c = state.text[i];
+                    span[i] = c is >= '0' and <= '9' ? (char)(state.zero + (c - '0')) : c == ',' ? '٬' : c == '.' ? '٫' : c;
+                }
+            });
+        }
+
+        return text;
     }
 }

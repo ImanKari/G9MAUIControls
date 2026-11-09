@@ -231,6 +231,13 @@ public static class G9Metrics
     public const double ChipHeight = 36;
     public const double ChipHorizontalPadding = 14;
     public const double ChipFontSize = 13;
+
+    /// <summary>A <c>Segmented</c> chip group's cell (the AgriPad task form's priority, 2026-11-09): taller, 14 sp, radius 10.</summary>
+    public const double SegmentHeight = 44;
+
+    public const double SegmentFontSize = 14;
+
+    public const double SegmentCornerRadius = 10;
     public const double ChipIconSize = 16;
     /// <summary>
     ///     Horizontal + vertical gap between chips in a wrapping group. Tightened from

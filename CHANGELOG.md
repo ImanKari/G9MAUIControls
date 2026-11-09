@@ -8,6 +8,24 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.9
+
+- `G9ChipGroup` gains `LayoutMode = Segmented` (AgriPad's 2026-11-09 design language for short exclusive choices): the items share one
+  row in equal widths that fill the group - or `SegmentColumns` per row, wrapping into more rows of the same columns - as flat cells
+  44 dp high, radius 10, 14 sp. Resting: `SurfaceContainer` on an `OutlineVariant` hairline, `TextSecondary`. Chosen: the accent
+  (`SelectedColor` / `SelectedBackground` / `Primary`) at 8 % over `Surface`, a 1 dp accent outline, `TextPrimary` bold. No checkmark.
+  The other layout modes are unchanged.
+- `G9RangeSlider` gains `Logarithmic` (the track maps by ratio, so a range over orders of magnitude - site areas 787 to 56,475 ha -
+  is usable at both ends; needs `Minimum > 0`; the value snaps to two significant figures) and `ShowThumbValues` (each thumb's value
+  drawn above it at all times, following it; the edge labels and the drag tooltip are then not drawn).
+- Outlined fields (`G9TextEntry`, `G9Editor`, `G9Picker`, `G9ComboBox`, `G9DateTimePicker`): with `AlwaysFloat` and both a `Label`
+  and a `Placeholder`, the placeholder is drawn inside the empty box under the floated label (the design's «عنوان» + «عنوان کار را
+  وارد کنید»). Before, a set Label always hid the placeholder; fields without `AlwaysFloat` are unchanged.
+- Outlined fields: `PlaceholderInside` - the placeholder is the box's own hint (inside while empty, gone with a value) and never
+  floats up as a label; for a chat composer, whose floated hint was cut by the footer it sits in.
+- `G9BottomSheetToolbarItem.BadgeText` and `G9HeaderActionButton.BadgeText`: a count pill on a sheet header action (e.g. the number
+  of active filters); empty keeps the dot behaviour.
+
 ## 1.4.8
 
 - `G9SelectionSheet` (behind `G9ComboBox` and `G9Picker`) no longer builds one row per item. It shows the first

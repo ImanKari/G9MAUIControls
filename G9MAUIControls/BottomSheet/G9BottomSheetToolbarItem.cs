@@ -30,6 +30,19 @@ public sealed class G9BottomSheetToolbarItem : ToolbarItem
             false,
             defaultBindingMode: BindingMode.TwoWay);
 
+    /// <summary>
+    ///     A COUNT on the action (1.4.9, the AgriPad site filter's «۲» active filters): when set, the badge is a small pill with this text,
+    ///     shown whatever <c>ShowActiveBadge</c> / <c>IsActive</c> say. Null or empty = the plain dot (or nothing).
+    /// </summary>
+    public static readonly BindableProperty BadgeTextProperty =
+        BindableProperty.Create(nameof(BadgeText), typeof(string), typeof(G9BottomSheetToolbarItem), null);
+
+    public string? BadgeText
+    {
+        get => (string?)GetValue(BadgeTextProperty);
+        set => SetValue(BadgeTextProperty, value);
+    }
+
     public static readonly BindableProperty ShowActiveBadgeProperty =
         BindableProperty.Create(
             nameof(ShowActiveBadge),

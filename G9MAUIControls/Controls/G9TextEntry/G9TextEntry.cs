@@ -573,6 +573,8 @@ public partial class G9TextEntry : G9OutlinedFieldBase
         return true;
     }
 
+    private bool _wroteInnerPlaceholder;
+
     private void ApplyEntryProperties()
     {
         if (_entry is null) return;
@@ -608,6 +610,17 @@ public partial class G9TextEntry : G9OutlinedFieldBase
 
         var targetTextColor = IsEnabled ? palette.TextPrimary : palette.TextDisabled;
         if (_entry.TextColor != targetTextColor) _entry.TextColor = targetTextColor;
+
+        // The native hint inside the box: with PlaceholderInside, or a Label that AlwaysFloat keeps up (RestingPlaceholder). Written
+        // only while the field owns it, so a hint an app set on the inner control itself is never wiped.
+        var ownsHint = PlaceholderInside || !string.IsNullOrWhiteSpace(Label);
+        if (ownsHint || _wroteInnerPlaceholder)
+        {
+            var targetPlaceholder = ownsHint ? RestingPlaceholder ?? string.Empty : string.Empty;
+            if (!string.Equals(_entry.Placeholder, targetPlaceholder, StringComparison.Ordinal)) _entry.Placeholder = targetPlaceholder;
+            if (_entry.PlaceholderColor != palette.TextTertiary) _entry.PlaceholderColor = palette.TextTertiary;
+            _wroteInnerPlaceholder = ownsHint;
+        }
 
         var targetFlow = ResolveInputFlowDirection();
         if (_entry.FlowDirection != targetFlow) _entry.FlowDirection = targetFlow;

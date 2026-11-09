@@ -224,3 +224,11 @@ those platforms is resolved per-touch and the drag captures the gesture early.
   `CancelInteraction`.
 - Per-frame cost: a single `_view.Invalidate()` call. No layout invalidation, no
   per-frame allocations.
+
+## Logarithmic track and thumb values (1.4.9, 2026-11-09)
+
+- `Logarithmic = true` maps the track by ratio (`ln`), for ranges over orders of magnitude (the AgriPad site filter: 787 to
+  56,475 ha). Needs `Minimum > 0`, else linear. `Step` is replaced by a two-significant-figure snap on such a track.
+- `ShowThumbValues = true` (with `ShowLabels`) draws each thumb's value ABOVE it, always, moving with it; the min / max edge
+  labels and the drag tooltip are then not drawn (the design's «مساحت (هکتار)» readout).
+

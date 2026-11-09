@@ -140,7 +140,14 @@ public enum G9ChipGroupLayoutMode
     ///     The group's height never changes with the chip count — use it where a second line would push the
     ///     content below it down (filter strips above a list).
     /// </summary>
-    SingleLineScroll
+    SingleLineScroll,
+
+    /// <summary>
+    ///     A SEGMENTED choice (AgriPad design, 2026-11-09 - the task form's priority Low / Medium / High): the chips share ONE line
+    ///     in equal widths that fill the group, as flat rounded cells - resting cells grey on a hairline, the chosen one tinted in
+    ///     the accent with an accent outline and bold text, no checkmark. For a few short, mutually exclusive options.
+    /// </summary>
+    Segmented
 }
 
 public enum G9ProgressType

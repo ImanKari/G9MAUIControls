@@ -38,6 +38,18 @@ public partial class G9RangeSlider : G9ControlBase
     [AutoBindable(OnChanged = nameof(OnShowLabelsChanged))] private bool _showLabels;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _valueFormat;
 
+    /// <summary>
+    ///     A LOGARITHMIC track (1.4.9): equal distances are equal RATIOS, so a range spread over orders of magnitude (site areas from
+    ///     787 to 56,475 ha, the AgriPad site filter) is usable at both ends. Needs <see cref="Minimum" /> &gt; 0 (else linear).
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _logarithmic;
+
+    /// <summary>
+    ///     Each thumb's value drawn ABOVE it at all times and following it while dragged (1.4.9, the AgriPad design); the min / max
+    ///     edge labels are not drawn then. Needs <see cref="ShowLabels" /> (it uses the labels' room).
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _showThumbValues;
+
     public G9RangeSlider()
     {
         _view = new GraphicsView
@@ -204,6 +216,13 @@ public partial class G9RangeSlider : G9ControlBase
         if (Step <= 0) return value;
 
         var snapped = min + (Math.Round((value - min) / Step) * Step);
+        // On a logarithmic track the step would swallow the low end; there the value snaps to two significant figures instead.
+        if (Logarithmic && min > 0 && value > 0)
+        {
+            var magnitude = Math.Pow(10, Math.Floor(Math.Log10(value)) - 1);
+            snapped = Math.Round(value / magnitude) * magnitude;
+        }
+
         return Math.Clamp(snapped, min, max);
     }
 
@@ -225,6 +244,8 @@ public partial class G9RangeSlider : G9ControlBase
         _drawable.Mode = Mode;
         _drawable.ShowLabels = ShowLabels;
         _drawable.ValueFormat = ValueFormat;
+        _drawable.Logarithmic = Logarithmic && min > 0;
+        _drawable.ShowThumbValues = ShowThumbValues;
         // The GraphicsView is pinned to LeftToRight in the constructor, so the canvas never
         // mirrors by itself and the drawable is the single owner of direction — exactly like
         // G9Switch. (This line used to force `false` under a comment claiming the canvas inherited

@@ -129,10 +129,10 @@ public partial class G9Picker : G9OutlinedFieldBase
             _valueLabel.Text = SelectedItem!.Text;
             _valueLabel.TextColor = palette.TextPrimary;
         }
-        else if (string.IsNullOrWhiteSpace(Label))
+        else if (RestingPlaceholder is { } hint)
         {
-            // No floating label is configured, so the inner value label is the placeholder.
-            _valueLabel.Text = Placeholder ?? string.Empty;
+            // No floating label (or one AlwaysFloat keeps up): the inner value label is the placeholder.
+            _valueLabel.Text = hint;
             _valueLabel.TextColor = palette.TextTertiary;
         }
         else

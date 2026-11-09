@@ -256,8 +256,8 @@ public partial class G9ComboBox : G9OutlinedFieldBase
         if (!hasSelection)
         {
             sb.Append("|none|");
-            if (string.IsNullOrWhiteSpace(Label)) sb.Append(Placeholder);
-            else sb.Append('\u0001'); // a Label is set: the floating label is the placeholder, nothing is built
+            if (RestingPlaceholder is { } hint) sb.Append(hint);
+            else sb.Append('\u0001'); // a resting Label is the placeholder, nothing is built
             return sb.ToString();
         }
 
@@ -301,13 +301,14 @@ public partial class G9ComboBox : G9OutlinedFieldBase
         {
             // Render the placeholder only when there's no Label configured. When a Label is
             // present, the base class's floating label acts as the rest-state placeholder
-            // and a second one inside the box would just overlap visually.
-            if (!string.IsNullOrWhiteSpace(Label))
+            // and a second one inside the box would just overlap visually - unless AlwaysFloat keeps
+            // the label up in the notch (RestingPlaceholder, 1.4.9).
+            if (RestingPlaceholder is not { } hint)
             {
                 return;
             }
 
-            var placeholder = CreateValueLabel(Placeholder ?? string.Empty, palette.TextTertiary, contentFlow);
+            var placeholder = CreateValueLabel(hint, palette.TextTertiary, contentFlow);
             _recolorTrigger.Add(p => placeholder.TextColor = p.TextTertiary);
             _selectionHost.Children.Add(placeholder);
             return;

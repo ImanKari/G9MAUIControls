@@ -88,9 +88,9 @@ public partial class G9DateTimePicker : G9OutlinedFieldBase
             _valueLabel.Text = FormatValue(SelectedDateTime!.Value);
             _valueLabel.TextColor = palette.TextPrimary;
         }
-        else if (string.IsNullOrWhiteSpace(Label))
+        else if (RestingPlaceholder is { } hint)
         {
-            _valueLabel.Text = Placeholder ?? string.Empty;
+            _valueLabel.Text = hint;
             _valueLabel.TextColor = palette.TextTertiary;
         }
         else

@@ -22,7 +22,8 @@ outline + notched-label + icon-padding architecture from `G9OutlinedFieldBase`.
 | `HelperText` | `string?` | `null` | Helper text shown below the box. |
 | `ErrorText` | `string?` | `null` | Error text shown below the box (only when `HasError` is true). |
 | `HasError` | `bool` | `false` | Forces the error color and shows `ErrorText`. |
-| `AlwaysFloat` | `bool` | `false` | Keeps the floating label up regardless of focus / value state. |
+| `PlaceholderInside` | `bool` | `false` | The placeholder is the box's own hint: inside while empty, gone with a value, never floated as a label (a chat composer). 1.4.9. |
+| `AlwaysFloat` | `bool` | `false` | Keeps the floating label up regardless of focus / value state. With a `Label` AND a `Placeholder`, the placeholder is then drawn inside the empty box (1.4.9; every outlined field: entry, editor, picker, combo box, date/time picker). |
 | `IsReadOnly` | `bool` | `false` | Disables typing while keeping the value visible. |
 | `MaxLength` | `int` | `-1` | Character cap. `-1` = no limit. |
 | `ShowCharacterCounter` | `bool` | `false` | Shows `n / max` in the footer. Requires `MaxLength > 0`. |

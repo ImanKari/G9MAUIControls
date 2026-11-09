@@ -127,6 +127,31 @@
                     <RoundRectangle CornerRadius="4" />
                 </Border.StrokeShape>
             </Border>
+
+            <!--  The COUNT badge (BadgeText, 1.4.9): a pill over the icon's top end corner, the same anchor as the dot.  -->
+            <Border
+                x:Name="CountBadge"
+                Margin="2,2,2,0"
+                Padding="4,0"
+                BackgroundColor="{theme:G9Color Primary}"
+                HeightRequest="16"
+                HorizontalOptions="End"
+                InputTransparent="True"
+                IsVisible="False"
+                MinimumWidthRequest="16"
+                StrokeThickness="0"
+                VerticalOptions="Start">
+                <Border.StrokeShape>
+                    <RoundRectangle CornerRadius="8" />
+                </Border.StrokeShape>
+                <Label
+                    x:Name="CountBadgeLabel"
+                    FontAttributes="Bold"
+                    FontSize="10"
+                    HorizontalTextAlignment="Center"
+                    TextColor="{theme:G9Color OnPrimary}"
+                    VerticalTextAlignment="Center" />
+            </Border>
         </Grid>
     </Border>
 

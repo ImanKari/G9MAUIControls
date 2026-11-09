@@ -160,6 +160,14 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     /// </summary>
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _reserveFloatingLabelClearance;
 
+    /// <summary>
+    ///     When <c>true</c> the <see cref="Placeholder" /> is the box's own hint: drawn inside while the field is empty, gone as
+    ///     soon as there is a value, and never lifted into the notch as a label (a chat composer: «یادداشت خود را بنویسید...»).
+    ///     A <see cref="Label" />, if set, still floats as usual. Default <c>false</c>: without a Label the placeholder is the
+    ///     floating label's text, the behaviour every field has had (1.4.9).
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _placeholderInside;
+
     [AutoBindable] private ICommand? _leadingCommand;
     [AutoBindable] private ICommand? _trailingCommand;
     [AutoBindable] private object? _commandParameter;
@@ -701,6 +709,22 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
 
     private void OnVisualChanged() => RequestVisualUpdate();
 
+    /// <summary>
+    ///     The hint a field draws INSIDE its box while it is empty, or <c>null</c>. Without a <see cref="Label" /> it is the
+    ///     <see cref="Placeholder" /> (the floating label is then the placeholder's own text, so nothing else is drawn). With a
+    ///     Label it is drawn only when <see cref="AlwaysFloat" /> keeps the label up in the notch - otherwise the resting
+    ///     label sits where the hint would be (1.4.9; AgriPad's task form: «عنوان» floated with «عنوان کار را وارد کنید» inside).
+    /// </summary>
+    protected string? RestingPlaceholder
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Placeholder)) return null;
+            if (PlaceholderInside || string.IsNullOrWhiteSpace(Label)) return Placeholder;
+            return AlwaysFloat && !string.Equals(Label, Placeholder, StringComparison.Ordinal) ? Placeholder : null;
+        }
+    }
+
     /// <inheritdoc />
     /// <remarks>
     ///     Outlined fields have an expensive <see cref="OnApplyVisuals" /> — it
@@ -891,7 +915,7 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
 
         // Floating label content + colors. The label is always transparent; the outline draws
         // a notch around it so the parent background shows through automatically.
-        _floatingLabel.Text = Label ?? Placeholder ?? string.Empty;
+        _floatingLabel.Text = Label ?? (PlaceholderInside ? null : Placeholder) ?? string.Empty;
         _floatingLabel.IsVisible = !string.IsNullOrWhiteSpace(_floatingLabel.Text);
 
         // Cultural typeface — Persian face for RTL, Latin for LTR. Without an
