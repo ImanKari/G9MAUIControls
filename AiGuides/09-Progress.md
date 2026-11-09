@@ -2,6 +2,15 @@
 
 # G9MAUIControls
 
+## 2026-11-10 — 1.4.10: avatars in selection rows, tonal chips, an unmirrored switch, an editor that stops at its content
+
+For AgriPad's task form after the owner's review (Figma «ایجاد کار»): `G9SelectionItem.IsAvatar` (round people pictures in the sheet,
+`G9Metrics.SelectionAvatarSize`), `G9ComboBox.ChipStyle = Tonal` (light pills with their own close mark), `G9Switch.MirrorInRtl`
+(the design never mirrors a switch), and a fix: the outlined field's outline canvas no longer measures to the whole height offered,
+which made a capped `G9Editor` (MaxEditorHeight) open at its cap. Additive except that fix; built and verified from source in the app
+on the emulator first (`-p:UseG9Source=true`), then released. 1.4.11 follows from another session (G9Button Hero padding, date-picker
+wheels) on top of this.
+
 ## 2026-11-09 — 1.4.9: Segmented chips, a logarithmic range slider, count badges, inner placeholders
 
 For AgriPad's task form (priority کم / متوسط / زیاد) and the redesigned sort / filter sheets of every list (Figma «Site Picker»):

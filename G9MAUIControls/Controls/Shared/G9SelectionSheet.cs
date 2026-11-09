@@ -847,10 +847,13 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
             // that meaning away. This row ignored the tint until 2026-09, which is why a coloured
             // option list rendered grey here and then snapped to its real colour the moment it was
             // chosen: the LIST was the only surface in the suite not honouring the field.
+            // A person's picture is round and larger (G9SelectionItem.IsAvatar); an emoji or a glyph never is.
+            var avatar = IsAvatarImage(item);
+            var iconSize = avatar ? G9Metrics.SelectionAvatarSize : G9Metrics.SelectionIconSize;
             row.Add(G9IconFactory.Create(
                 item.Emoji, item.Icon, item.IconPath, item.IconSource,
                 ResolveRowIconColor(item, selected, palette),
-                G9Metrics.SelectionIconSize), 0);
+                iconSize, avatar ? iconSize / 2 : 4), 0);
         }
         else if (G9Visuals.HasSwatch(item.SwatchFirstColor, item.SwatchSecondColor))
         {
@@ -938,6 +941,11 @@ public sealed class G9SelectionSheet : Grid, IG9BottomSheetAwareView, IDeferredC
     ///         overwrote the colour it had just set. A value with two writers has no owner.
     ///     </para>
     /// </remarks>
+    /// <summary>The item's icon is a person's picture: <see cref="G9SelectionItem.IsAvatar" /> on an image (not an emoji or a glyph).</summary>
+    internal static bool IsAvatarImage(G9SelectionItem item) =>
+        item.IsAvatar && string.IsNullOrWhiteSpace(item.Emoji) && !(item.Icon is { IsEmpty: false })
+        && (!string.IsNullOrWhiteSpace(item.IconPath) || item.IconSource is not null);
+
     private static Color ResolveRowIconColor(G9SelectionItem item, bool selected, G9Palette palette) =>
         item.IconTintColor ?? (selected ? palette.Primary : palette.TextSecondary);
 

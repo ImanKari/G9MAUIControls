@@ -8,6 +8,23 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 > line at 1.4.0 (the first 1.4.0 publish failed with HTTP 400, LES in `AiGuides/11-EngineeringLog.md`). Add each
 > new version HERE as well as in the props.
 
+## 1.4.10
+
+- `G9SelectionItem.IsAvatar`: the item's image (`IconPath` / `IconSource`) is a person's picture - drawn ROUND, at the new
+  `G9Metrics.SelectionAvatarSize` (28 dp) in `G9SelectionSheet`'s rows instead of the 18 dp square icon, and round at 18 dp as a single
+  `G9ComboBox` value. Multi-select chips show the name only. An emoji or a glyph is never drawn as an avatar. (AgriPad's task form:
+  every assignee with their picture or their gender's default, as the app's avatars draw people.)
+- `G9ComboBox.ChipStyle` (`G9ComboBoxChipStyle`): `Filled` (the default, unchanged) or `Tonal` - light pills (`SurfaceContainerLow`, a 1 dp
+  `OutlineVariant` hairline, fully rounded, `TextPrimary` 14 sp) each with its own close mark that removes that one item. The close tap
+  never opens the sheet (the box's own recognizer also fires on Android; it is suppressed for 400 ms). Pair with `ClearButton = false`
+  to keep the trailing chevron, as AgriPad's design does.
+- `G9Switch.MirrorInRtl` (static, default `true`): `false` stops a right-to-left culture from mirroring the toggle - off = the thumb on
+  the left, on = on the right, in every language (AgriPad's Figma: all 31 toggles). The row (title, switch) still flows with the
+  culture. Set once at startup, before any switch is built.
+- Outlined fields: the outline's `GraphicsView` asks for no size of its own (it is arranged to the box's whole cell and draws there).
+  Under a height cap - `G9Editor.MaxEditorHeight`, which turns into an AT_MOST spec on Android - it measured to the whole height
+  offered, and the box grew to the cap with nothing in it (an empty description field 360 dp tall). Unchanged otherwise.
+
 ## 1.4.9
 
 - `G9ChipGroup` gains `LayoutMode = Segmented` (AgriPad's 2026-11-09 design language for short exclusive choices): the items share one

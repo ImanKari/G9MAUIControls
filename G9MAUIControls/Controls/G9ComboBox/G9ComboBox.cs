@@ -49,6 +49,12 @@ public partial class G9ComboBox : G9OutlinedFieldBase
     private ObservableCollection<G9SelectionItem>? _selectedItems;
 
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _allowMultipleSelection;
+
+    /// <summary>
+    ///     How a multi-select field draws its chosen items: <see cref="G9ComboBoxChipStyle.Filled" /> (the default - primary
+    ///     chips) or <see cref="G9ComboBoxChipStyle.Tonal" /> (light pills with their own «×», which removes that one item).
+    /// </summary>
+    [AutoBindable(OnChanged = nameof(OnVisualChanged))] private G9ComboBoxChipStyle _chipStyle;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _sheetTitle;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private string? _emptyStateText;
     [AutoBindable(OnChanged = nameof(OnVisualChanged))] private bool _clearButton;
@@ -340,7 +346,9 @@ public partial class G9ComboBox : G9OutlinedFieldBase
         var selected = SelectedItems?.ToList() ?? [];
         foreach (var item in selected.Take(2))
         {
-            _selectionHost.Children.Add(CreateSelectedChip(item, contentFlow, _recolorTrigger));
+            _selectionHost.Children.Add(ChipStyle == G9ComboBoxChipStyle.Tonal
+                ? CreateTonalChip(item, contentFlow, _recolorTrigger, RemoveSelected)
+                : CreateSelectedChip(item, contentFlow, _recolorTrigger));
         }
 
         if (selected.Count > 2)
@@ -399,7 +407,7 @@ public partial class G9ComboBox : G9OutlinedFieldBase
         {
             return G9IconFactory.Create(
                 item.Emoji, item.Icon, item.IconPath, item.IconSource,
-                item.IconTintColor ?? palette.OnSurfaceVariant, 18);
+                item.IconTintColor ?? palette.OnSurfaceVariant, 18, G9SelectionSheet.IsAvatarImage(item) ? 9 : 4);
         }
 
         if (G9Visuals.HasSwatch(item.SwatchFirstColor, item.SwatchSecondColor))
@@ -458,7 +466,8 @@ public partial class G9ComboBox : G9OutlinedFieldBase
             InputTransparent = true
         };
 
-        if (G9IconFactory.HasIcon(item.Emoji, item.Icon, item.IconPath, item.IconSource))
+        // A person's chip is the name alone (G9SelectionItem.IsAvatar): the picture is the sheet row's.
+        if (!G9SelectionSheet.IsAvatarImage(item) && G9IconFactory.HasIcon(item.Emoji, item.Icon, item.IconPath, item.IconSource))
         {
             var icon = G9IconFactory.Create(
                 item.Emoji,
@@ -513,6 +522,83 @@ public partial class G9ComboBox : G9OutlinedFieldBase
         return chip;
     }
 
+    /// <summary>Removes one chosen item (a tonal chip's «×»): the selection collection raises the trigger's own refresh.</summary>
+    private DateTime _suppressOpenUntil;
+
+    private void RemoveSelected(G9SelectionItem item)
+    {
+        if (!IsEnabled || IsReadOnly || SelectedItems is not { } selected) return;
+        _suppressOpenUntil = DateTime.UtcNow.AddMilliseconds(400);
+        var key = item.SelectionIdentity;
+        var match = selected.FirstOrDefault(i => ReferenceEquals(i, item)) ?? selected.FirstOrDefault(i => Equals(i.SelectionIdentity, key));
+        if (match is not null) selected.Remove(match);
+    }
+
+    /// <summary>
+    ///     A <see cref="G9ComboBoxChipStyle.Tonal" /> chip: a light pill (SurfaceContainerLow, an OutlineVariant hairline), the text in
+    ///     TextPrimary 14 and a «×» on its far side that removes the item. Only the «×» takes the tap - the rest of the chip lets it
+    ///     through to the field, which opens the sheet.
+    /// </summary>
+    private static View CreateTonalChip(G9SelectionItem item, FlowDirection flow, List<Action<G9Palette>> recolor, Action<G9SelectionItem> remove)
+    {
+        var palette = G9Palette.Current;
+        var row = new HorizontalStackLayout { Spacing = 8, FlowDirection = flow, VerticalOptions = LayoutOptions.Center };
+
+        if (!G9SelectionSheet.IsAvatarImage(item) && G9IconFactory.HasIcon(item.Emoji, item.Icon, item.IconPath, item.IconSource))
+        {
+            var icon = G9IconFactory.Create(item.Emoji, item.Icon, item.IconPath, item.IconSource, item.IconTintColor ?? palette.OnSurfaceVariant, 14, 4);
+            icon.InputTransparent = true;
+            row.Children.Add(icon);
+        }
+
+        var label = new Label
+        {
+            Text = item.Text,
+            FontSize = 14,
+            TextColor = palette.TextPrimary,
+            FlowDirection = flow,
+            LineBreakMode = LineBreakMode.TailTruncation,
+            MaxLines = 1,
+            VerticalTextAlignment = TextAlignment.Center,
+            InputTransparent = true
+        };
+        row.Children.Add(label);
+
+        var close = new G9IconView { Icon = G9Glyphs.Clear, Color = palette.TextTertiary, Size = 16, VerticalOptions = LayoutOptions.Center };
+        var closeHost = new Grid { WidthRequest = 24, HeightRequest = 24, VerticalOptions = LayoutOptions.Center, Children = { close } };
+        var tap = new TapGestureRecognizer();
+        tap.Tapped += (_, _) => remove(item);
+        closeHost.GestureRecognizers.Add(tap);
+        SemanticProperties.SetDescription(closeHost, item.Text);
+        row.Children.Add(closeHost);
+
+        var stroke = new SolidColorBrush(palette.OutlineVariant);
+        var chip = new Border
+        {
+            FlowDirection = flow,
+            HeightRequest = 34,
+            MinimumHeightRequest = 34,
+            StrokeThickness = 1,
+            Stroke = stroke,
+            StrokeShape = G9Colors.Round(17),
+            BackgroundColor = palette.SurfaceContainerLow,
+            Margin = flow == FlowDirection.RightToLeft ? new Thickness(4, 0, 0, 0) : new Thickness(0, 0, 4, 0),
+            Padding = new Thickness(10, 0, 6, 0),
+            VerticalOptions = LayoutOptions.Center,
+            Content = row
+        };
+
+        recolor.Add(p =>
+        {
+            label.TextColor = p.TextPrimary;
+            close.Color = p.TextTertiary;
+            stroke.Color = p.OutlineVariant;
+            chip.BackgroundColor = p.SurfaceContainerLow;
+        });
+
+        return chip;
+    }
+
     private static View CreateOverflowChip(string text, FlowDirection flow, List<Action<G9Palette>> recolor)
     {
         var palette = G9Palette.Current;
@@ -557,6 +643,9 @@ public partial class G9ComboBox : G9OutlinedFieldBase
     private async void OnTapped(object? sender, TappedEventArgs e)
     {
         if (!IsEnabled || IsReadOnly || _isOpening || _userClearTrailing) return;
+        // A tonal chip's «×» was the tap: the box's own recognizer fires for it as well on Android (see IsTapOnActionableIcon in
+        // G9OutlinedFieldBase) - removing one person must not open the sheet too.
+        if (DateTime.UtcNow < _suppressOpenUntil) return;
 
         List<G9SelectionItem> selected = AllowMultipleSelection
             ? SelectedItems?.ToList() ?? []

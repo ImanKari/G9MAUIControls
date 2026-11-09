@@ -93,6 +93,14 @@ public partial class G9Switch : G9ControlBase
 
     public event EventHandler? Toggled;
 
+    /// <summary>
+    ///     Whether a right-to-left culture mirrors the toggle (on = the thumb on the LEFT). <c>true</c> by default - the suite's
+    ///     behaviour so far. A design that keeps a switch physical in every language (off = left, on = right; AgriPad's Figma,
+    ///     every one of its 31 toggles) sets <c>false</c> once at startup, before any switch is built. The row (title, switch)
+    ///     still flows with the culture; only the toggle itself stops mirroring.
+    /// </summary>
+    public static bool MirrorInRtl { get; set; } = true;
+
     private void OnVisualChanged() => RequestVisualUpdate();
 
     /// <inheritdoc />
@@ -213,7 +221,7 @@ public partial class G9Switch : G9ControlBase
 
         Opacity = IsEnabled ? 1 : 0.45;
         _drawable.IsEnabled = IsEnabled;
-        _drawable.IsRtl = G9Visuals.IsRtl;
+        _drawable.IsRtl = G9Visuals.IsRtl && MirrorInRtl;
 
         // Only seed the progress on the very first apply so subsequent OnIsOn animations
         // are never overridden mid-flight. After init, OnIsOnChanged owns the value.

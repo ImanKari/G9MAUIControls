@@ -86,6 +86,11 @@ automatically turns the others off:
 | `MinOneActive` | `bool` | `false` | Prevents the user from turning off the last active switch in the group. |
 | `ShowLiveStatus` | `bool` | `false` | Appends a `n / total` count label that updates live. |
 
+## Not mirroring in RTL (1.4.10)
+
+`G9Switch.MirrorInRtl = false` (static, once at startup before any switch is built) keeps the toggle physical in every language:
+off = the thumb on the left, on = on the right. The default (`true`) keeps the behaviour described below. AgriPad sets `false`.
+
 ## Behaviour Notes
 
 - The thumb morph runs as a single MAUI `Animation` writing the drawable's `Progress`.

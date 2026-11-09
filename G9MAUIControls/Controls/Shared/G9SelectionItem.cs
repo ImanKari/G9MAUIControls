@@ -19,6 +19,13 @@ public sealed class G9SelectionItem : IG9SelectionIdentity
     public Color? IconTintColor { get; set; }
 
     /// <summary>
+    ///     The image (<see cref="IconPath" /> / <see cref="IconSource" />) is a person's picture: drawn ROUND, at
+    ///     <c>G9Metrics.SelectionAvatarSize</c> in the selection sheet's rows and at the icon size as a single selected value.
+    ///     Multi-select chips show the name only, as a people field's chips are drawn. Ignored for an emoji or a glyph.
+    /// </summary>
+    public bool IsAvatar { get; set; }
+
+    /// <summary>
     ///     Optional two-color swatch shown in place of an icon when no
     ///     Emoji/Icon/IconPath/IconSource is set (e.g. a variety's stored
     ///     FirstColor/SecondColor, which has no real icon image). Both must be set to render.

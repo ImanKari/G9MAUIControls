@@ -213,7 +213,11 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
 
     protected G9OutlinedFieldBase()
     {
-        _outlineView = new GraphicsView
+        // ⛔ A canvas that asks for NO size (OutlineCanvas): under a height cap (G9Editor.MaxEditorHeight -> the box's
+        // MaximumHeightRequest, an AT_MOST spec on Android) a plain GraphicsView measured to the whole height it was offered, and
+        // the box grew to the cap with nothing in it - an empty «توضیحات» 360 dp tall (task form, 2026-11-10). It is arranged
+        // to the box's full cell anyway, so it still draws the whole outline.
+        _outlineView = new OutlineCanvas
         {
             Drawable = _outline,
             BackgroundColor = Colors.Transparent,
@@ -1948,4 +1952,10 @@ public abstract partial class G9OutlinedFieldBase : G9ControlBase
     ///     and status/error states are unaffected (they paint with the state colour directly).
     /// </summary>
     protected virtual Color ResolveTrailingIconColor(Color stateColor) => stateColor;
+
+    /// <summary>The outline's canvas: draws over the box's whole cell and never asks for a size of its own (see the constructor).</summary>
+    private sealed class OutlineCanvas : GraphicsView
+    {
+        protected override Size MeasureOverride(double widthConstraint, double heightConstraint) => Size.Zero;
+    }
 }

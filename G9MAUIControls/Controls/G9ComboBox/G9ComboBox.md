@@ -116,6 +116,14 @@ filtering still rebuilds the list (rows actually need to come and go).
     SelectedItem="{Binding Required}" />
 ```
 
+## Tonal chips and avatars (1.4.10)
+
+- `ChipStyle = Tonal` draws the chosen items of a multi-select field as light pills (`SurfaceContainerLow`, an `OutlineVariant`
+  hairline, `TextPrimary` 14 sp), each with a close mark that removes that item. The close tap never opens the sheet. Use
+  `ClearButton = false` with it when the design keeps the trailing chevron (`TrailingIcon = G9Glyphs.Chevron`).
+- An item with `IsAvatar = true` and an image is a person: round at `G9Metrics.SelectionAvatarSize` in the sheet's rows, round 18 dp
+  as the single value, and the name only on a chip (either style).
+
 ## Behaviour Notes
 
 - Multi-select mode shows up to 2 selected items as compact selected chips inside the

@@ -371,6 +371,8 @@ public static class G9Metrics
     public const double SelectionMinHeight = 220;
     public const double SelectionRowFontSize = 14;
     public const double SelectionIconSize = 18;
+    // A person's round picture in a selection row (G9SelectionItem.IsAvatar): an avatar the size of a glyph is unreadable.
+    public const double SelectionAvatarSize = 28;
     public const double SelectionCheckBoxSize = 20;
     public const double SelectionCheckRadius = 6;
 
