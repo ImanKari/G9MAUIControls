@@ -116,7 +116,7 @@ internal sealed class G9TimeSpanPickerSheet : Grid, IG9BottomSheetAwareView
     {
         var tcs = new TaskCompletionSource<TimeSpan?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // PRE-BUILT, like G9DateTimePickerSheet.ShowAsync (1.4.8): laid out off screen and opened finished —
+        // PRE-BUILT, like G9DateTimePickerSheet.ShowAsync (1.4.11): laid out off screen and opened finished —
         // no spinner, and no build waiting on the open-motion signal. See that method for why.
         var sheet = new G9TimeSpanPickerSheet(title, selected, mode, owner);
         sheet.Completed += (_, value) => tcs.TrySetResult(value);

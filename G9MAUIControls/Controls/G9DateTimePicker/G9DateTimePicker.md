@@ -73,6 +73,15 @@ The bottom sheet hosts the drum columns:
 - **Selected row** — bold + theme primary text color.
 - **Selection band** — hairline tint + 1.5px primary outline overlay (non-interactive).
 
+### ⛔ Row positions are READ, never computed (1.4.11)
+
+A row's scroll offset is its laid-out `Y` minus the top spacer (`G9DrumColumn.RowTop`), and the row under a scroll
+position is the nearest laid-out row (`IndexAt`) — not `index × DrumRowHeight`. Android rounds every row to whole
+pixels while arranging the stack, so the product drifts from the real top by up to a pixel per row; ~50 rows down the
+year column that is whole rows (an Android 16 phone opened «۱۴۳۳» for «۱۴۰۵», the bold year outside the band — AgriPad
+TR-0038 / TR-0039). The opening scroll reads the position after the layout wait, an idle column re-aligns on the
+stack's `SizeChanged`, and the arithmetic is only the fallback before the first layout pass.
+
 ### Settle detection (replaces the time-debounced snap)
 
 Earlier versions used `await Task.Delay(N)` after each `Scrolled` event to debounce the
@@ -300,7 +309,7 @@ DateField.FormattedDisplayText = $"Week {GetWeek(date)} of {date.Year}";
 
 - The picker calls `this.Unfocus()` before opening the sheet so the parent ScrollView
   doesn't auto-scroll to the picker.
-- **⛔ Pre-built, no spinner (1.4.8).** The sheet body is built ON THE TAP and handed to the sheet
+- **⛔ Pre-built, no spinner (1.4.11).** The sheet body is built ON THE TAP and handed to the sheet
   pre-built (`ShowG9BottomSheet(sheet, options)` with `DeferContent = false`), so it goes through
   stage-before-show like every short selection sheet: laid out off screen, then opened once, finished.
   Until 1.4.7 it was the last sheet in the suite on the pre-1.1 path — factory + `DeferContent = true` +
@@ -350,7 +359,7 @@ DateField.FormattedDisplayText = $"Week {GetWeek(date)} of {date.Year}";
 - `MinDate` / `MaxDate` bound the underlying `DateTime`. In Persian mode the same
   Gregorian min/max are converted to Persian year/month/day for the year column range.
 - **The year drum is a window, not Min..Max.** The drum is not virtualized, so it holds at most
-  ±12 years around the selection (inside Min/Max; ±50 until 1.4.8). Scrolling to within two rows of the window's end
+  ±12 years around the selection (inside Min/Max; ±50 until 1.4.11). Scrolling to within two rows of the window's end
   appends 12 more years in place; reaching its start re-centres the window once the drum is at
   rest. A `MinDate = 1900` sentinel no longer costs ~175 realized rows on open.
 - When Min/Max clamp a value the drums roll onto the clamped value (they used to keep showing the

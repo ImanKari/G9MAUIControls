@@ -27,7 +27,7 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
     ///     is a realized row — so it must never be sized from Min..Max: a <c>MinDate = 1900</c>
     ///     sentinel alone was ~175 rows, at a measured ~700 ms per 31 rows on Android.
     ///     <para>
-    ///         12, not 50 (1.4.8): the picker is now built BEFORE it opens (pre-built, no spinner), so
+    ///         12, not 50 (1.4.11): the picker is now built BEFORE it opens (pre-built, no spinner), so
     ///         every row is paid for in the tap-to-open time. ±12 years covers any date a field
     ///         operator picks without scrolling, and the window grows by itself at both edges
     ///         (<see cref="GrowYearWindowIfNeeded" />) for the rare one that needs more.
@@ -227,7 +227,7 @@ internal sealed class G9DateTimePickerSheet : Grid, IG9BottomSheetAwareView
     {
         var tcs = new TaskCompletionSource<DateTime?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // ⛔ PRE-BUILT, not factory + DeferContent (1.4.8). The picker used to open behind a spinner and build
+        // ⛔ PRE-BUILT, not factory + DeferContent (1.4.11). The picker used to open behind a spinner and build
         // its drums only once the open motion reported it had finished — the one sheet in the suite still on
         // that pre-1.1 path. It made the picker the only sheet that visibly "loaded", and it tied the build to
         // a signal that can be lost (a re-fit or a finger landing mid-open): on a slow, memory-pressed phone

@@ -456,7 +456,9 @@ public partial class G9Button : G9ControlBase
         {
             G9ControlSize.Small => (G9Metrics.ButtonHeightSmall, new Thickness(12, 8)),
             G9ControlSize.Large => (G9Metrics.ButtonHeightLarge, new Thickness(20, 14)),
-            G9ControlSize.Hero => (G9Metrics.ButtonHeightHero, new Thickness(16)),
+            // Hero: 52 dp tall with 12 dp above and below the text row, not 16 — 16 left a 16 sp label 20 dp, and a Persian
+            // descender was cut off («ج» of «خروج» on AgriPad's sign-out button, TR-0035, 2026-11-10).
+            G9ControlSize.Hero => (G9Metrics.ButtonHeightHero, new Thickness(16, 12)),
             _ => (G9Metrics.ButtonHeightMedium, new Thickness(16, 12))
         };
 

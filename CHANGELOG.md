@@ -10,8 +10,17 @@ as ONE version (ADR-0010), so this is one changelog. Newest first.
 
 ## 1.4.11
 
+- **The date picker's wheels open on the chosen value — every column, far down a column too.** A column scrolled to
+  `index × DrumRowHeight`, but Android rounds every row to whole pixels when the stack is arranged, so the real top of a
+  row drifts from that product by up to a pixel per row. Far down a column the drift is whole rows: on an Android 16
+  phone the year drum (its value ~50 rows in) opened on «۱۴۳۳» for «۱۴۰۵» with the bold year outside the band, the day
+  and month one row early (AgriPad TR-0038 / TR-0039, 2026-11-10). The scroll target, the live highlight and the snap
+  now read the row's LAID-OUT position (`RowTop` / `IndexAt` in `G9DrumColumn`), and an idle column re-aligns once its
+  rows have been arranged. The arithmetic stays only as the fallback before the first layout pass.
+- **`G9Button` `Size = Hero`: 12 dp above and below the text, not 16.** 16 left a 16 sp label 20 dp of height and cut a
+  Persian descender off («ج» of «خروج», AgriPad TR-0035). The button stays 52 dp.
 - **The date and time-span pickers open pre-built — no spinner.** `G9DateTimePicker` and `G9TimeSpanPicker` were the last sheets on the pre-1.1 factory + `DeferContent` path: they opened with a spinner and built their drums only when the open motion reported it had finished. On a slow, memory-pressed phone the spinner stayed for seconds, and when the open signal was lost it stayed for good (AgriPad field report 2026-11-08, Samsung A24, the graft date picker). Their bodies are now built on the tap and go through stage-before-show like every short selection sheet. A drum row is one `Label` (it was a `Label` in a `ContentView`) and the year window is ±12 years (was ±50; it still grows at both edges). Emulator (Debug): fully open at 684 ms with the wheels in place from the first frame, against ~816 ms behind a spinner.
-- **A sheet's open completion can no longer be lost.** `OpenMotionCompleted` is raised the first time an opened sheet comes to REST, by any route — the open's own end, a retarget, the settle after a finger took the open over, or a `SetFitHeight` snap. Until 1.4.7 a same-height re-fit landing mid-open, or a finger on a rising sheet, aborted the motion and dropped the event, and every deferred (`DeferContent`) body waited for it for ever. The helper's opened-work fallback also keeps looking (every 100 ms, up to 10 s) instead of looking once.
+- **A sheet's open completion can no longer be lost.** `OpenMotionCompleted` is raised the first time an opened sheet comes to REST, by any route — the open's own end, a retarget, the settle after a finger took the open over, or a `SetFitHeight` snap. Until 1.4.10 a same-height re-fit landing mid-open, or a finger on a rising sheet, aborted the motion and dropped the event, and every deferred (`DeferContent`) body waited for it for ever. The helper's opened-work fallback also keeps looking (every 100 ms, up to 10 s) instead of looking once.
 
 ## 1.4.10
 

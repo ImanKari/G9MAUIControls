@@ -2,6 +2,14 @@
 
 # G9MAUIControls
 
+## 2026-11-10 — 1.4.11: date-picker wheels on the chosen value, pre-built pickers, a Hero button that keeps its descenders
+
+From AgriPad's tester reports (TR-0035, TR-0038, TR-0039): `G9DrumColumn` scrolls, highlights and snaps by each row's LAID-OUT
+position (Android's per-row pixel rounding drifted whole rows far down the year column), and the `Hero` button's vertical padding
+is 12 (16 cut «ج» of «خروج»). It also carries the 2026-11-08 picker work that had been committed locally and never released
+(it was labelled «1.4.8 (unreleased)» and collided with the published 1.4.8): the date and time-span pickers open pre-built, and
+an open sheet's completion is no longer lost. Built and verified from source in the app on the emulator first, then released.
+
 ## 2026-11-10 — 1.4.10: avatars in selection rows, tonal chips, an unmirrored switch, an editor that stops at its content
 
 For AgriPad's task form after the owner's review (Figma «ایجاد کار»): `G9SelectionItem.IsAvatar` (round people pictures in the sheet,

@@ -218,6 +218,7 @@ internal sealed class G9DrumColumn : Grid
         };
         _scroll.Scrolled += OnScrolled;
         _scroll.HandlerChanged += OnScrollHandlerChanged;
+        _stack.SizeChanged += OnStackSizeChanged;
         Unloaded += OnColumnUnloaded;
 
         _bandOverlay = new GraphicsView
@@ -366,7 +367,7 @@ internal sealed class G9DrumColumn : Grid
 
     private View CreateRow(G9DrumItem item)
     {
-        // ONE view per row (1.4.8). A row used to be a Label inside a ContentView that carried the tap — two
+        // ONE view per row (1.4.11). A row used to be a Label inside a ContentView that carried the tap — two
         // platform views per row, and the year drum alone held 101 rows, all built on the UI thread before the
         // picker could show. That cost is why the picker opened behind a spinner; halving the views (and
         // narrowing the year window, see G9DateTimePickerSheet.YearWindowRadius) is what lets it open
@@ -436,6 +437,72 @@ internal sealed class G9DrumColumn : Grid
     public void ScrollToSelected() => _ = ScrollToValueAsync(SelectedValue, animate: false);
 
     /// <summary>
+    ///     The scroll offset that puts row <paramref name="index" /> in the band: its LAID-OUT top minus the top spacer.
+    /// </summary>
+    /// <remarks>
+    ///     ⛔ Not <c>index × DrumRowHeight</c> (AgriPad TR-0038 / TR-0039, 2026-11-10). Android rounds every row to whole
+    ///     pixels while the stack is arranged, so the real top of row N drifts from N × the nominal height by up to a pixel
+    ///     per row. Far down a column the drift is whole rows' worth: on a tester's Android 16 phone the year drum (its
+    ///     value ~50 rows in) opened on «۱۴۳۳» for «۱۴۰۵» with the bold year outside the band, and the day and month one
+    ///     row early; on the emulator the year sat 12 px low. The arithmetic stays only as the fallback before the first
+    ///     layout pass, when the views have no position yet.
+    /// </remarks>
+    private double RowTop(int index)
+    {
+        // _stack.Children: [top spacer] [row 0] … [row N-1] [bottom spacer].
+        var childIndex = index + 1;
+        if (childIndex > 0 && childIndex < _stack.Children.Count - 1 &&
+            _stack.Children[childIndex] is View row && row.Height > 0 &&
+            _stack.Children[0] is View spacer && spacer.Height >= 0)
+        {
+            return Math.Max(0, row.Y - spacer.Height);
+        }
+
+        return index * G9Metrics.DrumRowHeight;
+    }
+
+    /// <summary>The row whose top is nearest to <paramref name="scrollY" /> — the inverse of <see cref="RowTop" />.</summary>
+    private int IndexAt(double scrollY)
+    {
+        var last = _items.Count - 1;
+        if (last < 0) return 0;
+
+        // Start from the nominal guess and walk to the true nearest row; the drift is small per row, so this is a few
+        // steps at most, never a scan.
+        var idx = Math.Clamp((int)Math.Round(scrollY / G9Metrics.DrumRowHeight), 0, last);
+        while (idx < last && Math.Abs(RowTop(idx + 1) - scrollY) < Math.Abs(RowTop(idx) - scrollY)) idx++;
+        while (idx > 0 && Math.Abs(RowTop(idx - 1) - scrollY) < Math.Abs(RowTop(idx) - scrollY)) idx--;
+        return idx;
+    }
+
+    /// <summary>
+    ///     After the rows are arranged (and after any later re-arrange), an idle column is moved onto its selected row
+    ///     again: the opening scroll could only use the nominal arithmetic if it ran before the arrange finished.
+    /// </summary>
+    private void OnStackSizeChanged(object? sender, EventArgs e)
+    {
+        if (!IsIdle || _items.Count == 0 || _scroll.Height <= 0)
+        {
+            return;
+        }
+
+        var index = -1;
+        for (var i = 0; i < _items.Count; i++)
+        {
+            if (_items[i].Value == SelectedValue)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index >= 0 && Math.Abs(_scroll.ScrollY - RowTop(index)) > 0.5)
+        {
+            _ = ScrollToValueAsync(SelectedValue, animate: false);
+        }
+    }
+
+    /// <summary>
     ///     Programmatic scroll to a row. <paramref name="animate" /> true uses the custom
     ///     169ms CubicOut interpolation that's fully cancellable. False sets the position
     ///     instantly (used for initial layout and re-positioning when the surface is
@@ -453,8 +520,6 @@ internal sealed class G9DrumColumn : Grid
             }
         }
         if (index < 0) return;
-
-        var y = index * G9Metrics.DrumRowHeight;
 
         // Wait for the ScrollView to be measured. On first open, the layout pass
         // hasn't completed yet and ScrollToAsync silently fails.
@@ -474,6 +539,9 @@ internal sealed class G9DrumColumn : Grid
             await tcs.Task.ConfigureAwait(true);
             await Task.Delay(50).ConfigureAwait(true);
         }
+
+        // Read AFTER the wait: the row's laid-out top is only known once the stack has been arranged.
+        var y = RowTop(index);
 
         if (animate)
         {
@@ -644,9 +712,7 @@ internal sealed class G9DrumColumn : Grid
     {
         if (_items.Count == 0) return;
 
-        var rowHeight = G9Metrics.DrumRowHeight;
-        var idx = (int)Math.Round(scrollY / rowHeight);
-        idx = Math.Clamp(idx, 0, _items.Count - 1);
+        var idx = IndexAt(scrollY);
         if (idx == _liveHighlightIndex) return;
 
         if (_liveHighlightIndex >= 0 && _liveHighlightIndex < _items.Count)
@@ -733,12 +799,11 @@ internal sealed class G9DrumColumn : Grid
 
     private async Task SnapAfterSettleAsync(double scrollY)
     {
-        var rowHeight = G9Metrics.DrumRowHeight;
-        var idx = (int)Math.Round(scrollY / rowHeight);
-        if (idx < 0 || idx >= _items.Count) return;
+        if (_items.Count == 0) return;
+        var idx = IndexAt(scrollY);
 
         var value = _items[idx].Value;
-        var snapY = idx * rowHeight;
+        var snapY = RowTop(idx);
 
         // Selection is already correct from the live updates during scroll, but commit
         // the change event now so consumers who only care about the final value get one

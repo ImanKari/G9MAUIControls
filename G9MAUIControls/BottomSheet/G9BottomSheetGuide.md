@@ -586,7 +586,7 @@ first, builds after) or through `ShowProcessingG9BottomSheet`.
 - **An aborted motion does not complete.** `finished` honours `cancelled`. A retargeted motion
   inherits the completion of the one it replaces, so `OpenMotionCompleted` fires exactly once, at the
   real end — never mid-animation, which is what used to start a deferred load inside the open.
-- **⛔ The open completes when the body comes to REST — by any route (1.4.8, field report 2026-11-08).**
+- **⛔ The open completes when the body comes to REST — by any route (1.4.11, field report 2026-11-08).**
   `Show()` sets a pending open completion; `Close()` clears it; `OpenMotionCompleted` is raised ONCE, the
   first time the opened body is at rest: the open's own end, a retarget that inherited it, the settle
   after a finger took the open over (`CompleteMotion`), or a `SetFitHeight` SNAP (no animation, or a

@@ -52,7 +52,7 @@ icon-only variant.
 | `Small` | 12, 8 | 12 | 36 |
 | `Medium` (default) | 16, 12 | 14 | 44 |
 | `Large` | 20, 14 | 15 | 48 |
-| `Hero` | 16 | 16 | 52 (full-width) |
+| `Hero` | 16, 12 (16 until 1.4.10: a Persian descender was cut off) | 16 | 52 (full-width) |
 
 The `Min height` above is only the FALLBACK applied when the consumer leaves `HeightRequest`
 unset (MAUI default `-1`). An explicit `HeightRequest`/`MinimumHeightRequest` on the button wins
